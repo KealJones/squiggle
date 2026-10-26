@@ -4,7 +4,8 @@
 import * as engine from './engine.js';
 import * as sessions from './sessions.js';
 import * as memory from './memory.js';
-import { assembleContext, summaryBacklog, messageText } from './context.js';
+import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes } from './context.js';
+export { scrubFakeToolNotes };
 import { toolSpecs, runTool } from './tools.js';
 import { UNTRUSTED_RULES } from './untrusted.js';
 import { embed } from './embed.js';
@@ -29,7 +30,7 @@ function systemPrompt(threadId, session) {
     `You have a workspace: /home is your own folder (synced to all the user's devices), and /repos/<name> holds git clones of the user's GitHub repos.`,
     `Working on code: git_clone the repo, git_branch to start an agent/ branch (or switch to an existing one), edit files, git_commit, git_push, then github_open_pr if the user wants a review. agent/ branches push right away; pushing any other branch (like main) shows the user a permission prompt, so only do that when they asked for it. Never try to get around a refused push.`,
     `When you learn something lasting about the user or their projects (preferences, decisions, names), save it with remember. Use search_history to find things from past conversations.`,
-    `Use tools when they help; answer directly when they don't. Be concise. Never invent file contents or tool results.`,
+    `Use tools when they help; answer directly when they don't. Be concise. Never invent file contents or tool results, and never say you saved, remembered, changed or pushed something unless you called the tool for it in this reply.`,
     thread ? `This is a side thread started on an earlier message ("${truncate(thread.title, 80)}"). Focus on that topic.` : '',
     UNTRUSTED_RULES(),
   ].filter(Boolean).join('\n\n');
@@ -85,7 +86,7 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
         }
         pending = results;
       }
-      reply.content = prefix.trim();
+      reply.content = scrubFakeToolNotes(prefix).trim();
     } catch (e) {
       reply.content = (reply.content || '') + `\n\n⚠️ ${e.message || e}`;
       ui.onError && ui.onError(e);
