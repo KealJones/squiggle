@@ -390,6 +390,28 @@ export const TOOLS = [
     },
   },
 
+  {
+    spec: { name: 'web_search', description: 'Search the web (DuckDuckGo). Returns a short summary when one exists, plus titles, links and snippets. To read a result in full, pass its url to fetch_url.', parameters: S({ query: str('What to search for'), count: num('How many results (default 6, max 10)') }, ['query']) },
+    async run({ query, count = 6 }) {
+      const q = String(query || '').trim();
+      if (!q) return { model: { error: 'Give a search query.' } };
+      let r;
+      try { r = await fetch(`${apiBase()}/search?q=${encodeURIComponent(q)}&n=${Math.min(Math.max(+count || 6, 1), 10)}`, { cache: 'no-store' }); }
+      catch { return { model: { error: 'Could not reach the relay for search.' } }; }
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || d.error) return { model: { error: d.error || `Search failed (HTTP ${r.status}).` }, label: `search failed: "${q}"` };
+      const results = d.results || [];
+      const a = d.answer;
+      const summary = a ? `Summary${a.heading ? ` of "${a.heading}"` : ''} (${a.source}${a.url ? ', ' + a.url : ''}):\n${a.text}\n\n` : '';
+      const text = summary + results.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n');
+      return {
+        model: { query: q, count: results.length, results: wrapUntrusted('web search', text.trim() || 'No results.') },
+        label: `searched the web for "${truncate(q, 60)}" (${results.length})`,
+        observation: text.trim() ? { source: 'web search', title: `Search: ${q}`, text } : null,
+      };
+    },
+  },
+
   // Memory
   {
     spec: { name: 'remember', description: 'Save a lasting fact about the user or their projects (preferences, decisions, names, how things work). Saved as subject → relation → object.', parameters: S({ subject: str('Who/what, e.g. "Keal" or "squiggle"'), relation: str('e.g. "prefers", "uses", "is deployed on"'), object: str('the value'), note: str('optional detail') }, ['subject', 'relation', 'object']) },

@@ -251,6 +251,20 @@ await check('fetch_url wraps page text as untrusted and strips scripts', async (
   assert.ok(r.obs.text.includes('assets directory'));
 });
 
+await check('web_search goes through the relay and comes back labeled as outside content', async () => {
+  const r = await A.page.evaluate(async () => {
+    const res = await T.tools.runTool({ function: { name: 'web_search', arguments: { query: 'squiggle relay' } } }, { session: T.sessions.list()[0] });
+    return { model: res.model, label: res.label, obs: res.observation };
+  });
+  assert.equal(r.model.count, 2, JSON.stringify(r.model));
+  assert.match(r.model.results, /^<untrusted source="web search" key="[0-9a-f]{8}">/);
+  assert.match(r.model.results, /https:\/\/example\.com\/docs\/squiggle\?a=1&b=2/);
+  assert.match(r.model.results, /Summary of "Squiggle" \(Wikipedia, https:\/\/en\.wikipedia\.org\/wiki\/Squiggle\):\nSquiggle is a test topic\./);
+  assert.ok(!/Buy Widgets/.test(r.model.results), 'ads skipped');
+  assert.match(r.label, /searched the web for "squiggle relay" \(2\)/);
+  assert.equal(r.obs.source, 'web search');
+});
+
 await check('run_js sandbox cannot reach app data', async () => {
   const r = await A.page.evaluate(async () => {
     const run = async (code) => (await T.tools.runTool({ function: { name: 'run_js', arguments: { code } } }, {})).model;

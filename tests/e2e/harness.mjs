@@ -82,6 +82,9 @@ export async function start(gitRoot, env = {}, { split = false } = {}) {
   globalThis.fetch = (input, init) => {
     const url = typeof input === 'string' ? input : input.url;
     if (url.startsWith('https://github.com/')) return realFetch(url.replace('https://github.com', `http://127.0.0.1:${gitPort}`), init);
+    // Web search goes to a fixed results page instead of the live site.
+    if (url.startsWith('https://lite.duckduckgo.com/')) return Promise.resolve(new Response(readFileSync(new URL('../fixtures/ddg-lite.html', import.meta.url), 'utf8')));
+    if (url.startsWith('https://api.duckduckgo.com/')) return Promise.resolve(Response.json({ Heading: 'Squiggle', AbstractText: 'Squiggle is a <b>test</b> topic.', AbstractSource: 'Wikipedia', AbstractURL: 'https://en.wikipedia.org/wiki/Squiggle' }));
     return realFetch(input, init);
   };
   const workerEnv = { GITHUB_CLIENT_ID: 'test-client', GITHUB_APP_SLUG: 'squiggle-test', ENABLE_FETCH: 'true', ALLOWED_ORIGINS: '', ...env };
