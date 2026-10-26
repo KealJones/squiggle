@@ -3,15 +3,30 @@
 
 export const AGENT_BRANCH_PREFIX = 'agent/';
 
-// The agent may only commit to and push branches it owns.
-export function checkAgentBranch(branch) {
-  if (!branch) return 'Not on a branch (detached HEAD). Use git_branch to start an agent/ branch.';
-  if (!branch.startsWith(AGENT_BRANCH_PREFIX)) {
-    return `Branch "${branch}" is not an agent branch. The agent can only commit and push to branches starting with "${AGENT_BRANCH_PREFIX}". Use git_branch to create one.`;
-  }
+// Can the agent commit/push on this branch at all? (Detached HEAD or a
+// malformed name: no.) Returns an error message or null.
+export function checkBranch(branch) {
+  if (!branch) return 'Not on a branch (detached HEAD). Use git_branch to switch to or create a branch.';
   if (!isValidBranchName(branch)) return `"${branch}" is not a valid branch name.`;
   return null;
 }
+
+// Push policy. agent/ branches are the agent's own: push freely. Any other
+// branch needs the person's approval, either once or remembered as a grant
+// for that exact repo + branch. Force pushes are never made.
+//   grants: Set of grantKey(repo, branch)
+export function pushPolicy(repo, branch, grants) {
+  if (branch.startsWith(AGENT_BRANCH_PREFIX)) return 'free';
+  if (grants && grants.has(grantKey(repo, branch))) return 'granted';
+  return 'ask';
+}
+
+export const grantKey = (repo, branch) => `${String(repo).toLowerCase()}:${branch}`;
+
+// Workflow files run code on GitHub with the repo's secrets, so pushes that
+// change them always need a fresh, one-time approval — on any branch, and
+// regardless of "always allow".
+export const touchesWorkflows = (paths) => paths.filter(p => /^\.github\/workflows\//.test(p));
 
 // Turns "fix login" / "agent/fix-login" into "agent/fix-login".
 export function agentBranchName(name) {

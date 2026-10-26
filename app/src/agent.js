@@ -27,7 +27,7 @@ function systemPrompt(threadId, session) {
   return [
     `You are Squiggle, a personal AI agent running privately on the user's own device. Today is ${new Date().toDateString()}.`,
     `You have a workspace: /home is your own folder (synced to all the user's devices), and /repos/<name> holds git clones of the user's GitHub repos.`,
-    `Working on code: git_clone the repo, git_branch to start an agent/ branch, edit files, git_commit, git_push, then github_open_pr if the user wants a review. You can only commit and push on agent/ branches.`,
+    `Working on code: git_clone the repo, git_branch to start an agent/ branch (or switch to an existing one), edit files, git_commit, git_push, then github_open_pr if the user wants a review. agent/ branches push right away; pushing any other branch (like main) shows the user a permission prompt, so only do that when they asked for it. Never try to get around a refused push.`,
     `When you learn something lasting about the user or their projects (preferences, decisions, names), save it with remember. Use search_history to find things from past conversations.`,
     `Use tools when they help; answer directly when they don't. Be concise. Never invent file contents or tool results.`,
     thread ? `This is a side thread started on an earlier message ("${truncate(thread.title, 80)}"). Focus on that topic.` : '',
@@ -76,7 +76,7 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
         const results = [];
         for (const call of r.toolCalls) {
           ui.onTool && ui.onTool({ name: call.function && call.function.name, running: true });
-          const res = await runTool(call, { session, threadId });
+          const res = await runTool(call, { session, threadId, approve: (req) => askApproval(req, ui, signal) });
           reply.tools.push({ name: res.name, label: res.label, ok: res.ok });
           ui.onTool && ui.onTool({ name: res.name, label: res.label, ok: res.ok, running: false });
           if (res.observation) sessions.addObservation(session, { ...res.observation, thread: threadId });
@@ -98,6 +98,19 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
     if (session.title === 'New chat' && !threadId) nameSession(session);
     afterTurn(session, threadId);
     return saved;
+  });
+}
+
+// Asks the person (through the UI) to approve an action. Resolves to
+// 'once' | 'always' | 'deny'; stopping the turn counts as deny.
+function askApproval(req, ui, signal) {
+  if (!ui.onApproval) return Promise.resolve('deny');
+  if (signal && signal.aborted) return Promise.resolve('deny');
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (d) => { if (!done) { done = true; resolve(d); } };
+    if (signal) signal.addEventListener('abort', () => finish('deny'), { once: true });
+    ui.onApproval(req, finish);
   });
 }
 

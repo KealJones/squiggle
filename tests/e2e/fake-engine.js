@@ -27,6 +27,8 @@ export async function conversation(cfg) {
 export async function respond(conv, input, { onText } = {}) {
   log.push({ type: 'respond', input });
   if (typeof input === 'string') {
+    const push = input.match(/push (?:the )?(\S+) branch/i);
+    if (push) return { text: '', thinking: '', toolCalls: [{ type: 'function', function: { name: 'git_push', arguments: { repo: 'app' } } }] };
     const url = (input.match(/https?:\/\/\S+/) || [])[0];
     if (url) return { text: 'Let me read that.', thinking: '', toolCalls: [{ type: 'function', function: { name: 'fetch_url', arguments: { url } } }] };
     const t = 'Plain answer to: ' + input;
@@ -34,6 +36,12 @@ export async function respond(conv, input, { onText } = {}) {
     return { text: t, thinking: '', toolCalls: [] };
   }
   const names = input.map(m => m.content[0].name);
+  if (names.includes('git_push')) {
+    const r = input[0].content[0].response;
+    const t = r.ok ? `Pushed ${r.branch}.` : `Push failed: ${r.error}`;
+    onText && onText(t);
+    return { text: t, thinking: '', toolCalls: [] };
+  }
   if (names.includes('fetch_url')) {
     return { text: '', thinking: '', toolCalls: [{ type: 'function', function: { name: 'remember', arguments: { subject: 'Keal', relation: 'is reading about', object: 'wrangler assets' } } }] };
   }

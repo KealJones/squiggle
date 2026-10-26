@@ -13,6 +13,7 @@ const shotsDir = process.argv.includes('--shots') ? process.argv[process.argv.in
 const root = makeGitRoot();
 const stateRepo = makeRepo(root, 'tester', 'state', { 'README.md': '# state\n' });
 const appRepo = makeRepo(root, 'tester', 'app', { 'README.md': '# app\n', 'src/index.js': 'console.log("hi")\n' });
+git(appRepo, 'branch', 'release', 'main');
 const { appUrl, close } = await start(root);
 const browser = await chromium.launch();
 const results = [];
@@ -158,37 +159,82 @@ await check('push race: a push from another device in between is rebased, not lo
   assert.match(files, /home\/b\.txt/);
 });
 
-await check('agent git tools: clone, guarded commit, agent/ branch push', async () => {
+await check('agent git tools: agent/ pushes freely; other branches need approval', async () => {
   const r = await A.page.evaluate(async () => {
-    const run = async (name, args) => (await T.tools.runTool({ function: { name, arguments: args } }, { session: T.sessions.list()[0] })).model;
-    const out = {};
+    const calls = [];
+    const ctx = (decision) => ({ session: T.sessions.list()[0], approve: decision && (async (req) => { calls.push(req); if (decision === 'throw') throw new Error('should not ask'); return decision; }) });
+    const run = async (name, args, decision) => (await T.tools.runTool({ function: { name, arguments: args } }, ctx(decision))).model;
+    const grants = await import('/src/grants.js');
+    await grants.load();
+    const out = { calls };
     out.clone = await run('git_clone', { repo: 'tester/app' });
     out.write = await run('write_file', { path: '/repos/app/src/index.js', content: 'console.log("changed")\n' });
-    out.commitMain = await run('git_commit', { repo: 'app', message: 'should fail' });
     out.branch = await run('git_branch', { repo: 'app', name: 'Fix Greeting' });
     out.status = await run('git_status', { repo: 'app' });
     out.commit = await run('git_commit', { repo: 'app', message: 'Change greeting' });
-    out.push = await run('git_push', { repo: 'app' });
-    // Even if HEAD is moved to main by hand, push stays blocked.
-    await T.gitm.git.checkout({ fs: T.gitm.fs, dir: '/repos/app', ref: 'main', force: true });
-    out.pushMain = await run('git_push', { repo: 'app' });
+    out.push = await run('git_push', { repo: 'app' }, 'throw');               // agent/: no prompt
+    out.toMain = await run('git_branch', { repo: 'app', name: 'main' });       // switch to existing
+    await run('write_file', { path: '/repos/app/NOTES.md', content: 'one\n' });
+    out.commitMain = await run('git_commit', { repo: 'app', message: 'Add notes' });
+    out.noApprover = await run('git_push', { repo: 'app' });                  // nobody to ask
+    out.denied = await run('git_push', { repo: 'app' }, 'deny');
+    out.once = await run('git_push', { repo: 'app' }, 'once');
+    out.grantsAfterOnce = grants.list().length;
+    await run('write_file', { path: '/repos/app/NOTES.md', content: 'two\n' });
+    await run('git_commit', { repo: 'app', message: 'More notes' });
+    out.always = await run('git_push', { repo: 'app' }, 'always');
+    await run('write_file', { path: '/repos/app/NOTES.md', content: 'three\n' });
+    await run('git_commit', { repo: 'app', message: 'Even more notes' });
+    out.granted = await run('git_push', { repo: 'app' }, 'throw');            // remembered: no prompt
+    out.grants = grants.list().map(g => `${g.repo}:${g.branch}`);
+    // Workflow files: asked every time, even on agent/ branches or with a grant.
+    await run('git_branch', { repo: 'app', name: 'ci-tweak' });
+    await run('write_file', { path: '/repos/app/.github/workflows/ci.yml', content: 'on: push\n' });
+    await run('git_commit', { repo: 'app', message: 'Add CI' });
+    out.wfAgent = await run('git_push', { repo: 'app' }, 'always');
+    await run('git_branch', { repo: 'app', name: 'main' });
+    await run('write_file', { path: '/repos/app/.github/workflows/deploy.yml', content: 'on: push\n' });
+    await run('git_commit', { repo: 'app', message: 'Add deploy' });
+    out.wfMain = await run('git_push', { repo: 'app' }, 'deny');
+    out.grantsAfterWf = grants.list().map(g => `${g.repo}:${g.branch}`);
     out.escape = await run('read_file', { path: '/repos/app/../../state/.squiggle.json' });
     out.gitdir = await run('read_file', { path: '/repos/app/.git/config' });
     out.storageClone = await run('git_clone', { repo: 'tester/state' });
     return out;
   });
   assert.equal(r.clone.ok, true, JSON.stringify(r.clone));
-  assert.match(r.commitMain.error, /not an agent branch/);
   assert.equal(r.branch.branch, 'agent/fix-greeting');
   assert.deepEqual(r.status.changes, ['M src/index.js']);
   assert.equal(r.commit.ok, true);
   assert.equal(r.push.ok, true, JSON.stringify(r.push));
-  assert.match(r.pushMain.error, /not an agent branch/);
+  assert.equal(r.toMain.branch, 'main');
+  assert.equal(r.commitMain.ok, true, 'committing on main is local and allowed');
+  assert.match(r.noApprover.error, /needs the user's approval/);
+  assert.match(r.denied.error, /did not allow/);
+  assert.equal(r.once.ok, true, JSON.stringify(r.once));
+  assert.equal(r.grantsAfterOnce, 0, '"once" saves nothing');
+  assert.equal(r.always.ok, true);
+  assert.equal(r.granted.ok, true, JSON.stringify(r.granted));
+  assert.deepEqual(r.grants, ['tester/app:main']);
+  assert.equal(r.calls.length, 5, 'asked for deny, once, always, and both workflow pushes');
+  assert.deepEqual(r.calls[3].workflowFiles, ['.github/workflows/ci.yml']);
+  assert.equal(r.calls[3].branch, 'agent/ci-tweak');
+  assert.deepEqual(r.calls[3].commits.map(c => c.message), ['Add CI'], 'new branch: only commits GitHub lacks');
+  assert.equal(r.wfAgent.ok, true);
+  assert.deepEqual(r.calls[4].workflowFiles, ['.github/workflows/deploy.yml']);
+  assert.match(r.wfMain.error, /did not allow/, 'grant for main does not cover workflow changes');
+  assert.deepEqual(r.grantsAfterWf, ['tester/app:main'], '"always" on a workflow push is not remembered');
+  assert.deepEqual(r.calls[1].commits.map(c => c.message), ['Add notes']);
+  assert.equal(r.calls[0].branch, 'main');
+  assert.equal(r.calls[0].repo, 'tester/app');
   assert.ok(r.escape.error, 'path escape blocked');
   assert.ok(r.gitdir.error, '.git access blocked');
   assert.match(r.storageClone.error, /storage repo/);
   assert.equal(git(appRepo, 'show', 'agent/fix-greeting:src/index.js'), 'console.log("changed")');
+  assert.equal(git(appRepo, 'show', 'main:NOTES.md'), 'three');
   assert.equal(git(appRepo, 'show', 'main:src/index.js'), 'console.log("hi")');
+  // The grant lives in the storage repo, so it applies on other devices too.
+  assert.match(git(stateRepo, 'show', 'main:settings/push-grants.jsonl'), /"branch":"main"/);
 });
 
 await check('fetch_url wraps page text as untrusted and strips scripts', async () => {
@@ -284,9 +330,32 @@ await check('a full agent turn through the UI (scripted model): tools, untrusted
   assert.equal(r.trail.length, 2);
   if (shotsDir) await D.page.screenshot({ path: `${shotsDir}/agent-turn.png` });
 
+  // Permission card for a non-agent branch, clicked in the UI.
+  await D.page.evaluate(async () => {
+    const tools = await import('/src/tools.js');
+    const sessions = await import('/src/sessions.js');
+    const run = async (name, args) => (await tools.runTool({ function: { name, arguments: args } }, { session: sessions.list()[0] })).model;
+    await run('git_clone', { repo: 'tester/app' });
+    await run('git_branch', { repo: 'app', name: 'release' });
+    await run('write_file', { path: '/repos/app/CHANGELOG.md', content: 'v1\n' });
+    await run('git_commit', { repo: 'app', message: 'Changelog for v1' });
+  });
+  await D.page.fill('#input', 'Please push the release branch');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForSelector('.approval button', { timeout: 15000 });
+  const cardText = await D.page.textContent('.approval');
+  assert.match(cardText, /Push to release in tester\/app\?/);
+  assert.match(cardText, /Changelog for v1/);
+  if (shotsDir) await D.page.screenshot({ path: `${shotsDir}/agent-approval.png` });
+  await D.page.click('.approval button:has-text("Allow once")');
+  await D.page.waitForFunction(() => /Pushed release\./.test(document.querySelector('#messages-inner').textContent), null, { timeout: 15000 });
+  assert.equal(git(appRepo, 'show', 'release:CHANGELOG.md'), 'v1');
+  const settled = await D.page.evaluate(() => [...document.querySelectorAll('.tool-trail .tool')].map(e => e.textContent.trim()).pop());
+  assert.match(settled, /pushed release \(app\) \(allowed once\)/);
+
   // Reply in a thread on the user's message.
-  await D.page.hover('.msg.user');
-  await D.page.click('.msg.user [aria-label="Reply in thread"]');
+  await D.page.hover('.msg.user >> nth=0');
+  await D.page.click('.msg.user >> nth=0 >> [aria-label="Reply in thread"]');
   await D.page.fill('#drawer textarea', 'Is that page safe?');
   await D.page.press('#drawer textarea', 'Enter');
   await D.page.waitForFunction(() => /Plain answer to: Is that page safe/.test(document.querySelector('#thread-messages')?.textContent || ''), null, { timeout: 15000 });
@@ -300,7 +369,7 @@ await check('a full agent turn through the UI (scripted model): tools, untrusted
     return { summary: th.summary, mainCount: sessions.lineMessages(s).length, threadSystem: last.system, threadHistory: last.messages.map(m => m.role + ':' + m.content.slice(0, 40)), link: document.querySelector('.thread-link')?.textContent };
   });
   assert.equal(t.summary, 'Confirmed the page is safe to ignore.');
-  assert.equal(t.mainCount, 2, 'thread replies stay out of the main line');
+  assert.equal(t.mainCount, 4, 'thread replies stay out of the main line');
   assert.match(t.threadSystem, /side thread/);
   assert.match(t.threadHistory[0], /^user:What does/);
   assert.match(t.link, /2 replies.*Confirmed the page is safe/);

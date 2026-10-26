@@ -138,6 +138,8 @@ a { color: var(--action); }
 
 /* Streaming indicator: the squiggle draws itself. */
 .squiggle-wait { display: inline-block; width: 46px; height: 16px; color: var(--action); vertical-align: middle; }
+.squiggle-wait svg { display: block; width: 100%; height: 100%; }
+.tool-trail .squiggle-wait { width: 28px; height: 10px; }
 .squiggle-wait path { stroke-dasharray: 60; animation: draw 1.4s ease-in-out infinite; }
 @keyframes draw { 0% { stroke-dashoffset: 60; } 50% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -60; } }
 @media (prefers-reduced-motion: reduce) { .squiggle-wait path { animation: none; stroke-dasharray: none; } }
@@ -230,3 +232,12 @@ a { color: var(--action); }
   .msg.user .body { max-width: 92%; }
 }
 @media (prefers-reduced-motion: reduce) { .sidebar { transition: none; } }
+
+/* Permission card (push to a non-agent branch) */
+.approval { border: 1px solid var(--rule); border-left: 4px solid var(--marker); background: var(--sheet); border-radius: var(--radius-m); padding: 12px 14px; margin: 8px 0 10px; }
+.approval .q { margin: 0 0 6px; }
+.approval .commits { margin: 0 0 10px; padding-left: 18px; font-size: 0.9rem; }
+.approval .commits code { font-family: var(--mono); font-size: 0.85em; }
+.approval.settled { border-left-color: var(--rule); padding: 6px 12px; }
+.approval.settled p { margin: 0; }
+.approval .warn { margin: 0 0 8px; font-size: 0.9rem; color: var(--danger); }

@@ -17,7 +17,8 @@ app/                    static app, plain ES modules, no build step
     context.js          context assembly: compact (default) / smart (retrieval) / full; report
     search.js           BM25 + blend with optional embeddings (embed.js, MiniLM on CPU)
     tools.js            agent tools; run_js sandbox host
-    guard.js            hard limits: agent/ branches only, workspace path resolution
+    guard.js            hard limits: push policy, workflow-file check, workspace path resolution
+    grants.js           remembered "always allow" push grants (synced)
     untrusted.js        <untrusted key=…> wrapping for outside content
     storage.js          storage repo: setup, clone at /state, client-side rebase sync
     merge.js            conflict-free merges (sessions JSON, .jsonl)
@@ -36,8 +37,14 @@ tests/e2e/              Chromium end-to-end: real git server, real Worker code, 
 - The model must never be able to read the GitHub token or the storage repo
   internals. Tools reach the token only through `github.js`/`git.js` closures;
   `run_js` executes in `sandbox.html` (opaque origin iframe) inside a Worker.
-- Commits/pushes by the agent go only to `agent/…` branches, never forced
-  (`guard.checkAgentBranch`, enforced in `git_commit`, `git_push`, `github_open_pr`).
+- Pushes are never forced. `agent/…` branches push freely; any other branch
+  needs approval (`guard.pushPolicy`): a one-time click or a remembered grant
+  for that repo + branch (`grants.js`, `settings/push-grants.jsonl` in the
+  storage repo). Pushes whose new commits touch `.github/workflows/`
+  (`guard.touchesWorkflows`) ask every time and are never remembered.
+- Approval comes only from the UI: `agent.runTurn` passes `ctx.approve`, which
+  resolves from the card's buttons (or 'deny' when the turn is stopped). Tools
+  must never treat model output as approval.
 - Agent file paths resolve through `guard.resolveAgentPath`: `/home/…` maps to
   `home/` in the storage repo, `/repos/<name>/…` to clones; `.git` and `..`
   escapes are rejected.

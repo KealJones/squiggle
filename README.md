@@ -29,7 +29,9 @@ aren't allowed to make directly.
 
 These are enforced in code, not just asked of the model:
 
-- **The agent can only commit and push to `agent/…` branches.** Never `main`, never a force-push. Protect `main` on GitHub too (below) as a backstop.
+- **Pushes outside the agent's own branches need your OK.** The agent pushes `agent/…` branches freely. Pushing any other branch (like `main`) shows a card in the chat with the commits and **Allow once / Always allow / Don't allow**. "Always allow" applies to that one branch in that one repo, syncs to your devices, and can be revoked in Settings. The decision only ever comes from your click.
+- **Workflow changes always ask.** A push that changes `.github/workflows/` files asks every time, on any branch, even with "Always allow", because workflows run code with the repo's secrets.
+- **Never a force-push.** History on GitHub is never rewritten.
 - **The model never sees your GitHub token.** Model-written JavaScript runs in a sandboxed frame and worker with no access to the app's storage, token or sessions, and is killed if it runs too long.
 - **Outside content is labelled as data.** Web pages, repo files and tool output reach the model wrapped in `<untrusted key="…">` tags with a per-session random key, plus a rule never to follow instructions inside them. This makes prompt injection much less likely but can't rule it out, which is why the limits above don't depend on the model behaving.
 - **The storage repo must be private.** Setup refuses public repos.
@@ -49,11 +51,12 @@ Go to **GitHub → Settings → Developer settings → GitHub Apps → New GitHu
 - **Expire user authorization tokens**: leave checked (Squiggle refreshes them).
 - **Webhook → Active**: ❌ unchecked.
 - **Repository permissions**:
-  - Contents: **Read and write**
-  - Pull requests: **Read and write**
+  - Contents: **Read and write** (clone, commit, push)
+  - Pull requests: **Read and write** (open PRs)
+  - Actions: **Read and write** (start background jobs and read their results; used by scheduled jobs, coming soon)
+  - Workflows: **Read and write** (write the job files in `.github/workflows/`; every push that changes a workflow file still asks you first)
   - Metadata: Read-only (set automatically)
 - **Repository creation** (if your GitHub shows this permission): **Read and write**. It lets setup create your storage repo for you; without it, setup opens a pre-filled "new private repo" page instead.
-- **Workflows** (optional): **Read and write** only if you want the agent to be able to change files in `.github/workflows/`. Without it, GitHub rejects any push that touches those files, which is a sensible default.
 - **Where can this GitHub App be installed?**
   - **Only on this account** if the agent will only work on your personal repos.
   - **Any account** if you also want it on repos in a GitHub organization. The app still isn't listed anywhere; only people with the link can install it, and an org owner has to approve installing it on the org.
@@ -100,9 +103,9 @@ The same GitHub App handles everything: your storage repo and every repo the age
 - **Organization repos:** install the app on the organization too (needs "Any account" in step 1, plus an org owner's approval).
 - **Anyone's public repos:** the agent can clone and read them without installing anything. It can't push to repos you don't have write access to.
 
-### 4. (Recommended) Protect `main` in your work repos
+### 4. (Optional) Protect `main` on GitHub
 
-In each repo the agent works on: **Settings → Rules → Rulesets → New branch ruleset**, target the default branch, enable **Restrict updates** (or "Require a pull request before merging"). The agent already can't push to `main`; this makes GitHub enforce it too.
+Optional backstop. In a repo where you never want direct pushes to `main` (even ones you approve in Squiggle): **Settings → Rules → Rulesets → New branch ruleset**, target the default branch, and enable **Require a pull request before merging**.
 
 ## What goes where
 
