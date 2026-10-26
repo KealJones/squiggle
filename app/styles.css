@@ -74,10 +74,29 @@ a { color: var(--action); }
   display: inline;
   color: var(--ink);
 }
-:root[data-theme="dark"] .session-list li button[aria-current="true"] .t { color: #1c2340; background: linear-gradient(transparent 10%, var(--marker) 10%, var(--marker) 94%, transparent 94%); }
-/* On dark backgrounds the marker covers the whole word, so dark ink stays readable. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .session-list li button[aria-current="true"] .t { color: #1c2340; background: linear-gradient(transparent 10%, var(--marker) 10%, var(--marker) 94%, transparent 94%); }
+/* Dark mode: the same stripe as light mode, and the text itself changes
+   colour at the stripe's edges: light above and below it, dark ink where it
+   crosses the yellow. Browsers that can't clip a background to text keep
+   the stripe with plain light text. */
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  :root[data-theme="dark"] .session-list li button[aria-current="true"] .t {
+    background-image:
+      linear-gradient(var(--ink) 62%, #1c2340 62%, #1c2340 92%, var(--ink) 92%),
+      linear-gradient(transparent 62%, var(--marker) 62%, var(--marker) 92%, transparent 92%);
+    -webkit-background-clip: text, border-box;
+    background-clip: text, border-box;
+    -webkit-text-fill-color: transparent;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .session-list li button[aria-current="true"] .t {
+      background-image:
+        linear-gradient(var(--ink) 62%, #1c2340 62%, #1c2340 92%, var(--ink) 92%),
+        linear-gradient(transparent 62%, var(--marker) 62%, var(--marker) 92%, transparent 92%);
+      -webkit-background-clip: text, border-box;
+      background-clip: text, border-box;
+      -webkit-text-fill-color: transparent;
+    }
+  }
 }
 .side-nav { display: flex; gap: 2px; padding: 8px; border-top: 1px solid var(--rule); }
 .side-nav button { flex: 1; }
