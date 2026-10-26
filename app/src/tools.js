@@ -9,7 +9,8 @@ import { gh, API_BASE, relayConfig } from './github.js';
 import * as storage from './storage.js';
 import * as memory from './memory.js';
 import * as sessions from './sessions.js';
-import { resolveAgentPath, agentPath, checkAgentBranch, agentBranchName, parseRepo } from './guard.js';
+import { resolveAgentPath, agentPath, checkBranch, pushPolicy, touchesWorkflows, agentBranchName, parseRepo, AGENT_BRANCH_PREFIX } from './guard.js';
+import * as grants from './grants.js';
 import { wrapUntrusted } from './untrusted.js';
 import { truncate } from './util.js';
 import { bm25 } from './search.js';
@@ -58,6 +59,45 @@ async function originOf(dir) {
   const o = remotes.find(r => r.remote === 'origin');
   const m = o && o.url.match(/github\.com\/([^/]+)\/([^/]+?)(\.git)?$/);
   return m ? { owner: m[1], name: m[2] } : null;
+}
+
+// Commits on the local branch that GitHub doesn't have yet (for the approval card).
+async function commitsAhead(dir, branch) {
+  const remote = await git.resolveRef({ fs, dir, ref: `refs/remotes/origin/${branch}` }).catch(() => null);
+  // Commits GitHub already has: the branch's own remote tip, or for a new
+  // branch, anything on the other remote branches.
+  const known = new Set(remote ? [remote] : []);
+  if (!remote) {
+    for (const b of await git.listBranches({ fs, dir, remote: 'origin' }).catch(() => [])) {
+      for (const c of await git.log({ fs, dir, ref: `refs/remotes/origin/${b}`, depth: 200 }).catch(() => [])) known.add(c.oid);
+    }
+  }
+  const log = await git.log({ fs, dir, ref: branch, depth: 30 }).catch(() => []);
+  const out = [];
+  for (const c of log) {
+    if (known.has(c.oid)) break;
+    out.push({ oid: c.oid, parent: c.commit.parent[0] || null, message: c.commit.message.split('\n')[0].slice(0, 120) });
+  }
+  return out;
+}
+
+// Files changed by those commits (each against its first parent).
+async function changedPaths(dir, commits) {
+  const paths = new Set();
+  for (const c of commits) {
+    const trees = c.parent ? [git.TREE({ ref: c.parent }), git.TREE({ ref: c.oid })] : [git.TREE({ ref: c.oid })];
+    await git.walk({
+      fs, dir, trees,
+      map: async (filepath, [a, b]) => {
+        if (filepath === '.') return;
+        if (!c.parent) { if ((await a.type()) === 'blob') paths.add(filepath); return; }
+        const at = a && await a.type(), bt = b && await b.type();
+        if (at === 'tree' || bt === 'tree') return;
+        if ((a && await a.oid()) !== (b && await b.oid())) paths.add(filepath);
+      },
+    });
+  }
+  return [...paths];
 }
 
 // ── Sandboxed JavaScript ──────────────────────────────────────────────────
@@ -198,12 +238,23 @@ export const TOOLS = [
     },
   },
   {
-    spec: { name: 'git_branch', description: 'Create (or switch to) a working branch. Names are always prefixed with "agent/" — you can only commit and push on agent/ branches. Uncommitted changes carry over.', parameters: S({ repo: str('Folder name under /repos'), name: str('Short branch name, e.g. "fix-login"'), from: str('Branch or commit to start from (default: current)') }, ['repo', 'name']) },
+    spec: { name: 'git_branch', description: 'Switch to a branch, or start a new one. Pass an existing branch name (e.g. "main") to switch to it. A new branch gets the "agent/" prefix; you can push agent/ branches freely, while pushing any other branch asks the user first. Uncommitted changes carry over to a new branch.', parameters: S({ repo: str('Folder name under /repos'), name: str('Existing branch, or a short name for a new one, e.g. "fix-login"'), from: str('For a new branch: branch or commit to start from (default: current)') }, ['repo', 'name']) },
     async run({ repo, name, from }) {
       const dir = await repoDir(repo);
-      const branch = agentBranchName(name);
-      const branches = await git.listBranches({ fs, dir });
-      if (!branches.includes(branch)) {
+      const raw = String(name || '').trim();
+      const local = await git.listBranches({ fs, dir });
+      const remote = await git.listBranches({ fs, dir, remote: 'origin' }).catch(() => []);
+      if (raw && (local.includes(raw) || remote.includes(raw))) {
+        if (!local.includes(raw)) {
+          const oid = await git.resolveRef({ fs, dir, ref: `refs/remotes/origin/${raw}` });
+          await git.branch({ fs, dir, ref: raw, object: oid });
+        }
+        try { await git.checkout({ fs, dir, ref: raw }); }
+        catch (e) { return { model: { error: `Can't switch to ${raw}: uncommitted changes would be overwritten. Commit them first (or start a new branch to keep them). (${e.message})` } }; }
+        return { model: { ok: true, branch: raw, existing: true }, label: `switched to ${raw} in ${repo}` };
+      }
+      const branch = agentBranchName(raw);
+      if (!local.includes(branch)) {
         const start = from ? await git.resolveRef({ fs, dir, ref: from }).catch(() => git.resolveRef({ fs, dir, ref: `refs/remotes/origin/${from}` })) : undefined;
         await git.branch({ fs, dir, ref: branch, object: start, checkout: false });
       }
@@ -214,10 +265,10 @@ export const TOOLS = [
     },
   },
   {
-    spec: { name: 'git_commit', description: 'Commit all changes in a repo (only on an agent/ branch).', parameters: S({ repo: str('Folder name under /repos'), message: str('Commit message') }, ['repo', 'message']) },
+    spec: { name: 'git_commit', description: 'Commit all changes in a repo on the current branch.', parameters: S({ repo: str('Folder name under /repos'), message: str('Commit message') }, ['repo', 'message']) },
     async run({ repo, message }) {
       const dir = await repoDir(repo);
-      const problem = checkAgentBranch(await currentBranch(dir));
+      const problem = checkBranch(await currentBranch(dir));
       if (problem) return { model: { error: problem } };
       const n = await stageAll(dir);
       if (!n) return { model: { ok: false, error: 'Nothing to commit.' } };
@@ -226,21 +277,38 @@ export const TOOLS = [
     },
   },
   {
-    spec: { name: 'git_push', description: 'Push the current agent/ branch to GitHub. Pushing to main or any non-agent branch is not allowed.', parameters: S({ repo: str('Folder name under /repos') }, ['repo']) },
-    async run({ repo }) {
+    spec: { name: 'git_push', description: `Push the current branch to GitHub (never forced). ${AGENT_BRANCH_PREFIX} branches push right away; any other branch (like main) asks the user for permission first.`, parameters: S({ repo: str('Folder name under /repos') }, ['repo']) },
+    async run({ repo }, ctx = {}) {
       const dir = await repoDir(repo);
       const branch = await currentBranch(dir);
-      const problem = checkAgentBranch(branch);
+      const problem = checkBranch(branch);
       if (problem) return { model: { error: problem } };
-      // Never force; the remote ref must match the local branch name exactly.
       const o = await originOf(dir);
       const where = o ? `${o.owner}/${o.name}` : repo;
+
+      // Pushes outside agent/ need the person's OK. The decision comes from
+      // the UI (ctx.approve), never from anything the model says.
+      const commits = await commitsAhead(dir, branch);
+      const workflowFiles = touchesWorkflows(await changedPaths(dir, commits));
+      let approval = workflowFiles.length ? 'ask' : pushPolicy(where, branch, grants.keys());
+      if (approval === 'ask') {
+        if (typeof ctx.approve !== 'function') return { model: { error: `Pushing to ${branch} needs the user's approval, and no one is here to approve it. Push to an ${AGENT_BRANCH_PREFIX} branch instead, or ask the user.` } };
+        const decision = await ctx.approve({ kind: 'push', repo: where, branch, commits: commits.map(c => ({ oid: c.oid.slice(0, 7), message: c.message })), workflowFiles });
+        if (decision === 'always' && !workflowFiles.length) { await grants.add(where, branch); approval = 'always'; }
+        else if (decision === 'always') approval = 'once'; // never remembered for workflow changes
+        else if (decision === 'once') approval = 'once';
+        else return { model: { error: `The user did not allow pushing to ${branch} in ${where}. Don't try again; ask them how they'd like to proceed (for example, push to an ${AGENT_BRANCH_PREFIX} branch and open a pull request).` }, label: `push to ${branch} not allowed` };
+      }
+
       let r;
       try {
         r = await git.push({ fs, dir, remote: 'origin', ref: branch, remoteRef: branch, force: false, ...net() });
       } catch (e) {
         if (/40[13]|HttpError|cancel/i.test(String(e && (e.message || e.code)))) {
           return { model: { error: `GitHub refused the push to ${where}. Either the user hasn't given Squiggle access to this repo (they can add it in Settings → Manage repo access) or they don't have write access to it. Tell the user; don't retry.` } };
+        }
+        if (/fast-forward|PushRejected/i.test(String(e && (e.message || e.code)))) {
+          return { model: { error: `GitHub rejected the push: ${branch} has new commits on GitHub. Run git_pull first. (Squiggle never force-pushes.)` } };
         }
         throw e;
       }
@@ -249,7 +317,8 @@ export const TOOLS = [
         const hint = /workflow/i.test(detail) ? ' The commit changes a file in .github/workflows/, which needs the optional Workflows permission on the GitHub App. Tell the user.' : '';
         return { model: { error: 'Push rejected: ' + detail + hint } };
       }
-      return { model: { ok: true, branch, compare_url: o ? `https://github.com/${o.owner}/${o.name}/compare/${encodeURIComponent(branch)}` : null }, label: `pushed ${branch} (${repo})` };
+      const how = approval === 'once' ? ' (allowed once)' : approval === 'always' ? ' (always allowed)' : approval === 'granted' ? ' (allowed)' : '';
+      return { model: { ok: true, branch, compare_url: o && branch.startsWith(AGENT_BRANCH_PREFIX) ? `https://github.com/${o.owner}/${o.name}/compare/${encodeURIComponent(branch)}` : null }, label: `pushed ${branch} (${repo})${how}` };
     },
   },
   {
@@ -276,11 +345,11 @@ export const TOOLS = [
     },
   },
   {
-    spec: { name: 'github_open_pr', description: 'Open a pull request from a pushed agent/ branch.', parameters: S({ repo: str('Folder name under /repos'), title: str('PR title'), body: str('PR description'), base: str('Target branch (default: repo default)') }, ['repo', 'title']) },
+    spec: { name: 'github_open_pr', description: 'Open a pull request from the current (pushed) branch.', parameters: S({ repo: str('Folder name under /repos'), title: str('PR title'), body: str('PR description'), base: str('Target branch (default: repo default)') }, ['repo', 'title']) },
     async run({ repo, title, body = '', base }) {
       const dir = await repoDir(repo);
       const branch = await currentBranch(dir);
-      const problem = checkAgentBranch(branch);
+      const problem = checkBranch(branch);
       if (problem) return { model: { error: problem } };
       const o = await originOf(dir);
       const info = await gh(`/repos/${o.owner}/${o.name}`);

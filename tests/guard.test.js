@@ -1,14 +1,26 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkAgentBranch, agentBranchName, resolveAgentPath, agentPath, parseRepo } from '../app/src/guard.js';
+import { checkBranch, pushPolicy, grantKey, agentBranchName, resolveAgentPath, agentPath, parseRepo } from '../app/src/guard.js';
 
-test('agent may only commit/push agent/ branches', () => {
-  assert.equal(checkAgentBranch('agent/fix-login'), null);
-  assert.match(checkAgentBranch('main'), /not an agent branch/);
-  assert.match(checkAgentBranch('feature/agent/x'), /not an agent branch/);
-  assert.match(checkAgentBranch('agentx/foo'), /not an agent branch/);
-  assert.match(checkAgentBranch(null), /detached/);
-  assert.match(checkAgentBranch('agent/../main'), /valid/);
+test('push policy: agent/ is free, everything else asks unless always-allowed', () => {
+  const none = new Set();
+  assert.equal(pushPolicy('Keal/app', 'agent/fix-login', none), 'free');
+  assert.equal(pushPolicy('Keal/app', 'main', none), 'ask');
+  assert.equal(pushPolicy('Keal/app', 'feature/agent/x', none), 'ask');
+  assert.equal(pushPolicy('Keal/app', 'agentx/foo', none), 'ask');
+  const grants = new Set([grantKey('Keal/App', 'main')]);
+  assert.equal(pushPolicy('keal/app', 'main', grants), 'granted', 'repo match is case-insensitive');
+  assert.equal(pushPolicy('Keal/app', 'release', grants), 'ask', 'grant is per branch');
+  assert.equal(pushPolicy('Keal/other', 'main', grants), 'ask', 'grant is per repo');
+  assert.equal(pushPolicy('Keal/app', 'Main', grants), 'ask', 'branch names are exact');
+});
+
+test('branch checks reject detached HEAD and malformed names', () => {
+  assert.equal(checkBranch('main'), null);
+  assert.equal(checkBranch('agent/x'), null);
+  assert.match(checkBranch(null), /detached/);
+  assert.match(checkBranch('agent/../main'), /valid/);
+  assert.match(checkBranch('bad name'), /valid/);
 });
 
 test('branch names are normalized under agent/', () => {
@@ -18,7 +30,9 @@ test('branch names are normalized under agent/', () => {
   assert.equal(agentBranchName('x.lock'), 'agent/x-lock');
   assert.throws(() => agentBranchName('!!!'));
   for (const n of ['a b', '..', 'feat//x', '/lead', 'trail/']) {
-    assert.equal(checkAgentBranch(agentBranchName(n === '..' ? 'dots..here' : n)), null, n);
+    const b = agentBranchName(n === '..' ? 'dots..here' : n);
+    assert.equal(checkBranch(b), null, n);
+    assert.equal(pushPolicy('a/b', b, new Set()), 'free', n);
   }
 });
 
@@ -41,4 +55,9 @@ test('repo references', () => {
   assert.deepEqual(parseRepo('https://github.com/a/b.git'), { owner: 'a', name: 'b' });
   assert.throws(() => parseRepo('just-a-name'));
   assert.throws(() => parseRepo('https://evil.com/a/b'));
+});
+
+test('workflow file changes are detected', async () => {
+  const { touchesWorkflows } = await import('../app/src/guard.js');
+  assert.deepEqual(touchesWorkflows(['src/a.js', '.github/workflows/ci.yml', '.github/dependabot.yml', 'docs/.github/workflows/x.yml']), ['.github/workflows/ci.yml']);
 });

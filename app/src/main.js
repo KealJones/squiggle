@@ -4,6 +4,7 @@ import * as github from './github.js';
 import * as storage from './storage.js';
 import * as sessions from './sessions.js';
 import * as memory from './memory.js';
+import * as grants from './grants.js';
 import * as engine from './engine.js';
 import * as agent from './agent.js';
 import { loadEmbedder } from './embed.js';
@@ -81,7 +82,7 @@ async function startApp() {
   $('#setup-steps').hidden = true;
   $('#setup-body').replaceChildren(h('p', { class: 'muted' }, 'Opening your sessions… '), squiggleWait());
   await storage.open();
-  await Promise.all([sessions.loadAll(), memory.load()]);
+  await Promise.all([sessions.loadAll(), memory.load(), grants.load()]);
   wireApp();
   setSync();
   openSession(sessions.list()[0] || sessions.newSession());
@@ -312,6 +313,7 @@ function wireApp() {
     if (!changed.length) return;
     await sessions.reload(changed);
     await memory.reload(changed);
+    await grants.reload(changed);
     if (current && current.deleted) openSession(sessions.list()[0] || sessions.newSession());
   });
   memory.events.on('change', () => { if (drawerPanel === 'memory') renderMemoryPanel(); });
@@ -511,6 +513,13 @@ async function send(text, threadId) {
           trail.replaceChildren(toolTrail(liveTools));
           scrollDown(scroller);
         },
+        onApproval: (req, decide) => {
+          const card = approvalCard(req, (d) => decide(d));
+          controller.signal.addEventListener('abort', () => card.settle('deny', 'Stopped'), { once: true });
+          live.insertBefore(card, body);
+          scrollDown(scroller);
+          card.querySelector('button').focus({ preventScroll: true });
+        },
         onDone: (m) => { live.replaceWith(messageEl(m, { inThread: Boolean(threadId) })); if (!threadId) $('#chat-title').textContent = session.title; },
       },
     });
@@ -519,6 +528,34 @@ async function send(text, threadId) {
     controller = null;
     if (threadId) renderChat(); // refresh reply count on the parent
   }
+}
+
+// Permission card for actions outside the agent's own space (pushing to a
+// non-agent branch). The decision comes only from these buttons.
+function approvalCard(req, decide) {
+  const commits = req.commits || [];
+  const wf = req.workflowFiles || [];
+  const card = h('div', { class: 'approval', role: 'group', 'aria-label': 'Permission needed' },
+    h('p', { class: 'q' }, 'Push to ', h('strong', {}, req.branch), ' in ', h('strong', {}, req.repo), '?'),
+    wf.length ? h('p', { class: 'warn' }, `This changes GitHub Actions workflow ${wf.length === 1 ? 'file' : 'files'} (${wf.join(', ')}). Workflows run code on GitHub with this repo's secrets, so Squiggle asks every time.`) : '',
+    commits.length ? h('ul', { class: 'commits' }, commits.slice(0, 5).map(c => h('li', {}, h('code', {}, c.oid), ' ', c.message)),
+      commits.length > 5 ? h('li', { class: 'muted' }, `and ${commits.length - 5} more`) : '') : h('p', { class: 'muted' }, 'No new commits; this updates the branch on GitHub.'),
+  );
+  const row = h('div', { class: 'row' },
+    h('button', { class: 'btn primary', onclick: () => card.settle('once') }, 'Allow once'),
+    wf.length ? '' : h('button', { class: 'btn', onclick: () => card.settle('always') }, `Always allow ${req.branch}`),
+    h('button', { class: 'btn ghost', onclick: () => card.settle('deny') }, 'Don\'t allow'));
+  card.append(row);
+  let settled = false;
+  card.settle = (d, text) => {
+    if (settled) return;
+    settled = true;
+    decide(d);
+    const label = text || { once: 'Allowed once', always: `Always allowed for ${req.branch} in ${req.repo} (change in Settings)`, deny: 'Not allowed' }[d];
+    card.replaceChildren(h('p', { class: 'muted' }, `Push to ${req.branch}: ${label}.`));
+    card.classList.add('settled');
+  };
+  return card;
 }
 
 // ── Model ──────────────────────────────────────────────────────────────────
@@ -767,6 +804,14 @@ function renderSettingsPanel() {
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'Repo access'),
       h('span', { class: 'hint' }, 'The agent can work on repos you\'ve given Squiggle access to, and read any public repo.'),
       h('div', { class: 'row' }, h('button', { class: 'btn', onclick: async () => window.open(await github.installUrl(), '_blank', 'noopener') }, 'Manage repo access'))),
+
+    h('div', { class: 'field' }, h('span', { class: 'label' }, 'Push permissions'),
+      h('span', { class: 'hint' }, 'The agent pushes its own agent/ branches freely. Pushing any other branch asks first, unless you chose "Always allow" for it.'),
+      grants.list().length
+        ? h('ul', { class: 'fact-list' }, grants.list().map(g => h('li', {},
+            h('div', { class: 'fact' }, 'Always allow ', h('span', { class: 's' }, g.branch), ' in ', h('span', { class: 'o' }, g.repo)),
+            h('button', { class: 'btn ghost', onclick: async () => { await grants.revoke(g.id); renderSettingsPanel(); } }, 'Revoke'))))
+        : h('span', { class: 'muted' }, 'None yet.')),
 
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'This device'),
       h('div', { class: 'row' },
