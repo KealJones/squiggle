@@ -6,7 +6,8 @@
 // that cannot read IndexedDB.
 import { kv, sleep } from './util.js';
 
-export const API_BASE = new URL('api/', document.baseURI).href.replace(/\/$/, '');
+import { apiBase } from './config.js';
+export { apiBase };
 const REST = 'https://api.github.com';
 const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
@@ -17,12 +18,22 @@ let configCache = null;
 
 export async function relayConfig() {
   if (!configCache) {
-    const r = await fetch(API_BASE + '/config');
-    if (!r.ok) throw new Error(`Relay not reachable (${r.status}). Is the Worker deployed?`);
+    let r;
+    try { r = await fetch(apiBase() + '/config'); }
+    catch { throw relayError('Can\'t reach the relay.'); }
+    if (!r.ok) throw relayError(`The relay answered with an error (${r.status}).`);
     configCache = await r.json();
   }
   return configCache;
 }
+
+function relayError(msg) {
+  const e = new Error(`${msg} Check that the Squiggle relay is deployed and allows this site (ALLOWED_ORIGINS).`);
+  e.code = 'relay';
+  return e;
+}
+
+export function resetRelayConfig() { configCache = null; }
 
 export async function loadAuth() {
   auth = (await kv.get('auth')) || null;
@@ -32,7 +43,7 @@ export async function loadAuth() {
 export const isSignedIn = () => Boolean(auth);
 
 async function relayPost(path, body) {
-  const r = await fetch(API_BASE + path, {
+  const r = await fetch(apiBase() + path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {}),

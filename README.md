@@ -10,9 +10,9 @@ own**, so you can start something on your desktop and continue on your phone.
 The agent can also clone your repos, work on a branch, commit, push and open
 pull requests.
 
-There's no backend to run. The only server piece is a tiny Cloudflare Worker
-(free tier) that serves the app and relays the few GitHub requests browsers
-aren't allowed to make directly.
+There's no backend to run. The app is static files (GitHub Pages works), and
+the only server piece is a tiny Cloudflare Worker (free tier) that relays the
+few GitHub requests browsers aren't allowed to make directly.
 
 ## What it does
 
@@ -63,30 +63,58 @@ Go to **GitHub → Settings → Developer settings → GitHub Apps → New GitHu
 
 Create it, then note the **Client ID** and the **slug** (from the app's URL, `github.com/apps/<slug>`).
 
-### 2. Deploy the Worker
+### 2. Host it
+
+Squiggle has two parts: the **app** (static files) and a small **relay** Worker on Cloudflare. Pick one setup.
+
+#### Option A: app on GitHub Pages, relay on Cloudflare (recommended)
+
+**Deploy the relay** (once; again only if the relay code changes):
 
 ```bash
-git clone https://github.com/KealJones/squiggle && cd squiggle
+git clone https://github.com/<you>/squiggle && cd squiggle
 npm install
 ```
 
-Edit `wrangler.toml`:
+Edit `wrangler.relay.toml`:
 
 ```toml
-GITHUB_CLIENT_ID = "Iv23li…"        # from step 1
+GITHUB_CLIENT_ID = "Iv23li…"                    # from step 1
 GITHUB_APP_SLUG  = "squiggle-yourname"
+ALLOWED_ORIGINS  = "https://<you>.github.io"     # or your Pages custom domain, e.g. https://example.com
 ```
+
+```bash
+npx wrangler login
+npx wrangler deploy --config wrangler.relay.toml
+```
+
+Wrangler prints the relay's address, like `https://squiggle-relay.<you>.workers.dev`.
+
+**Publish the app.** In your copy of this repo on GitHub:
+
+1. **Settings → Pages → Source: GitHub Actions.**
+2. **Settings → Secrets and variables → Actions → Variables:** add `SQUIGGLE_RELAY_URL` set to the relay's address.
+3. Push to `main` (or run the **Deploy** workflow). The app appears at `https://<you>.github.io/squiggle/`, or `https://<your-domain>/squiggle/` if your Pages site has a custom domain. Use that as the GitHub App's Homepage URL.
+
+GitHub Pages on a private repo needs a paid plan; the code holds no secrets, so a public repo is fine (your data lives in your private storage repo).
+
+To have pushes redeploy the relay too, add a Cloudflare API token (**Edit Cloudflare Workers** template) as the `CLOUDFLARE_API_TOKEN` secret, your account id as `CLOUDFLARE_ACCOUNT_ID`, and the variables `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_SLUG` and (for a custom domain) `SQUIGGLE_APP_ORIGINS`. See `.github/workflows/deploy.yml`.
+
+#### Option B: everything on one Cloudflare Worker
+
+The Worker can serve the app too, so there's a single deploy and a single address. Edit `wrangler.toml` (client ID and slug as above), then:
 
 ```bash
 npx wrangler login
 npx wrangler deploy
 ```
 
-Wrangler prints your URL, like `https://squiggle.<you>.workers.dev`. Put it in the GitHub App's Homepage URL if you used a placeholder.
+The app is at the printed `https://squiggle.<you>.workers.dev`.
 
 ### 3. Open it
 
-Open the URL on your computer. Setup walks you through:
+Open the app's address on your computer. Setup walks you through:
 
 1. **Sign in with GitHub**: enter the code it shows on github.com.
 2. **Install the app** on your account, choosing which repos the agent may use: the ones you want it to work on (you can change this later). The storage repo gets added automatically if Squiggle creates it; if you'll use an existing repo for storage, include that one too.
@@ -126,6 +154,7 @@ npm test                    # unit tests (guards, sync merges, context, Worker)
 node tests/e2e/run.mjs      # end to end in headless Chromium: two-device sync
                             # against a real git server, git tools, sandbox, a
                             # full agent turn with a scripted model
+node tests/e2e/run.mjs --split   # same, with app and relay on separate origins (the Pages setup)
 npm run dev                 # local Worker + app at http://localhost:8787
 npm run vendor              # rebuild app/vendor/ after changing a library version
 ```

@@ -69,8 +69,10 @@ function gitBackend(root) {
   });
 }
 
-// Starts both servers; returns { appUrl, close }.
-export async function start(gitRoot, env = {}) {
+// Starts the servers; returns { appUrl, relayUrl, close }.
+// split: true serves the app and the relay on different origins with a
+// config.json pointing at the relay — the GitHub Pages setup.
+export async function start(gitRoot, env = {}, { split = false } = {}) {
   const backend = gitBackend(gitRoot);
   await new Promise(r => backend.listen(0, '127.0.0.1', r));
   const gitPort = backend.address().port;
@@ -84,16 +86,33 @@ export async function start(gitRoot, env = {}) {
   };
   const workerEnv = { GITHUB_CLIENT_ID: 'test-client', GITHUB_APP_SLUG: 'squiggle-test', ENABLE_FETCH: 'true', ALLOWED_ORIGINS: '', ...env };
 
+  // Runs the real Worker code for a Node request.
+  const relayHandler = async (req, res, u) => {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const body = chunks.length ? Buffer.concat(chunks) : undefined;
+    const wreq = new Request(u.href, { method: req.method, headers: req.headers, body: ['GET', 'HEAD'].includes(req.method) ? undefined : body, duplex: 'half' });
+    const wres = await worker.fetch(wreq, workerEnv);
+    res.writeHead(wres.status, Object.fromEntries(wres.headers));
+    res.end(Buffer.from(await wres.arrayBuffer()));
+  };
+
+  let relayUrl = null, relayServer = null;
+  if (split) {
+    relayServer = http.createServer((req, res) => relayHandler(req, res, new URL(req.url, `http://${req.headers.host}`)));
+    await new Promise(r => relayServer.listen(0, '127.0.0.1', r));
+    relayUrl = `http://localhost:${relayServer.address().port}`;
+  }
+
   const app = http.createServer(async (req, res) => {
     const u = new URL(req.url, `http://${req.headers.host}`);
-    if (u.pathname.startsWith('/api/')) {
-      const chunks = [];
-      for await (const c of req) chunks.push(c);
-      const body = chunks.length ? Buffer.concat(chunks) : undefined;
-      const wreq = new Request(u.href, { method: req.method, headers: req.headers, body: ['GET', 'HEAD'].includes(req.method) ? undefined : body, duplex: 'half' });
-      const wres = await worker.fetch(wreq, workerEnv);
-      res.writeHead(wres.status, Object.fromEntries(wres.headers));
-      res.end(Buffer.from(await wres.arrayBuffer()));
+    if (split && u.pathname === '/config.json') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ relayUrl }));
+      return;
+    }
+    if (!split && u.pathname.startsWith('/api/')) {
+      await relayHandler(req, res, u);
       return;
     }
     if (u.pathname.startsWith('/test-pages/')) {
@@ -104,11 +123,16 @@ export async function start(gitRoot, env = {}) {
     let p = normalize(join(APP_DIR, u.pathname === '/' ? 'index.html' : u.pathname));
     if (!p.startsWith(APP_DIR) || !existsSync(p) || statSync(p).isDirectory()) { res.writeHead(404); res.end(); return; }
     res.writeHead(200, { 'Content-Type': TYPES[extname(p)] || 'application/octet-stream' });
-    res.end(readFileSync(p));
+    let body = readFileSync(p);
+    // The real CSP allows https relays only; the local test relay is http.
+    if (split && p.endsWith('index.html')) body = String(body).replace("connect-src 'self' https:", `connect-src 'self' https: ${relayUrl}`);
+    res.end(body);
   });
   await new Promise(r => app.listen(0, '127.0.0.1', r));
   const appUrl = `http://127.0.0.1:${app.address().port}`;
-  return { appUrl, close: () => { app.close(); backend.close(); globalThis.fetch = realFetch; } };
+  // The relay must only answer the app's own origin.
+  if (split) workerEnv.ALLOWED_ORIGINS = appUrl;
+  return { appUrl, relayUrl, close: () => { app.close(); backend.close(); relayServer && relayServer.close(); globalThis.fetch = realFetch; } };
 }
 
 const TEST_PAGES = {

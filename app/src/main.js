@@ -1,6 +1,7 @@
 // Squiggle UI: setup, sessions, chat with threads, and side panels.
 import { marked, DOMPurify } from '../vendor/markdown.js';
 import * as github from './github.js';
+import { loadConfig, relayUrl, setRelayOverride } from './config.js';
 import * as storage from './storage.js';
 import * as sessions from './sessions.js';
 import * as memory from './memory.js';
@@ -67,6 +68,7 @@ boot().catch(e => fatal(e));
 
 async function boot() {
   loadSettings();
+  await loadConfig();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   await github.loadAuth();
   await storage.loadStorageConfig();
@@ -128,7 +130,9 @@ async function showSetup(step) {
 }
 
 async function setupSignIn(body) {
-  const cfg = await github.relayConfig();
+  let cfg;
+  try { cfg = await github.relayConfig(); }
+  catch (e) { if (e.code === 'relay') return setupRelay(body, e.message); throw e; }
   body.append(
     h('h2', {}, 'Your agent, on your devices'),
     h('p', {}, 'Squiggle runs an AI model on this device. Conversations, memory and files are saved to a private GitHub repo of yours, so you can pick up on any device.'),
@@ -158,6 +162,25 @@ async function setupSignIn(body) {
       body.append(h('p', { class: 'error' }, e.message), h('button', { class: 'btn', onclick: () => showSetup('signin') }, 'Start over'));
     }
   };
+}
+
+// Shown when the relay can't be reached (e.g. a GitHub Pages copy whose
+// config.json is missing or points somewhere wrong).
+function setupRelay(body, problem) {
+  const input = h('input', { type: 'text', value: relayUrl(), placeholder: 'https://squiggle-relay.you.workers.dev', spellcheck: 'false', 'aria-label': 'Relay address' });
+  const err = h('p', { class: 'error' }, problem);
+  const save = h('button', { class: 'btn primary' }, 'Connect');
+  save.onclick = async () => {
+    try { setRelayOverride(input.value); github.resetRelayConfig(); showSetup('signin'); }
+    catch (e) { err.textContent = e.message; }
+  };
+  body.append(
+    h('h2', {}, 'Connect to your relay'),
+    h('p', {}, 'Squiggle needs its relay (the small Cloudflare Worker from the README) to sign in to GitHub and sync. Enter its address.'),
+    h('div', { class: 'field' }, h('label', {}, 'Relay address'), input),
+    h('div', { class: 'row' }, save),
+    err,
+  );
 }
 
 async function setupInstall(body) {
@@ -804,6 +827,14 @@ function renderSettingsPanel() {
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'Repo access'),
       h('span', { class: 'hint' }, 'The agent can work on repos you\'ve given Squiggle access to, and read any public repo.'),
       h('div', { class: 'row' }, h('button', { class: 'btn', onclick: async () => window.open(await github.installUrl(), '_blank', 'noopener') }, 'Manage repo access'))),
+
+    h('div', { class: 'field' }, h('span', { class: 'label' }, 'Relay'),
+      h('span', {}, relayUrl() || 'Same site as the app'),
+      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: () => {
+        const v = prompt('Relay address (leave empty to use the deployed setting):', relayUrl());
+        if (v === null) return;
+        try { setRelayOverride(v); location.reload(); } catch (e) { alert(e.message); }
+      } }, 'Change'))),
 
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'Push permissions'),
       h('span', { class: 'hint' }, 'The agent pushes its own agent/ branches freely. Pushing any other branch asks first, unless you chose "Always allow" for it.'),

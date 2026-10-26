@@ -1,8 +1,11 @@
 # Squiggle — notes for engineers and coding agents
 
 A browser-only agent: Gemma 4 on WebGPU (LiteRT-LM), state synced through a
-private GitHub "storage repo", and a Cloudflare Worker that serves the app and
-relays GitHub requests browsers can't make (device-flow login, git smart-HTTP).
+private GitHub "storage repo", and a Cloudflare Worker that relays GitHub
+requests browsers can't make (device-flow login, git smart-HTTP). The app is
+static: either the Worker serves it (wrangler.toml, relay same-origin at /api)
+or GitHub Pages does (deploy.yml writes config.json with the relay URL;
+wrangler.relay.toml deploys a relay-only Worker that allows the Pages origin).
 
 ## Layout
 
@@ -26,6 +29,7 @@ app/                    static app, plain ES modules, no build step
     memory.js           fact graph (memory/facts.jsonl), recall with 1-hop expansion
     github.js           device flow, token refresh, REST helpers (token never leaves here)
     git.js              LightningFS + isomorphic-git wiring
+    config.js           relay address: config.json / per-device override / same-origin
     util.js             ids, kv (IndexedDB), emitter, mutex
 worker/index.js         relay + static assets (wrangler.toml)
 tests/*.test.js         unit tests (node --test)
@@ -74,6 +78,6 @@ A thread's context = main messages up to its parent + its own messages
 
 ## Verifying changes
 
-`npm test` and `node tests/e2e/run.mjs` (set `PLAYWRIGHT_BROWSERS_PATH` if
-needed). The e2e suite swaps `src/engine.js` for `tests/e2e/fake-engine.js`;
+`npm test`, `node tests/e2e/run.mjs` and `node tests/e2e/run.mjs --split`
+(app and relay on different origins; set `PLAYWRIGHT_BROWSERS_PATH` if needed). The e2e suite swaps `src/engine.js` for `tests/e2e/fake-engine.js`;
 real-model behaviour needs a WebGPU device and is checked by hand.

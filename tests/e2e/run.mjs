@@ -14,7 +14,9 @@ const root = makeGitRoot();
 const stateRepo = makeRepo(root, 'tester', 'state', { 'README.md': '# state\n' });
 const appRepo = makeRepo(root, 'tester', 'app', { 'README.md': '# app\n', 'src/index.js': 'console.log("hi")\n' });
 git(appRepo, 'branch', 'release', 'main');
-const { appUrl, close } = await start(root);
+const split = process.argv.includes('--split');
+const { appUrl, relayUrl, close } = await start(root, {}, { split });
+if (split) console.log(`split mode: app ${appUrl}, relay ${relayUrl} (GitHub Pages setup)`);
 const browser = await chromium.launch();
 const results = [];
 const check = async (name, fn) => {
@@ -269,6 +271,15 @@ await check('run_js sandbox cannot reach app data', async () => {
   assert.match(r.storage.result, /blocked/);
   assert.match(r.loop.error, /Timed out/);
   assert.equal(r.after.result, 'alive');
+});
+
+if (split) await check('split: app talks to a relay on another origin; other origins are refused', async () => {
+  const r = await A.page.evaluate(async () => (await import('/src/config.js')).apiBase());
+  assert.equal(r, relayUrl + '/api');
+  const evil = await fetch(relayUrl + '/api/config', { headers: { Origin: 'https://evil.example' } });
+  assert.equal(evil.status, 403);
+  const ok = await fetch(relayUrl + '/api/config', { headers: { Origin: appUrl } });
+  assert.equal(ok.headers.get('access-control-allow-origin'), appUrl);
 });
 
 await check('no page errors so far', async () => {

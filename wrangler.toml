@@ -13,8 +13,8 @@ html_handling = "none"
 
 [vars]
 # From your GitHub App's settings page (see README "Set up"):
-GITHUB_CLIENT_ID = ""
-GITHUB_APP_SLUG = ""
+GITHUB_CLIENT_ID = "Iv23liefG00Kw89snajP"
+GITHUB_APP_SLUG = "squiggle-github"
 # Lets the agent's fetch_url tool read pages that block browser requests.
 ENABLE_FETCH = "true"
 # Only needed if you also host the app somewhere else (comma-separated origins).
