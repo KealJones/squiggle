@@ -1,0 +1,372 @@
+// The agent's tools. Each tool: { spec (name, description, parameters), run(args, ctx) }.
+// run returns { model, label, observation? }:
+//   model        what the model sees (JSON; outside text is wrapped as untrusted)
+//   label        short line for the UI and for replaying history ("cloned owner/repo")
+//   observation  { source, title, text } kept on the session so smart context
+//                can retrieve it in later turns
+import { git, fs, pfs, net, remoteUrl, exists, isDir, writeFile, rmrf, walk, stageAll, statusLines, currentBranch, author, mkdirp } from './git.js';
+import { gh, API_BASE, relayConfig } from './github.js';
+import * as storage from './storage.js';
+import * as memory from './memory.js';
+import * as sessions from './sessions.js';
+import { resolveAgentPath, agentPath, checkAgentBranch, agentBranchName, parseRepo } from './guard.js';
+import { wrapUntrusted } from './untrusted.js';
+import { truncate } from './util.js';
+import { bm25 } from './search.js';
+
+const MAX_READ = 12000;
+const REPOS = '/repos';
+
+// ── Filesystem mapping ────────────────────────────────────────────────────
+// /home/... lives in the storage repo (synced); /repos/<name>/... are clones.
+function realPath(r) {
+  if (r.area === 'home') return { kind: 'home', rel: 'home/' + r.rel };
+  if (r.area === 'repos' && r.repo) return { kind: 'fs', path: `${REPOS}/${r.repo}${r.rel ? '/' + r.rel : ''}` };
+  return { kind: 'virtual' };
+}
+
+async function readAgentFile(p) {
+  const r = resolveAgentPath(p);
+  const rp = realPath(r);
+  if (rp.kind === 'home') return storage.read(rp.rel);
+  if (rp.kind === 'fs') { try { return await pfs.readFile(rp.path, 'utf8'); } catch { return null; } }
+  return null;
+}
+
+async function listAgentDir(p) {
+  const r = resolveAgentPath(p);
+  if (r.area === 'root') return ['home/', 'repos/'];
+  if (r.area === 'repos' && !r.repo) return (await safeReaddir(REPOS)).map(n => n + '/');
+  const rp = realPath(r);
+  const files = rp.kind === 'home' ? await storage.list(rp.rel) : await walk(rp.path);
+  return files.map(f => f.path + (f.size != null ? `  (${f.size} B)` : ''));
+}
+
+async function safeReaddir(dir) { try { return await pfs.readdir(dir); } catch { return []; } }
+
+// ── Repo helpers ──────────────────────────────────────────────────────────
+async function repoDir(name) {
+  const n = String(name || '').includes('/') ? parseRepo(name).name : String(name || '');
+  if (!n) throw new Error('Which repo? Pass the folder name under /repos or owner/name.');
+  const dir = `${REPOS}/${n}`;
+  if (!await exists(dir + '/.git')) throw new Error(`/repos/${n} is not cloned. Use git_clone first.`);
+  return dir;
+}
+
+async function originOf(dir) {
+  const remotes = await git.listRemotes({ fs, dir });
+  const o = remotes.find(r => r.remote === 'origin');
+  const m = o && o.url.match(/github\.com\/([^/]+)\/([^/]+?)(\.git)?$/);
+  return m ? { owner: m[1], name: m[2] } : null;
+}
+
+// ── Sandboxed JavaScript ──────────────────────────────────────────────────
+let sandbox = null;
+function getSandbox() {
+  if (sandbox) return sandbox;
+  const frame = document.createElement('iframe');
+  frame.setAttribute('sandbox', 'allow-scripts');
+  frame.src = 'sandbox.html';
+  frame.style.display = 'none';
+  document.body.appendChild(frame);
+  const pending = new Map();
+  const ready = new Promise(res => {
+    addEventListener('message', (e) => {
+      if (e.source !== frame.contentWindow) return;
+      if (e.data && e.data.ready) return res();
+      const p = e.data && pending.get(e.data.id);
+      if (p) { pending.delete(e.data.id); p(e.data); }
+    });
+  });
+  sandbox = {
+    async run(code, args, timeoutMs = 15000) {
+      await ready;
+      const id = Math.random().toString(36).slice(2);
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          frame.contentWindow.postMessage({ kill: true }, '*'); // terminate the runaway worker
+          resolve({ logs: [], error: `Timed out after ${timeoutMs / 1000}s.` });
+        }, timeoutMs);
+        pending.set(id, (r) => { clearTimeout(timer); resolve(r); });
+        frame.contentWindow.postMessage({ id, code, args }, '*');
+      });
+    },
+  };
+  return sandbox;
+}
+
+// ── Tool definitions ──────────────────────────────────────────────────────
+const S = (props, required = []) => ({ type: 'object', properties: props, required });
+const str = (description) => ({ type: 'string', description });
+const num = (description) => ({ type: 'integer', description });
+
+export const TOOLS = [
+  // Files
+  {
+    spec: { name: 'list_files', description: 'List files in the workspace. /home is your own synced space; /repos/<name> are git clones.', parameters: S({ path: str('Folder, e.g. /home or /repos/myrepo/src') }) },
+    async run({ path = '/' }) {
+      const items = await listAgentDir(path);
+      return { model: { path: agentPath(resolveAgentPath(path)), entries: items.slice(0, 400), more: Math.max(0, items.length - 400) }, label: `listed ${path}` };
+    },
+  },
+  {
+    spec: { name: 'read_file', description: 'Read a text file from the workspace.', parameters: S({ path: str('File path, e.g. /home/notes.md or /repos/app/README.md'), offset: num('Character offset to start from (for long files)') }, ['path']) },
+    async run({ path, offset = 0 }) {
+      const text = await readAgentFile(path);
+      if (text == null) return { model: { error: `No such file: ${path}` }, label: `read ${path} (missing)` };
+      const part = text.slice(offset, offset + MAX_READ);
+      const more = text.length > offset + MAX_READ;
+      const fromRepo = resolveAgentPath(path).area === 'repos';
+      return {
+        model: { path, chars: text.length, offset, content: fromRepo ? wrapUntrusted('file ' + path, part) : part, ...(more ? { next_offset: offset + MAX_READ } : {}) },
+        label: `read ${path}`,
+        observation: fromRepo ? { source: 'read_file', title: path, text: text.slice(0, 20000) } : null,
+      };
+    },
+  },
+  {
+    spec: { name: 'write_file', description: 'Create or overwrite a text file in the workspace. Files under /home sync to all the user\'s devices.', parameters: S({ path: str('File path'), content: str('Full file contents') }, ['path', 'content']) },
+    async run({ path, content }) {
+      const r = resolveAgentPath(path);
+      const rp = realPath(r);
+      if (rp.kind === 'virtual' || (r.area === 'repos' && !r.rel)) return { model: { error: 'Give a file path under /home/ or /repos/<name>/.' } };
+      if (rp.kind === 'home') await storage.write(rp.rel, String(content));
+      else {
+        if (!await exists(`${REPOS}/${r.repo}`)) return { model: { error: `/repos/${r.repo} doesn't exist. Clone it first.` } };
+        await writeFile(rp.path, String(content));
+      }
+      return { model: { ok: true, path: agentPath(r), chars: String(content).length }, label: `wrote ${agentPath(r)}` };
+    },
+  },
+  {
+    spec: { name: 'delete_file', description: 'Delete a file (or folder) in the workspace.', parameters: S({ path: str('Path to delete') }, ['path']) },
+    async run({ path }) {
+      const r = resolveAgentPath(path);
+      const rp = realPath(r);
+      if (rp.kind === 'virtual' || (r.area === 'home' && !r.rel)) return { model: { error: 'Refusing to delete a workspace root.' } };
+      if (rp.kind === 'home') await storage.remove(rp.rel);
+      else await rmrf(rp.path);
+      return { model: { ok: true }, label: `deleted ${agentPath(r)}` };
+    },
+  },
+
+  // Git
+  {
+    spec: { name: 'github_list_repos', description: 'List the GitHub repos the user has given Squiggle access to.', parameters: S({}) },
+    async run() {
+      const d = await gh('/user/installations?per_page=100');
+      const repos = [];
+      for (const inst of d.installations || []) {
+        const r = await gh(`/user/installations/${inst.id}/repositories?per_page=100`);
+        for (const x of r.repositories || []) repos.push({ repo: x.full_name, private: x.private, default_branch: x.default_branch, description: x.description || '' });
+      }
+      const cfg = storage.storageConfig();
+      const shown = repos.filter(r => !cfg || r.repo !== `${cfg.owner}/${cfg.name}`);
+      return { model: { repos: shown.map(r => ({ ...r, description: wrapUntrusted('github', r.description) })) }, label: 'listed GitHub repos' };
+    },
+  },
+  {
+    spec: { name: 'git_clone', description: 'Clone a GitHub repo into /repos/<name>. Pulls if it is already cloned.', parameters: S({ repo: str('owner/name') , branch: str('Branch to check out (default: the repo default)') }, ['repo']) },
+    async run({ repo, branch }) {
+      const { owner, name } = parseRepo(repo);
+      const cfg = storage.storageConfig();
+      if (cfg && owner === cfg.owner && name === cfg.name) return { model: { error: 'That is the storage repo; it is managed automatically. Use /home for your files.' } };
+      const dir = `${REPOS}/${name}`;
+      if (await exists(dir + '/.git')) {
+        const o = await originOf(dir);
+        if (o && (o.owner !== owner || o.name !== name)) return { model: { error: `/repos/${name} already holds ${o.owner}/${o.name}.` } };
+        await git.pull({ fs, dir, ...net(), singleBranch: true, fastForwardOnly: true, author: await author() }).catch(() => {});
+        return { model: { ok: true, already_cloned: true, path: `/repos/${name}`, branch: await currentBranch(dir) }, label: `updated ${owner}/${name}` };
+      }
+      await mkdirp(dir);
+      try {
+        await git.clone({ fs, dir, url: remoteUrl(owner, name), ref: branch || undefined, singleBranch: false, depth: 50, ...net() });
+      } catch (e) {
+        await rmrf(dir);
+        throw e;
+      }
+      const files = await walk(dir);
+      return { model: { ok: true, path: `/repos/${name}`, branch: await currentBranch(dir), files: files.length }, label: `cloned ${owner}/${name}` };
+    },
+  },
+  {
+    spec: { name: 'git_status', description: 'Show the current branch and changed files of a cloned repo.', parameters: S({ repo: str('Folder name under /repos (or owner/name)') }, ['repo']) },
+    async run({ repo }) {
+      const dir = await repoDir(repo);
+      return { model: { branch: await currentBranch(dir), changes: await statusLines(dir) }, label: `status of ${repo}` };
+    },
+  },
+  {
+    spec: { name: 'git_branch', description: 'Create (or switch to) a working branch. Names are always prefixed with "agent/" — you can only commit and push on agent/ branches. Uncommitted changes carry over.', parameters: S({ repo: str('Folder name under /repos'), name: str('Short branch name, e.g. "fix-login"'), from: str('Branch or commit to start from (default: current)') }, ['repo', 'name']) },
+    async run({ repo, name, from }) {
+      const dir = await repoDir(repo);
+      const branch = agentBranchName(name);
+      const branches = await git.listBranches({ fs, dir });
+      if (!branches.includes(branch)) {
+        const start = from ? await git.resolveRef({ fs, dir, ref: from }).catch(() => git.resolveRef({ fs, dir, ref: `refs/remotes/origin/${from}` })) : undefined;
+        await git.branch({ fs, dir, ref: branch, object: start, checkout: false });
+      }
+      // Keep working-tree edits: switch HEAD without touching files.
+      await git.checkout({ fs, dir, ref: branch, noCheckout: !from });
+      if (from) await git.checkout({ fs, dir, ref: branch });
+      return { model: { ok: true, branch }, label: `on ${branch} in ${repo}` };
+    },
+  },
+  {
+    spec: { name: 'git_commit', description: 'Commit all changes in a repo (only on an agent/ branch).', parameters: S({ repo: str('Folder name under /repos'), message: str('Commit message') }, ['repo', 'message']) },
+    async run({ repo, message }) {
+      const dir = await repoDir(repo);
+      const problem = checkAgentBranch(await currentBranch(dir));
+      if (problem) return { model: { error: problem } };
+      const n = await stageAll(dir);
+      if (!n) return { model: { ok: false, error: 'Nothing to commit.' } };
+      const oid = await git.commit({ fs, dir, message: String(message || 'Update').slice(0, 2000), author: await author() });
+      return { model: { ok: true, commit: oid.slice(0, 8), files: n }, label: `committed ${n} file(s) in ${repo}` };
+    },
+  },
+  {
+    spec: { name: 'git_push', description: 'Push the current agent/ branch to GitHub. Pushing to main or any non-agent branch is not allowed.', parameters: S({ repo: str('Folder name under /repos') }, ['repo']) },
+    async run({ repo }) {
+      const dir = await repoDir(repo);
+      const branch = await currentBranch(dir);
+      const problem = checkAgentBranch(branch);
+      if (problem) return { model: { error: problem } };
+      // Never force; the remote ref must match the local branch name exactly.
+      const r = await git.push({ fs, dir, remote: 'origin', ref: branch, remoteRef: branch, force: false, ...net() });
+      if (r && r.ok === false) return { model: { error: 'Push rejected: ' + JSON.stringify(r.refs || {}) } };
+      const o = await originOf(dir);
+      return { model: { ok: true, branch, compare_url: o ? `https://github.com/${o.owner}/${o.name}/compare/${encodeURIComponent(branch)}` : null }, label: `pushed ${branch} (${repo})` };
+    },
+  },
+  {
+    spec: { name: 'git_pull', description: 'Fetch and fast-forward the current branch from GitHub.', parameters: S({ repo: str('Folder name under /repos') }, ['repo']) },
+    async run({ repo }) {
+      const dir = await repoDir(repo);
+      const branch = await currentBranch(dir);
+      await git.fetch({ fs, dir, remote: 'origin', ...net() });
+      const remote = await git.resolveRef({ fs, dir, ref: `refs/remotes/origin/${branch}` }).catch(() => null);
+      if (!remote) return { model: { ok: true, note: `Branch ${branch} is not on GitHub yet.` }, label: `fetched ${repo}` };
+      await git.merge({ fs, dir, ours: branch, theirs: `origin/${branch}`, fastForwardOnly: true, author: await author() })
+        .catch(e => { throw new Error('Could not fast-forward (local and remote diverged): ' + e.message); });
+      await git.checkout({ fs, dir, ref: branch });
+      return { model: { ok: true, branch }, label: `pulled ${repo}` };
+    },
+  },
+  {
+    spec: { name: 'git_log', description: 'Recent commits on the current branch.', parameters: S({ repo: str('Folder name under /repos'), count: num('How many (default 10)') }, ['repo']) },
+    async run({ repo, count = 10 }) {
+      const dir = await repoDir(repo);
+      const log = await git.log({ fs, dir, depth: Math.min(50, count) });
+      const lines = log.map(c => `${c.oid.slice(0, 8)} ${new Date(c.commit.author.timestamp * 1000).toISOString().slice(0, 10)} ${c.commit.author.name}: ${c.commit.message.split('\n')[0]}`);
+      return { model: { commits: wrapUntrusted('git log', lines.join('\n')) }, label: `log of ${repo}` };
+    },
+  },
+  {
+    spec: { name: 'github_open_pr', description: 'Open a pull request from a pushed agent/ branch.', parameters: S({ repo: str('Folder name under /repos'), title: str('PR title'), body: str('PR description'), base: str('Target branch (default: repo default)') }, ['repo', 'title']) },
+    async run({ repo, title, body = '', base }) {
+      const dir = await repoDir(repo);
+      const branch = await currentBranch(dir);
+      const problem = checkAgentBranch(branch);
+      if (problem) return { model: { error: problem } };
+      const o = await originOf(dir);
+      const info = await gh(`/repos/${o.owner}/${o.name}`);
+      const pr = await gh(`/repos/${o.owner}/${o.name}/pulls`, { method: 'POST', body: { title, body: body + '\n\n_Opened by Squiggle._', head: branch, base: base || info.default_branch } });
+      return { model: { ok: true, number: pr.number, url: pr.html_url }, label: `opened PR #${pr.number} on ${o.owner}/${o.name}` };
+    },
+  },
+
+  // Web
+  {
+    spec: { name: 'fetch_url', description: 'Read a web page by its full URL. Returns readable text. Not a search engine.', parameters: S({ url: str('Complete http(s) URL') }, ['url']) },
+    async run({ url }) {
+      let u;
+      try { u = new URL(/^https?:\/\//i.test(url) ? url : 'https://' + url); } catch { return { model: { error: 'Pass one full URL, e.g. https://example.com/page.' } }; }
+      let resp, via = 'direct';
+      try { resp = await fetch(u.href, { redirect: 'follow' }); } catch {
+        const cfg = await relayConfig().catch(() => ({}));
+        if (!cfg.fetchEnabled) return { model: { error: 'That site blocks browser requests and the fetch relay is off.' } };
+        resp = await fetch(`${API_BASE}/fetch?url=${encodeURIComponent(u.href)}`);
+        via = 'relay';
+      }
+      const ct = resp.headers.get('content-type') || '';
+      const raw = await resp.text();
+      let text = raw, title = u.href;
+      if (/html/i.test(ct) || /^\s*<(!doctype|html)/i.test(raw)) {
+        const doc = new DOMParser().parseFromString(raw, 'text/html');
+        title = (doc.title || u.href).trim();
+        doc.querySelectorAll('script,style,noscript,svg,iframe,template,[hidden],[aria-hidden="true"]').forEach(n => n.remove());
+        text = (doc.body ? doc.body.innerText || doc.body.textContent : doc.documentElement.textContent || '')
+          .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+      }
+      const status = via === 'relay' ? +(resp.headers.get('x-upstream-status') || resp.status) : resp.status;
+      return {
+        model: { url: u.href, status, title, text: wrapUntrusted('web ' + u.hostname, truncate(text, MAX_READ)) },
+        label: `read ${u.href}`,
+        observation: { source: 'web', title: `${title} (${u.href})`, text: text.slice(0, 30000) },
+      };
+    },
+  },
+
+  // Memory
+  {
+    spec: { name: 'remember', description: 'Save a lasting fact about the user or their projects (preferences, decisions, names, how things work). Saved as subject → relation → object.', parameters: S({ subject: str('Who/what, e.g. "Keal" or "squiggle"'), relation: str('e.g. "prefers", "uses", "is deployed on"'), object: str('the value'), note: str('optional detail') }, ['subject', 'relation', 'object']) },
+    async run({ subject, relation, object, note }, ctx) {
+      const f = memory.add({ s: subject, p: relation, o: object, note, source: { session: ctx.session.id } });
+      return { model: { ok: true, id: f.id }, label: `remembered: ${subject} ${relation} ${object}` };
+    },
+  },
+  {
+    spec: { name: 'recall', description: 'Search saved memory facts.', parameters: S({ query: str('What to look for') }, ['query']) },
+    async run({ query }) {
+      const r = await memory.recall(query, 12);
+      return { model: { facts: r.map(({ fact }) => ({ id: fact.id, fact: memory.factText(fact) })) }, label: `recalled "${query}"` };
+    },
+  },
+  {
+    spec: { name: 'forget', description: 'Delete a saved memory fact by id (when the user says it is wrong or outdated).', parameters: S({ id: str('Fact id from recall') }, ['id']) },
+    async run({ id }) {
+      return memory.remove(id) ? { model: { ok: true }, label: 'forgot a fact' } : { model: { error: 'No fact with that id.' } };
+    },
+  },
+  {
+    spec: { name: 'search_history', description: 'Search the user\'s past conversations (all sessions) for something discussed before.', parameters: S({ query: str('What to look for') }, ['query']) },
+    async run({ query }, ctx) {
+      const docs = [];
+      for (const s of sessions.list()) {
+        for (const m of s.messages) if (m.content) docs.push({ id: `${s.id}|${m.id}`, text: m.content, s, m });
+      }
+      const scores = bm25(docs)(query);
+      const top = docs.filter(d => scores.has(d.id)).sort((a, b) => scores.get(b.id) - scores.get(a.id)).slice(0, 6);
+      return {
+        model: { results: top.map(d => ({ session: d.s.title, when: new Date(d.m.ts).toISOString().slice(0, 10), role: d.m.role, text: truncate(d.m.content, 600), this_session: d.s.id === ctx.session.id })) },
+        label: `searched history for "${query}"`,
+      };
+    },
+  },
+
+  // Code
+  {
+    spec: { name: 'run_js', description: 'Run JavaScript in an isolated sandbox (no access to the user\'s data or files). Use for math, data processing, or checking logic. Use console.log or return a value. Top-level await works.', parameters: S({ code: str('JavaScript code') }, ['code']) },
+    async run({ code }) {
+      const r = await getSandbox().run(String(code || ''));
+      return { model: { stdout: truncate((r.logs || []).join('\n'), 6000), result: r.result != null ? truncate(r.result, 4000) : undefined, error: r.error || undefined }, label: 'ran JavaScript' };
+    },
+  },
+];
+
+export const toolSpecs = (enabled) => TOOLS.filter(t => !enabled || enabled.has(t.spec.name)).map(t => t.spec);
+
+export async function runTool(call, ctx) {
+  const fn = call && call.function || {};
+  const tool = TOOLS.find(t => t.spec.name === fn.name);
+  let args = fn.arguments || {};
+  if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = {}; } }
+  if (!tool) return { name: fn.name, args, model: { error: `Unknown tool "${fn.name}".` }, label: `unknown tool ${fn.name}`, ok: false };
+  try {
+    const r = await tool.run(args, ctx);
+    return { name: fn.name, args, ...r, ok: !(r.model && r.model.error) };
+  } catch (e) {
+    return { name: fn.name, args, model: { error: String((e && e.message) || e) }, label: `${fn.name} failed`, ok: false };
+  }
+}
