@@ -382,7 +382,7 @@ function renderSessions() {
   if (q) return renderSearch(ul, q);
   for (const s of sessions.list()) {
     ul.append(h('li', {}, h('button', { 'aria-current': String(current && s.id === current.id), onclick: () => { openSession(s); closeSidebar(); } },
-      h('span', { class: 't' }, s.title), h('span', { class: 'when' }, ' ', ago(s.updated)))));
+      h('span', { class: 't' }, s.title), h('span', { class: 'when' }, ago(s.updated)))));
   }
   if (!ul.children.length) ul.append(h('li', { class: 'muted', style: 'padding: 8px 10px' }, 'No chats yet.'));
 }

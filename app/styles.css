@@ -67,7 +67,7 @@ a { color: var(--action); }
   padding: 8px 10px 9px; cursor: pointer; color: var(--ink-soft);
 }
 .session-list li button .t { display: block; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.session-list li button .when { font-size: 0.78rem; }
+.session-list li button .when { font-size: 0.78rem; display: block; }
 .session-list li button:hover { background: var(--sheet); }
 .session-list li button[aria-current="true"] .t {
   background: linear-gradient(transparent 62%, var(--marker) 62%, var(--marker) 92%, transparent 92%);
