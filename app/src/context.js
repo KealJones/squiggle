@@ -28,7 +28,7 @@ const day = (ts) => new Date(ts).toLocaleString(undefined, { month: 'short', day
 // would start writing "[tools used: ...]" instead of calling tools. Recent
 // tool actions go in a separate system-prompt section instead (see below).
 export function messageText(m, threadNotes) {
-  let text = m.content || '';
+  let text = m.role === 'assistant' ? scrubFakeToolNotes(m.content).trim() : (m.content || '');
   const note = threadNotes && threadNotes.get(m.id);
   if (note) text += `\n\n[a side thread on this message concluded: ${note}]`;
   return text;

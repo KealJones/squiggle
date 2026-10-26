@@ -105,3 +105,10 @@ test('tool use is not replayed as message text; it goes in its own section', asy
   assert.equal(scrubFakeToolNotes('Got it.\n\n[tools used: remembered: Keal has a son named Dash]\n').trim(), 'Got it.');
   assert.equal(scrubFakeToolNotes('Keep [this] text'), 'Keep [this] text');
 });
+
+test('older saved replies with a fake tool note are cleaned before replay', async () => {
+  const line = [msg('user', 'I have a son named Dash'), msg('assistant', 'Got it.\n\n[tools used: remembered: Keal has a son named Dash]')];
+  const session = { messages: line, threads: {}, observations: [], summaries: {} };
+  const r = await assembleContext({ line, session, query: 'hi', budget: 3000, mode: 'compact', system: 's' });
+  assert.ok(r.messages.every(m => !/tools used/i.test(m.content)), JSON.stringify(r.messages));
+});
