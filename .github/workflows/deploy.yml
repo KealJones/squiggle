@@ -1,0 +1,97 @@
+# Deploys Squiggle on every push to main:
+#   - the app to GitHub Pages (needs Settings → Pages → Source: "GitHub Actions")
+#   - the relay to your Cloudflare account (only if the CLOUDFLARE_API_TOKEN
+#     secret is set; otherwise deploy it yourself with `npx wrangler deploy`)
+#
+# Repo settings this reads (Settings → Secrets and variables → Actions):
+#   Variables: SQUIGGLE_RELAY_URL      e.g. https://squiggle-relay.you.workers.dev
+#              SQUIGGLE_APP_ORIGINS    where the app is served, if not <owner>.github.io
+#                                      (e.g. a custom domain: https://example.com)
+#              GITHUB_APP_CLIENT_ID    from your GitHub App          (relay deploy)
+#              GITHUB_APP_SLUG         from your GitHub App's URL    (relay deploy)
+#   Secrets:   CLOUDFLARE_API_TOKEN    "Edit Cloudflare Workers" token (relay deploy)
+#              CLOUDFLARE_ACCOUNT_ID   your Cloudflare account id      (relay deploy)
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  relay:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        if: env.HAS_TOKEN == 'true'
+      - uses: actions/setup-node@v4
+        if: env.HAS_TOKEN == 'true'
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+        if: env.HAS_TOKEN == 'true'
+      - name: Deploy relay (relay-only, allows the Pages site)
+        if: env.HAS_TOKEN == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler deploy --config wrangler.relay.toml \
+            --var GITHUB_CLIENT_ID:"${{ vars.GITHUB_APP_CLIENT_ID }}" \
+            --var GITHUB_APP_SLUG:"${{ vars.GITHUB_APP_SLUG }}" \
+            --var ALLOWED_ORIGINS:"${{ vars.SQUIGGLE_APP_ORIGINS || format('https://{0}.github.io', github.repository_owner) }}" \
+            --var ENABLE_FETCH:true
+      - name: Skipped
+        if: env.HAS_TOKEN != 'true'
+        run: echo "No CLOUDFLARE_API_TOKEN secret; deploy the relay yourself (see README)."
+
+  pages:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build site
+        env:
+          RELAY_URL: ${{ vars.SQUIGGLE_RELAY_URL }}
+        run: |
+          mkdir -p _site
+          cp -R app/. _site/
+          node -e 'require("fs").writeFileSync("_site/config.json", JSON.stringify({ relayUrl: process.env.RELAY_URL || "" }) + "\n")'
+          touch _site/.nojekyll
+          if [ -z "$RELAY_URL" ]; then echo "::warning::SQUIGGLE_RELAY_URL is not set; the app will ask for the relay address on first run."; fi
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@v4

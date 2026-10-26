@@ -2,17 +2,17 @@
 // repo clone (/state) and the agent's repo clones (/repos/<name>), plus
 // isomorphic-git wired to the relay.
 import { git, http, LightningFS } from '../vendor/git.js';
-import { API_BASE, gitAuth, commitAuthor } from './github.js';
+import { apiBase, gitAuth, commitAuthor } from './github.js';
 
 export { git };
 export const fs = new LightningFS('squiggle-fs');
 export const pfs = fs.promises;
-export const CORS_PROXY = API_BASE + '/git';
+export const corsProxy = () => apiBase() + '/git';
 
 export const remoteUrl = (owner, name) => `https://github.com/${owner}/${name}.git`;
 
 // Options every network git call needs.
-export const net = () => ({ http, corsProxy: CORS_PROXY, onAuth: gitAuth, onAuthFailure: () => ({ cancel: true }) });
+export const net = () => ({ http, corsProxy: corsProxy(), onAuth: gitAuth, onAuthFailure: () => ({ cancel: true }) });
 
 export async function author() { return commitAuthor(); }
 

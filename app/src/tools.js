@@ -5,7 +5,7 @@
 //   observation  { source, title, text } kept on the session so smart context
 //                can retrieve it in later turns
 import { git, fs, pfs, net, remoteUrl, exists, isDir, writeFile, rmrf, walk, stageAll, statusLines, currentBranch, author, mkdirp } from './git.js';
-import { gh, API_BASE, relayConfig } from './github.js';
+import { gh, apiBase, relayConfig } from './github.js';
 import * as storage from './storage.js';
 import * as memory from './memory.js';
 import * as sessions from './sessions.js';
@@ -368,7 +368,7 @@ export const TOOLS = [
       try { resp = await fetch(u.href, { redirect: 'follow' }); } catch {
         const cfg = await relayConfig().catch(() => ({}));
         if (!cfg.fetchEnabled) return { model: { error: 'That site blocks browser requests and the fetch relay is off.' } };
-        resp = await fetch(`${API_BASE}/fetch?url=${encodeURIComponent(u.href)}`);
+        resp = await fetch(`${apiBase()}/fetch?url=${encodeURIComponent(u.href)}`);
         via = 'relay';
       }
       const ct = resp.headers.get('content-type') || '';

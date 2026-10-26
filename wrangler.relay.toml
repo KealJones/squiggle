@@ -1,0 +1,16 @@
+# Relay-only Worker, for when the app is hosted on GitHub Pages.
+# Deploy:  npx wrangler deploy --config wrangler.relay.toml
+# (the Deploy workflow does this for you when CLOUDFLARE_API_TOKEN is set)
+name = "squiggle-relay"
+main = "worker/index.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+# From your GitHub App's settings page (see README "Set up"):
+GITHUB_CLIENT_ID = "Iv23liefG00Kw89snajP"
+GITHUB_APP_SLUG = "squiggle-github"
+# Where the app is served (scheme + host, no path; comma-separated). With a
+# custom domain on your GitHub Pages site, that domain is the origin.
+ALLOWED_ORIGINS = "https://kealjones.com,https://kealjones.github.io"
+# Lets the agent's fetch_url tool read pages that block browser requests.
+ENABLE_FETCH = "true"
