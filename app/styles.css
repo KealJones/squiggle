@@ -13,6 +13,7 @@
   --action-ink: #ffffff;
   --danger: #b3261e;
   --user-bubble: #e2e7f2;
+  --selected: #f3f5f9;
   --code-bg: #e6e9f1;
   --shadow: 0 1px 0 var(--rule);
   --radius-s: 6px;
@@ -25,13 +26,13 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --paper: #151a2e; --sheet: #1b2139; --ink: #e6e9f2; --ink-soft: #a3aac4; --rule: #2c3454;
-    --action: #4fc1b8; --action-ink: #0d1a1a; --danger: #ff8a80; --user-bubble: #242c4a; --code-bg: #10142a;
+    --action: #4fc1b8; --action-ink: #0d1a1a; --danger: #ff8a80; --user-bubble: #242c4a; --code-bg: #10142a; --selected: #181d33;
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --paper: #151a2e; --sheet: #1b2139; --ink: #e6e9f2; --ink-soft: #a3aac4; --rule: #2c3454;
-  --action: #4fc1b8; --action-ink: #0d1a1a; --danger: #ff8a80; --user-bubble: #242c4a; --code-bg: #10142a;
+  --action: #4fc1b8; --action-ink: #0d1a1a; --danger: #ff8a80; --user-bubble: #242c4a; --code-bg: #10142a; --selected: #181d33;
   color-scheme: dark;
 }
 
@@ -69,35 +70,8 @@ a { color: var(--action); }
 .session-list li button .t { display: block; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-list li button .when { font-size: 0.78rem; display: block; }
 .session-list li button:hover { background: var(--sheet); }
-.session-list li button[aria-current="true"] .t {
-  background: linear-gradient(transparent 62%, var(--marker) 62%, var(--marker) 92%, transparent 92%);
-  display: inline;
-  color: var(--ink);
-}
-/* Dark mode: the same stripe as light mode, and the text itself changes
-   colour at the stripe's edges: light above and below it, dark ink where it
-   crosses the yellow. Browsers that can't clip a background to text keep
-   the stripe with plain light text. */
-@supports ((-webkit-background-clip: text) or (background-clip: text)) {
-  :root[data-theme="dark"] .session-list li button[aria-current="true"] .t {
-    background-image:
-      linear-gradient(var(--ink) 62%, #1c2340 62%, #1c2340 92%, var(--ink) 92%),
-      linear-gradient(transparent 62%, var(--marker) 62%, var(--marker) 92%, transparent 92%);
-    -webkit-background-clip: text, border-box;
-    background-clip: text, border-box;
-    -webkit-text-fill-color: transparent;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) .session-list li button[aria-current="true"] .t {
-      background-image:
-        linear-gradient(var(--ink) 62%, #1c2340 62%, #1c2340 92%, var(--ink) 92%),
-        linear-gradient(transparent 62%, var(--marker) 62%, var(--marker) 92%, transparent 92%);
-      -webkit-background-clip: text, border-box;
-      background-clip: text, border-box;
-      -webkit-text-fill-color: transparent;
-    }
-  }
-}
+.session-list li button[aria-current="true"] { background: var(--selected); }
+.session-list li button[aria-current="true"]:hover { background: var(--sheet); }
 .side-nav { display: flex; gap: 2px; padding: 8px; border-top: 1px solid var(--rule); }
 .side-nav button { flex: 1; }
 .sync-line { font-size: 0.8rem; color: var(--ink-soft); padding: 0 16px 12px; display: flex; gap: 6px; align-items: center; }
