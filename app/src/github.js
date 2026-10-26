@@ -121,6 +121,9 @@ export async function gitAuth() {
 // GitHub's message on failure, carrying .status.
 export async function gh(path, { method = 'GET', body, accept } = {}) {
   const r = await fetch(path.startsWith('http') ? path : REST + path, {
+    // GitHub marks responses cacheable for 60s; a cached "not installed yet"
+    // or stale repo list would otherwise stick around after things change.
+    cache: 'no-store',
     method,
     headers: {
       Authorization: 'Bearer ' + await token(),
