@@ -233,9 +233,22 @@ export const TOOLS = [
       const problem = checkAgentBranch(branch);
       if (problem) return { model: { error: problem } };
       // Never force; the remote ref must match the local branch name exactly.
-      const r = await git.push({ fs, dir, remote: 'origin', ref: branch, remoteRef: branch, force: false, ...net() });
-      if (r && r.ok === false) return { model: { error: 'Push rejected: ' + JSON.stringify(r.refs || {}) } };
       const o = await originOf(dir);
+      const where = o ? `${o.owner}/${o.name}` : repo;
+      let r;
+      try {
+        r = await git.push({ fs, dir, remote: 'origin', ref: branch, remoteRef: branch, force: false, ...net() });
+      } catch (e) {
+        if (/40[13]|HttpError|cancel/i.test(String(e && (e.message || e.code)))) {
+          return { model: { error: `GitHub refused the push to ${where}. Either the user hasn't given Squiggle access to this repo (they can add it in Settings → Manage repo access) or they don't have write access to it. Tell the user; don't retry.` } };
+        }
+        throw e;
+      }
+      if (r && r.ok === false) {
+        const detail = JSON.stringify(r.refs || {});
+        const hint = /workflow/i.test(detail) ? ' The commit changes a file in .github/workflows/, which needs the optional Workflows permission on the GitHub App. Tell the user.' : '';
+        return { model: { error: 'Push rejected: ' + detail + hint } };
+      }
       return { model: { ok: true, branch, compare_url: o ? `https://github.com/${o.owner}/${o.name}/compare/${encodeURIComponent(branch)}` : null }, label: `pushed ${branch} (${repo})` };
     },
   },

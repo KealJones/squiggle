@@ -764,6 +764,10 @@ function renderSettingsPanel() {
         h('button', { class: 'btn', onclick: () => storage.sync() }, 'Sync now'),
         h('button', { class: 'btn', onclick: async () => { await sessions.flush({ sync: false }); await storage.forgetStorage(); location.reload(); } }, 'Change repo'))),
 
+    h('div', { class: 'field' }, h('span', { class: 'label' }, 'Repo access'),
+      h('span', { class: 'hint' }, 'The agent can work on repos you\'ve given Squiggle access to, and read any public repo.'),
+      h('div', { class: 'row' }, h('button', { class: 'btn', onclick: async () => window.open(await github.installUrl(), '_blank', 'noopener') }, 'Manage repo access'))),
+
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'This device'),
       h('div', { class: 'row' },
         h('button', { class: 'btn', onclick: async () => { await engine.unload(); await engine.deleteModel(S.model); location.reload(); } }, 'Delete downloaded model'),

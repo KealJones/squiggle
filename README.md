@@ -53,7 +53,10 @@ Go to **GitHub → Settings → Developer settings → GitHub Apps → New GitHu
   - Pull requests: **Read and write**
   - Metadata: Read-only (set automatically)
 - **Repository creation** (if your GitHub shows this permission): **Read and write**. It lets setup create your storage repo for you; without it, setup opens a pre-filled "new private repo" page instead.
-- **Where can this GitHub App be installed?** Only on this account.
+- **Workflows** (optional): **Read and write** only if you want the agent to be able to change files in `.github/workflows/`. Without it, GitHub rejects any push that touches those files, which is a sensible default.
+- **Where can this GitHub App be installed?**
+  - **Only on this account** if the agent will only work on your personal repos.
+  - **Any account** if you also want it on repos in a GitHub organization. The app still isn't listed anywhere; only people with the link can install it, and an org owner has to approve installing it on the org.
 
 Create it, then note the **Client ID** and the **slug** (from the app's URL, `github.com/apps/<slug>`).
 
@@ -83,11 +86,19 @@ Wrangler prints your URL, like `https://squiggle.<you>.workers.dev`. Put it in t
 Open the URL on your computer. Setup walks you through:
 
 1. **Sign in with GitHub**: enter the code it shows on github.com.
-2. **Install the app** on your account, choosing which repos the agent may use.
+2. **Install the app** on your account, choosing which repos the agent may use: the ones you want it to work on (you can change this later). The storage repo gets added automatically if Squiggle creates it; if you'll use an existing repo for storage, include that one too.
 3. **Choose storage**: create a new private repo (default name `squiggle-state`) or pick an existing private one. If it already has other files, Squiggle keeps its data in a `squiggle/` folder.
 4. **Download the model.**
 
 On your phone: open the same URL, sign in, and Squiggle finds your storage repo automatically. Use "Add to Home Screen" to install it as an app.
+
+### Which repos can the agent use?
+
+The same GitHub App handles everything: your storage repo and every repo the agent clones, commits to, pushes to or opens pull requests on. Its access is the overlap of two things: repos **you** can access, and repos you've **installed the app on**.
+
+- **Your repos:** pick them when installing the app. To add or remove repos later, use **Settings → Manage repo access** in Squiggle (or GitHub → Settings → Applications → Installed GitHub Apps → Configure).
+- **Organization repos:** install the app on the organization too (needs "Any account" in step 1, plus an org owner's approval).
+- **Anyone's public repos:** the agent can clone and read them without installing anything. It can't push to repos you don't have write access to.
 
 ### 4. (Recommended) Protect `main` in your work repos
 
