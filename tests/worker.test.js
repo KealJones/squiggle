@@ -70,3 +70,55 @@ test('fetch relay is opt-in and needs a browser same-origin request', async () =
   const badUrl = await worker.fetch(req('/api/fetch?url=file:///etc/passwd', { headers: { 'Sec-Fetch-Site': 'same-origin' } }), env);
   assert.equal(badUrl.status, 400);
 });
+
+test('search: parses DuckDuckGo Lite, decodes links and entities, skips ads', async () => {
+  const { readFileSync } = await import('node:fs');
+  const html = readFileSync(new URL('./fixtures/ddg-lite.html', import.meta.url), 'utf8');
+  const r = _test.parseDdgLite(html);
+  assert.deepEqual(r, [
+    { title: 'Squiggle & Friends docs', url: 'https://example.com/docs/squiggle?a=1&b=2', snippet: 'How the relay works "end to end" \'quickly\'.' },
+    { title: 'A blog post', url: 'https://blog.example.org/post', snippet: 'Second result snippet.' },
+  ]);
+});
+
+test('search endpoint: browser-only, opt-in, returns JSON results, reports bot checks', async () => {
+  const { readFileSync } = await import('node:fs');
+  const html = readFileSync(new URL('./fixtures/ddg-lite.html', import.meta.url), 'utf8');
+  const orig = globalThis.fetch;
+  let page = html, seen, ia = {};
+  globalThis.fetch = mock.fn(async (url) => {
+    if (url.startsWith('https://api.duckduckgo.com/')) return Response.json(ia);
+    seen = url; return new Response(page);
+  });
+  try {
+    const headers = { Origin: 'https://sq.example.workers.dev' };
+    const ok = await worker.fetch(req('/api/search?q=squiggle%20relay&n=1', { headers }), env);
+    assert.equal(ok.status, 200);
+    assert.equal(seen, 'https://lite.duckduckgo.com/lite/?q=squiggle%20relay');
+    const d = await ok.json();
+    assert.equal(d.results.length, 1);
+    assert.equal(d.results[0].url, 'https://example.com/docs/squiggle?a=1&b=2');
+    assert.equal((await worker.fetch(req('/api/search?q=x'), env)).status, 403, 'no Origin');
+    assert.equal((await worker.fetch(req('/api/search?q=x', { headers }), { ...env, ENABLE_FETCH: 'false' })).status, 404);
+    assert.equal((await worker.fetch(req('/api/search?q=', { headers }), env)).status, 400);
+    assert.equal(d.answer, null, 'no instant answer for a specific query');
+    ia = { Heading: 'Cloudflare', AbstractText: 'Cloudflare, Inc., is an American <i>company</i>.', AbstractSource: 'Wikipedia', AbstractURL: 'https://en.wikipedia.org/wiki/Cloudflare' };
+    const withIa = await (await worker.fetch(req('/api/search?q=Cloudflare', { headers }), env)).json();
+    assert.deepEqual(withIa.answer, { heading: 'Cloudflare', text: 'Cloudflare, Inc., is an American company.', source: 'Wikipedia', url: 'https://en.wikipedia.org/wiki/Cloudflare' });
+    page = '<html>Unfortunately, bots use DuckDuckGo too. anomaly</html>';
+    const partly = await worker.fetch(req('/api/search?q=Cloudflare', { headers }), env);
+    assert.equal(partly.status, 200, 'results blocked but an instant answer still comes back');
+    assert.equal((await partly.json()).results.length, 0);
+    ia = {};
+    const blocked = await worker.fetch(req('/api/search?q=x', { headers }), env);
+    assert.equal(blocked.status, 503);
+  } finally { globalThis.fetch = orig; }
+});
+
+test('instant answers: picks answer, then abstract, then definition', () => {
+  const { instantAnswer } = _test;
+  assert.equal(instantAnswer({}), null);
+  assert.equal(instantAnswer(null), null);
+  assert.equal(instantAnswer({ Answer: '4', AnswerType: 'calc', AbstractText: 'x' }).text, '4');
+  assert.equal(instantAnswer({ Definition: 'A wavy line.', DefinitionSource: 'Wordnik' }).source, 'Wordnik');
+});

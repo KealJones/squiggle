@@ -8,6 +8,8 @@
 //   POST /api/auth/refresh               rotate an expiring user token
 //   ANY  /api/git/github.com/<o>/<r>/... git smart-HTTP relay (clone/fetch/push)
 //   GET  /api/fetch?url=...              optional readable-web relay (ENABLE_FETCH)
+//   GET  /api/search?q=...               web search: DuckDuckGo Lite results plus its
+//                                        Instant Answer summary when it has one (ENABLE_FETCH)
 //
 // It holds NO secrets: device-flow tokens are minted and refreshed with only
 // the public client ID. Tokens pass through the relay on their way to GitHub
@@ -101,7 +103,82 @@ async function route(request, url, env) {
     return webRelay(url.searchParams.get('url'));
   }
 
+  if (p === '/api/search') {
+    if (env.ENABLE_FETCH !== 'true') return json({ error: 'Web access is disabled on the relay.' }, 404);
+    if (request.method !== 'GET') return json({ error: 'Method not allowed.' }, 405);
+    const site = request.headers.get('Sec-Fetch-Site');
+    if (!request.headers.get('Origin') && site !== 'same-origin') return json({ error: 'Forbidden.' }, 403);
+    return webSearch(url.searchParams.get('q'), Number(url.searchParams.get('n')) || 8);
+  }
+
   return json({ error: 'Not found.' }, 404);
+}
+
+// ── Web search (DuckDuckGo Lite: no key, plain HTML) ───────────────────────
+async function webSearch(q, n) {
+  const query = String(q || '').trim().slice(0, 300);
+  if (!query) return json({ error: 'Pass a search query: ?q=...' }, 400);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const headers = { 'User-Agent': 'Mozilla/5.0 (compatible; squiggle-relay)' };
+    // Results page and the official Instant Answer API, in parallel. The
+    // instant answer is a bonus: it failing never fails the search.
+    const [page, instant] = await Promise.all([
+      fetch('https://lite.duckduckgo.com/lite/?q=' + encodeURIComponent(query), { headers: { ...headers, Accept: 'text/html' }, signal: ctrl.signal }).then(r => r.text()),
+      fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1&t=squiggle`, { headers: { ...headers, Accept: 'application/json' }, signal: ctrl.signal })
+        .then(r => r.json()).catch(() => null),
+    ]);
+    const answer = instantAnswer(instant);
+    const blocked = /anomaly|captcha/i.test(page) && !/result-link/.test(page);
+    if (blocked && !answer) {
+      return json({ error: 'DuckDuckGo is asking for a bot check right now. Try again in a little while.' }, 503);
+    }
+    const results = blocked ? [] : parseDdgLite(page).slice(0, Math.min(Math.max(n, 1), 15));
+    return json({ query, answer, results });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const decodeEntities = (s) => s
+  .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+  .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(+d))
+  .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
+const cleanText = (s) => decodeEntities(String(s || '').replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim();
+
+// The useful part of an Instant Answer API response, or null when it has
+// nothing (most specific queries). Prefers a direct answer, then the topic
+// summary (usually Wikipedia), then a definition.
+export function instantAnswer(d) {
+  if (!d || typeof d !== 'object') return null;
+  const pick = (text, source, url, heading) => text ? { heading: heading || d.Heading || '', text: cleanText(text).slice(0, 1200), source: source || 'DuckDuckGo', url: url || '' } : null;
+  return pick(d.Answer && String(d.Answer), 'DuckDuckGo', '', d.AnswerType)
+    || pick(d.AbstractText, d.AbstractSource, d.AbstractURL)
+    || pick(d.Definition, d.DefinitionSource, d.DefinitionURL)
+    || null;
+}
+
+// Pulls { title, url, snippet } out of a DuckDuckGo Lite results page.
+// Result links go through a duckduckgo.com/l/?uddg=<real url> redirect;
+// ads go through y.js and are skipped.
+export function parseDdgLite(html) {
+  const out = [];
+  const linkRe = /<a[^>]+href=["']([^"']+)["'][^>]*class=['"]result-link['"][^>]*>([\s\S]*?)<\/a>/gi;
+  const matches = [...String(html).matchAll(linkRe)];
+  matches.forEach((m, i) => {
+    let href = decodeEntities(m[1]);
+    if (/\/y\.js|ad_provider|ad_domain/.test(href)) return;
+    const uddg = href.match(/[?&]uddg=([^&]+)/);
+    if (uddg) href = decodeURIComponent(uddg[1]);
+    if (href.startsWith('//')) href = 'https:' + href;
+    if (!/^https?:\/\//.test(href)) return;
+    const end = i + 1 < matches.length ? matches[i + 1].index : html.length;
+    const block = html.slice(m.index, end);
+    const snip = block.match(/class=['"]result-snippet['"][^>]*>([\s\S]*?)<\/td>/i);
+    out.push({ title: cleanText(m[2]), url: href, snippet: snip ? cleanText(snip[1]) : '' });
+  });
+  return out;
 }
 
 async function githubForm(path, params) {
@@ -207,4 +284,4 @@ function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-export const _test = { GIT_PATH, route };
+export const _test = { GIT_PATH, route, parseDdgLite, instantAnswer };
