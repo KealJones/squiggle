@@ -1,0 +1,21 @@
+{
+  "name": "squiggle",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A private, on-device AI agent in your browser, with sessions synced through your own GitHub repo.",
+  "scripts": {
+    "vendor": "node scripts/vendor.mjs",
+    "test": "node --test tests/*.test.js",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@isomorphic-git/lightning-fs": "4.10.3",
+    "dompurify": "3.4.17",
+    "esbuild": "0.25.10",
+    "isomorphic-git": "1.44.5",
+    "marked": "18.1.2",
+    "wrangler": "^4"
+  }
+}

@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Unit tests
+        run: npm test
+      - name: Install Chromium
+        run: npx -y playwright@1.63.0 install --with-deps chromium
+      - name: End-to-end (sync, git tools, sandbox, scripted agent turn)
+        run: npm i --no-save playwright@1.63.0 && node tests/e2e/run.mjs
+      - name: Worker config
+        run: npx wrangler deploy --dry-run --outdir /tmp/wr

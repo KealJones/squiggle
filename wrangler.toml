@@ -1,0 +1,21 @@
+name = "squiggle"
+main = "worker/index.js"
+compatibility_date = "2026-10-01"
+
+# The Worker serves the app itself, so the app and its relay share one origin
+# (no CORS setup needed). Requests to /api/* always reach the Worker.
+[assets]
+directory = "./app"
+binding = "ASSETS"
+run_worker_first = ["/api/*"]
+# Serve files exactly as named (no /page.html -> /page redirects).
+html_handling = "none"
+
+[vars]
+# From your GitHub App's settings page (see README "Set up"):
+GITHUB_CLIENT_ID = ""
+GITHUB_APP_SLUG = ""
+# Lets the agent's fetch_url tool read pages that block browser requests.
+ENABLE_FETCH = "true"
+# Only needed if you also host the app somewhere else (comma-separated origins).
+ALLOWED_ORIGINS = ""

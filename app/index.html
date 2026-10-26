@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <title>Squiggle</title>
+  <meta name="description" content="A private AI agent that runs on your own device, with sessions synced through your own GitHub repo.">
+  <meta name="theme-color" content="#eef1f6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#151a2e" media="(prefers-color-scheme: dark)">
+  <!-- Scripts only from this origin and the two pinned CDNs that host the model
+       runtime and the optional embedding model; the model file itself comes
+       from Hugging Face. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval' https://cdn.jsdelivr.net; connect-src 'self' https: ; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; frame-src 'self'; object-src 'none'; base-uri 'self'">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="squiggle" viewBox="0 0 48 16"><path d="M2 8c4-6 8-6 11 0s7 6 11 0 7-6 11 0 7 6 11 0" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M5 12h12M12 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></symbol>
+    <symbol id="i-thread" viewBox="0 0 24 24"><path d="M5 5h14v10H11l-4 4v-4H5z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" fill="none"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" fill="none"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M5 15V6a1 1 0 011-1h9" stroke="currentColor" stroke-width="1.8" fill="none"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z" stroke="currentColor" stroke-width="1.8" fill="none"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8" fill="none"/></symbol>
+  </svg>
+
+  <!-- First-run setup -->
+  <main id="setup" class="setup" hidden>
+    <div class="setup-card">
+      <div class="brand"><svg aria-hidden="true"><use href="#squiggle"/></svg>Squiggle</div>
+      <ol class="steps" id="setup-steps"><li></li><li></li><li></li><li></li></ol>
+      <section id="setup-body" aria-live="polite"></section>
+    </div>
+  </main>
+
+  <!-- App -->
+  <div id="app" class="app" hidden>
+    <nav class="sidebar" id="sidebar" aria-label="Sessions">
+      <div class="brand"><svg aria-hidden="true"><use href="#squiggle"/></svg>Squiggle</div>
+      <button class="btn primary new-chat" id="new-chat">New chat</button>
+      <div style="padding: 0 12px 8px"><input class="search" id="session-search" type="search" placeholder="Search chats" aria-label="Search chats" style="margin:0"></div>
+      <ul class="session-list" id="session-list"></ul>
+      <div class="side-nav">
+        <button class="btn ghost" data-panel="memory">Memory</button>
+        <button class="btn ghost" data-panel="files">Files</button>
+        <button class="btn ghost" data-panel="settings">Settings</button>
+      </div>
+      <div class="sync-line" id="sync-line"><span class="sync-dot"></span><span>Not synced yet</span></div>
+    </nav>
+
+    <section class="main">
+      <header class="topbar">
+        <button class="icon-btn only-mobile" id="open-sidebar" aria-label="Show chats"><svg><use href="#i-menu"/></svg></button>
+        <h1 id="chat-title">New chat</h1>
+      </header>
+      <div class="banner" id="model-banner" hidden></div>
+      <div class="messages" id="messages"><div class="messages-inner" id="messages-inner"></div></div>
+      <form class="composer" id="composer">
+        <div class="composer-inner">
+          <textarea id="input" rows="1" placeholder="Message Squiggle" aria-label="Message"></textarea>
+          <button class="icon-btn" id="send" type="submit" aria-label="Send"><svg><use href="#i-send"/></svg></button>
+        </div>
+        <div class="note" id="composer-note"></div>
+      </form>
+    </section>
+
+    <aside class="drawer" id="drawer" hidden>
+      <header class="topbar">
+        <h2 id="drawer-title"></h2>
+        <button class="icon-btn" id="close-drawer" aria-label="Close panel"><svg><use href="#i-close"/></svg></button>
+      </header>
+      <div id="drawer-content" style="display:flex;flex-direction:column;flex:1;min-height:0"></div>
+    </aside>
+  </div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

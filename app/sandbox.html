@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<!--
+  Runs model-written JavaScript. Loaded in <iframe sandbox="allow-scripts">
+  (no allow-same-origin), so this page has an opaque origin: it cannot read
+  Squiggle's IndexedDB, the GitHub token, sessions, localStorage or cookies.
+
+  The code itself runs in a Web Worker started from here (also opaque-origin),
+  on its own thread, so an infinite loop can't freeze the app: the parent asks
+  this page to terminate the worker when time runs out.
+-->
+<script>
+  const WORKER_SRC = `
+    const fmt = (v) => { if (typeof v === 'string') return v; try { return JSON.stringify(v, null, 2); } catch { return String(v); } };
+    onmessage = async (e) => {
+      const { id, code, args } = e.data;
+      const logs = [];
+      const cap = (k) => (...a) => logs.push((k === 'log' ? '' : k + ': ') + a.map(fmt).join(' '));
+      const sandboxConsole = { log: cap('log'), info: cap('info'), warn: cap('warn'), error: cap('error'), debug: cap('log') };
+      let result, error = null;
+      try {
+        const fn = new Function('console', 'args', '"use strict"; return (async () => {\\n' + code + '\\n})();');
+        const r = await fn(sandboxConsole, args || {});
+        if (r !== undefined) result = fmt(r);
+      } catch (err) {
+        error = String((err && (err.stack || err.message)) || err);
+      }
+      postMessage({ id, logs, result, error });
+    };`;
+
+  let worker = null;
+  function getWorker() {
+    if (worker) return worker;
+    try { worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: 'text/javascript' }))); }
+    catch { worker = new Worker('data:text/javascript,' + encodeURIComponent(WORKER_SRC)); }
+    worker.onmessage = (e) => parent.postMessage(e.data, '*');
+    worker.onerror = (e) => { e.preventDefault(); };
+    return worker;
+  }
+
+  addEventListener('message', (e) => {
+    const msg = e.data || {};
+    if (msg.kill) { if (worker) { worker.terminate(); worker = null; } return; }
+    if (msg.id) getWorker().postMessage({ id: msg.id, code: msg.code, args: msg.args });
+  });
+  parent.postMessage({ ready: true }, '*');
+</script>
