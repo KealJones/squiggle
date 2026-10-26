@@ -547,7 +547,7 @@ async function send(text, threadId) {
           scrollDown(scroller);
         },
         onThinking: (t) => { think.hidden = false; think.lastChild.textContent = t; },
-        onText: (t) => { body.innerHTML = md(t); scrollDown(scroller); },
+        onText: (t) => { body.innerHTML = md(agent.scrubFakeToolNotes(t)); scrollDown(scroller); },
         onTool: (t) => {
           const existing = liveTools.find(x => x.running && x.name === t.name);
           if (existing) Object.assign(existing, t); else liveTools.push({ ...t });
@@ -796,7 +796,7 @@ function renderContextPanel(m) {
   const r = m.context;
   const body = h('div', { class: 'drawer-body' });
   const pct = Math.min(100, Math.round(100 * (r.used || 0) / (r.budget || 1)));
-  const kinds = { system: 'Instructions', recent: 'Recent messages', pinned: 'Pinned', summary: 'Summary', fact: 'Memory', message: 'Earlier message', observation: 'Saved tool output', thread: 'Thread outcome' };
+  const kinds = { actions: 'Earlier tool calls', system: 'Instructions', recent: 'Recent messages', pinned: 'Pinned', summary: 'Summary', fact: 'Memory', message: 'Earlier message', observation: 'Saved tool output', thread: 'Thread outcome' };
   body.append(
     h('p', { style: 'margin-top:0' }, `${r.mode === 'smart' ? 'Smart context' : r.mode === 'full' ? 'Full history' : 'Compaction'}: about ${r.used} of ${r.budget} tokens.`),
     h('div', { class: 'meter' }, h('div', { style: `width:${pct}%` })),

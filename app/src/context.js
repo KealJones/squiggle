@@ -23,15 +23,21 @@ const CHUNK_TOKENS = 700;
 const day = (ts) => new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
 // How a past message is replayed to the model.
+// Tool use is deliberately NOT written into the replayed message text: a
+// small model copies whatever format it sees in its own past turns, and
+// would start writing "[tools used: ...]" instead of calling tools. Recent
+// tool actions go in a separate system-prompt section instead (see below).
 export function messageText(m, threadNotes) {
   let text = m.content || '';
-  if (m.role === 'assistant' && m.tools && m.tools.length) {
-    const used = m.tools.map(t => t.label || t.name).join('; ');
-    text = (text ? text + '\n\n' : '') + `[tools used: ${truncate(used, 300)}]`;
-  }
   const note = threadNotes && threadNotes.get(m.id);
   if (note) text += `\n\n[a side thread on this message concluded: ${note}]`;
   return text;
+}
+
+// Small models sometimes imitate tool bookkeeping instead of calling tools;
+// drop lines like "[tools used: ...]" so they never pass as real actions.
+export function scrubFakeToolNotes(text) {
+  return String(text || '').replace(/^\s*\[(?:tools? used|tool calls?)[^\]\n]*\]\s*$/gim, '').replace(/\n{3,}/g, '\n\n');
 }
 
 // Split long text into ~CHUNK_TOKENS pieces on paragraph boundaries.
@@ -97,6 +103,16 @@ export async function assembleContext(o) {
   if (recent.length) report.items.push({ kind: 'recent', label: `Last ${recent.length} message${recent.length === 1 ? '' : 's'}`, tokens: recentTokens, ids: [...recentIds] });
 
   const sections = [];
+
+  // What the agent actually did with tools in the replayed turns.
+  const actions = recent.filter(m => m.role === 'assistant' && m.tools && m.tools.length)
+    .flatMap(m => m.tools.filter(t => t.ok !== false).map(t => t.label || t.name));
+  if (actions.length) {
+    const body = `## Tool calls you made in the conversation above\n${actions.slice(-12).map(a => `- ${truncate(a, 160)}`).join('\n')}\n(These already happened. To do anything new, call the tool again; never just say it was done.)`;
+    sections.push(body);
+    used += estTokens(body);
+    report.items.push({ kind: 'actions', label: `${actions.length} earlier tool call${actions.length === 1 ? '' : 's'}`, tokens: estTokens(body) });
+  }
 
   // 2. Pinned messages that fell out of the recent window.
   const pinned = older.filter(m => m.pinned);

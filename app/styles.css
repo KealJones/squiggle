@@ -74,8 +74,11 @@ a { color: var(--action); }
   display: inline;
   color: var(--ink);
 }
-:root[data-theme="dark"] .session-list li button[aria-current="true"] .t,
-.dark-marker .session-list li button[aria-current="true"] .t { color: #1c2340; }
+:root[data-theme="dark"] .session-list li button[aria-current="true"] .t { color: #1c2340; background: linear-gradient(transparent 10%, var(--marker) 10%, var(--marker) 94%, transparent 94%); }
+/* On dark backgrounds the marker covers the whole word, so dark ink stays readable. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .session-list li button[aria-current="true"] .t { color: #1c2340; background: linear-gradient(transparent 10%, var(--marker) 10%, var(--marker) 94%, transparent 94%); }
+}
 .side-nav { display: flex; gap: 2px; padding: 8px; border-top: 1px solid var(--rule); }
 .side-nav button { flex: 1; }
 .sync-line { font-size: 0.8rem; color: var(--ink-soft); padding: 0 16px 12px; display: flex; gap: 6px; align-items: center; }
