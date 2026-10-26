@@ -140,9 +140,6 @@ a { color: var(--action); }
 .squiggle-wait { display: inline-block; width: 46px; height: 16px; color: var(--action); vertical-align: middle; }
 .squiggle-wait svg { display: block; width: 100%; height: 100%; }
 .tool-trail .squiggle-wait { width: 28px; height: 10px; }
-.squiggle-wait path { stroke-dasharray: 60; animation: draw 1.4s ease-in-out infinite; }
-@keyframes draw { 0% { stroke-dashoffset: 60; } 50% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -60; } }
-@media (prefers-reduced-motion: reduce) { .squiggle-wait path { animation: none; stroke-dasharray: none; } }
 
 .empty { max-width: 520px; margin: 14vh auto 0; text-align: center; color: var(--ink-soft); }
 .empty svg { width: 120px; height: 40px; color: var(--ink); }
