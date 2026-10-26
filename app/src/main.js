@@ -35,7 +35,25 @@ const ago = (ts) => {
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
   return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 };
-const squiggleWait = () => h('span', { class: 'squiggle-wait', role: 'status', 'aria-label': 'Working' }, icon('squiggle'));
+// The "working" indicator: the logo squiggle itself, rippling. Each of its
+// four humps swells and settles a quarter-beat after the one before, so a
+// wave seems to pass through it left to right. Same shape and size as the
+// logo; still for people who prefer reduced motion.
+const WAVE = (() => {
+  // [start x, direction, control offsets] exactly as in #squiggle
+  const humps = [[2, -1, 4, 8], [13, 1, 3, 7], [24, -1, 3, 7], [35, 1, 3, 7]];
+  const frame = (t) => 'M2 8' + humps.map(([x, dir, c1, c2], i) => {
+    const a = 6 * dir * (0.84 + 0.16 * Math.cos(2 * Math.PI * t - i * Math.PI / 2));
+    const y = (8 + a).toFixed(2);
+    return ` C${x + c1} ${y} ${x + c2} ${y} ${x + 11} 8`;
+  }).join('');
+  const steps = 16;
+  const values = Array.from({ length: steps + 1 }, (_, k) => frame(k / steps)).join(';');
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  return `<svg viewBox="0 0 48 16" aria-hidden="true"><path d="${frame(0)}" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">` +
+    (still ? '' : `<animate attributeName="d" dur="1.4s" repeatCount="indefinite" values="${values}"/>`) + '</path></svg>';
+})();
+const squiggleWait = () => h('span', { class: 'squiggle-wait', role: 'status', 'aria-label': 'Working', html: WAVE });
 
 // ── Settings (per device) ──────────────────────────────────────────────────
 const SETTINGS_KEY = 'squiggle-settings';
