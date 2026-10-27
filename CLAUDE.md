@@ -24,6 +24,7 @@ app/                    static app, plain ES modules, no build step
     guard.js            hard limits: push policy, workflow-file check, workspace path resolution
     grants.js           remembered "always allow" push grants (synced)
     untrusted.js        <untrusted key=…> wrapping for outside content
+    attachments.js      chat attachments: limits, text extraction (pdf.js from jsDelivr), what the model sees
     storage.js          storage repo: setup, clone at /state, client-side rebase sync
     merge.js            conflict-free merges (sessions JSON, .jsonl)
     sessions.js         sessions + threads + observations on top of storage
@@ -64,8 +65,13 @@ tests/e2e/              Chromium end-to-end: real git server, real Worker code, 
 ## Data model
 
 Session file `sessions/<id>.json`: `{ v, id, title, created, updated, deleted?,
-messages[{id, role, content, ts, mts?, thread, tools?, context?, pinned?}],
+messages[{id, role, content, ts, mts?, thread, tools?, context?, pinned?, attachments?[{name, path, type, size, chars, lines?, error?}]}],
 threads{id: {parent, title, summary?}}, observations[], summaries{main|threadId} }`.
+Attachments: storage only holds text, so text files are saved as-is and PDFs as
+their extract (`<name>.txt`) under `home/attachments/<session>/`; images and
+other binaries are not stored (path null). Extracts are wrapped with `wrapUntrusted`
+wherever the model sees them (turn note, read_file, grep, search_history) and
+indexed as observations with source 'attachment'. Limits: 10 files, 20 MB each.
 A thread's context = main messages up to its parent + its own messages
 (`sessions.lineMessages`).
 

@@ -140,3 +140,17 @@ test('smart: naming a file only brings back old output about that file', async (
   assert.ok(got.length && got.every(l => l.includes('tools.js')), JSON.stringify(got));
   assert.ok(!got.some(l => /README|main\.js/.test(l)), JSON.stringify(got));
 });
+
+test('smart: a named attachment brings back its own extract, and attachments replay as a note', async () => {
+  const line = [msg('user', 'here you go', { attachments: [{ name: 'budget 2026.csv', path: '/home/attachments/s1/budget 2026.csv', size: 2048, lines: 40 }] }), msg('assistant', 'ok')];
+  const obs = (id, name, text) => ({ id, ts: 1, source: 'attachment', title: `${name} (/home/attachments/s1/${name})`, text });
+  const session = { messages: line, threads: {}, summaries: {}, observations: [
+    obs('o1', 'budget 2026.csv', 'category,amount\nrent,1200'),
+    obs('o2', 'notes.txt', 'the budget.csv file is stale'),
+  ] };
+  const r = await assembleContext({ line: [], session, query: 'sum the amounts in budget 2026.csv', budget: 4000, mode: 'smart', system: 's' });
+  const got = r.report.items.filter(i => i.kind === 'observation').map(i => i.label);
+  assert.ok(got.length === 1 && got[0].includes('2026.csv'), JSON.stringify(got));
+  const h = await assembleContext({ line, session, query: 'again', budget: 4000, mode: 'compact', system: 's' });
+  assert.ok(h.messages[0].content.includes('[attached: /home/attachments/s1/budget 2026.csv (2.0 KB, 40 lines)]'), h.messages[0].content);
+});

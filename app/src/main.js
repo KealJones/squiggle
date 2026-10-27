@@ -12,6 +12,8 @@ import { loadEmbedder } from './embed.js';
 import { resolveAgentPath } from './guard.js';
 import { pfs, walk } from './git.js';
 import { bm25 } from './search.js';
+import * as attachments from './attachments.js';
+import { checkFiles, fmtSize } from './attachments.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const h = (tag, attrs = {}, ...kids) => {
@@ -385,7 +387,7 @@ function wireApp() {
   $('#close-drawer').onclick = closeDrawer;
   document.querySelectorAll('.side-nav [data-panel]').forEach(b => b.onclick = () => { closeSidebar(); openPanel(b.dataset.panel); });
   $('#session-search').addEventListener('input', () => renderSessions());
-  setupComposer($('#composer'), $('#input'), (text) => send(text, null));
+  setupComposer($('#composer'), $('#input'), (text, files) => send(text, null, files));
   sessions.events.on('list', () => renderSessions());
   sessions.events.on('session', (id) => {
     if (busy || !current || id !== current.id) return;
@@ -501,6 +503,10 @@ function messageEl(m, { inThread, streaming }) {
     col.append(h('div', { class: 'body', html: md(agent.scrubFakeToolNotes(m.content)) }));
   } else {
     col.append(h('div', { class: 'body' }, m.content));
+    if (m.attachments && m.attachments.length) {
+      col.append(h('div', { class: 'attach-chips sent' }, m.attachments.map(a => h('span', { class: 'chip', title: a.path ? a.path : (a.error || 'not saved') },
+        icon('i-attach'), h('span', { class: 'chip-name' }, a.name), h('span', { class: 'chip-size' }, fmtSize(a.size))))));
+    }
   }
   if (!streaming && m.id) {
     const actions = h('div', { class: 'msg-actions' + (m.pinned ? ' pinned' : '') });
@@ -548,13 +554,50 @@ function setupComposer(form, input, onSend) {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !matchMedia('(hover: none)').matches) { e.preventDefault(); form.requestSubmit(); }
   });
+
+  // Attachments: chosen with the paperclip, dropped on the composer or pasted.
+  let files = [];
+  const inner = form.querySelector('.composer-inner');
+  const chips = h('div', { class: 'attach-chips', hidden: true });
+  const notice = h('div', { class: 'attach-notice', role: 'status', hidden: true });
+  const picker = h('input', { type: 'file', multiple: true, hidden: true, 'aria-hidden': 'true', tabindex: '-1', class: 'attach-input' });
+  const renderChips = () => {
+    chips.hidden = !files.length;
+    chips.replaceChildren(...files.map(f => h('span', { class: 'chip' }, h('span', { class: 'chip-name' }, f.name), h('span', { class: 'chip-size' }, fmtSize(f.size)),
+      h('button', { type: 'button', class: 'chip-x', 'aria-label': `Remove ${f.name}`, onclick: () => { files = files.filter(x => x !== f); renderChips(); } }, icon('i-close')))));
+  };
+  const add = (list) => {
+    const { ok, problems } = checkFiles([...list], files.length);
+    files = files.concat(ok);
+    renderChips();
+    notice.hidden = !problems.length;
+    notice.textContent = problems.join(' ');
+  };
+  picker.addEventListener('change', () => { add(picker.files); picker.value = ''; });
+  inner.insertBefore(h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Attach files', title: 'Attach files', onclick: () => picker.click() }, icon('i-attach')), input);
+  form.insertBefore(chips, inner);
+  form.insertBefore(notice, inner);
+  form.append(picker);
+  input.addEventListener('paste', (e) => {
+    const pasted = e.clipboardData && e.clipboardData.files;
+    if (pasted && pasted.length) { e.preventDefault(); add(pasted); }
+  });
+  form.addEventListener('dragover', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); form.classList.add('dragging'); } });
+  form.addEventListener('dragleave', (e) => { if (!form.contains(e.relatedTarget)) form.classList.remove('dragging'); });
+  form.addEventListener('drop', (e) => {
+    form.classList.remove('dragging');
+    if (e.dataTransfer && e.dataTransfer.files.length) { e.preventDefault(); add(e.dataTransfer.files); }
+  });
+
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     if (busy) { controller && controller.abort(); return; }
     const text = input.value.trim();
-    if (!text) return;
+    if (!text && !files.length) return;
+    const sending = files;
     input.value = ''; grow();
-    onSend(text);
+    files = []; renderChips(); notice.hidden = true;
+    onSend(text, sending);
   });
 }
 
@@ -566,7 +609,7 @@ function setBusy(on) {
   }
 }
 
-async function send(text, threadId) {
+async function send(text, threadId, files = []) {
   if (busy) return;
   if (modelState !== 'ready') {
     if (loadCrashMarker()) return; // the crash banner is showing; let the person choose
@@ -582,8 +625,9 @@ async function send(text, threadId) {
   setBusy(true);
   controller = new AbortController();
   try {
+    const attachments = await readFiles(files, session);
     await agent.runTurn({
-      session, threadId, text, signal: controller.signal,
+      session, threadId, text, attachments, signal: controller.signal,
       ui: {
         onUser: (m) => { container.append(messageEl(m, { inThread: Boolean(threadId) })); scrollDown(scroller); renderSessions(); },
         onStart: () => {
@@ -619,6 +663,14 @@ async function send(text, threadId) {
     controller = null;
     if (threadId) renderChat(); // refresh reply count on the parent
   }
+}
+
+// Reads the chosen files (PDF text extraction can take a moment).
+async function readFiles(files, session) {
+  const out = [];
+  const taken = new Set(session.messages.flatMap(m => (m.attachments || []).map(a => String(a.path || a.name).split('/').pop().toLowerCase())));
+  for (const f of files) out.push(await attachments.readAttachment(f, taken, session.id));
+  return out;
 }
 
 // Permission card for actions outside the agent's own space (pushing to a
@@ -902,7 +954,7 @@ function renderThreadPanel(focus = false) {
   scroll.append(list);
   const input = h('textarea', { rows: 1, placeholder: 'Reply in thread', 'aria-label': 'Reply in thread' });
   const form = h('form', { class: 'composer' }, h('div', { class: 'composer-inner' }, input, h('button', { class: 'icon-btn', type: 'submit', 'aria-label': 'Send' }, icon(busy ? 'i-stop' : 'i-send'))));
-  setupComposer(form, input, (text) => send(text, t.id));
+  setupComposer(form, input, (text, files) => send(text, t.id, files));
   c.append(scroll, form);
   scrollDown(scroll);
   if (focus) input.focus();
