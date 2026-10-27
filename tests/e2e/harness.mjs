@@ -8,7 +8,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, extname, normalize } from 'node:path';
-import worker from '../../worker/index.js';
+import worker, { AiBudget } from '../../worker/index.js';
 
 const APP_DIR = new URL('../../app/', import.meta.url).pathname;
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json', '.md': 'text/plain' };
@@ -85,9 +85,24 @@ export async function start(gitRoot, env = {}, { split = false } = {}) {
     // Web search goes to a fixed results page instead of the live site.
     if (url.startsWith('https://lite.duckduckgo.com/')) return Promise.resolve(new Response(readFileSync(new URL('../fixtures/ddg-lite.html', import.meta.url), 'utf8')));
     if (url.startsWith('https://api.duckduckgo.com/')) return Promise.resolve(Response.json({ Heading: 'Squiggle', AbstractText: 'Squiggle is a <b>test</b> topic.', AbstractSource: 'Wikipedia', AbstractURL: 'https://en.wikipedia.org/wiki/Squiggle' }));
+    // The relay asks GitHub who a token belongs to (cloud model access).
+    if (url === 'https://api.github.com/user') return Promise.resolve(Response.json({ login: 'tester' }));
     return realFetch(input, init);
   };
-  const workerEnv = { GITHUB_CLIENT_ID: 'test-client', GITHUB_APP_SLUG: 'squiggle-test', ENABLE_FETCH: 'true', ALLOWED_ORIGINS: '', ...env };
+  // Cloud model: a scripted stand-in for Workers AI, and the real budget object.
+  const budgetStore = new Map();
+  const budget = new AiBudget({ storage: { get: async (k) => budgetStore.get(k), put: async (k, v) => { budgetStore.set(k, v); } } });
+  const aiCalls = [];
+  const AI = { run: async (model, body) => {
+    aiCalls.push({ model, body });
+    const last = body.messages[body.messages.length - 1];
+    const usage = { prompt_tokens: 100, completion_tokens: 40, neurons: 3 };
+    if (last.role === 'user' && /weather/i.test(last.content)) return { choices: [{ message: { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'web_search', arguments: '{"query":"weather Phoenix"}' } }] } }], usage };
+    if (last.role === 'tool') return { choices: [{ message: { content: 'Cloud says: ' + JSON.parse(last.content).results, reasoning: 'Read the result.' } }], usage };
+    return { choices: [{ message: { content: 'Cloud answer.' } }], usage };
+  } };
+  const workerEnv = { GITHUB_CLIENT_ID: 'test-client', GITHUB_APP_SLUG: 'squiggle-test', ENABLE_FETCH: 'true', ALLOWED_ORIGINS: '',
+    AI, AI_USERS: 'tester', AI_DAILY_NEURONS: '9000', AI_BUDGET: { idFromName: () => 'daily', get: () => ({ fetch: (u, init) => budget.fetch(new Request(u, init)) }) }, ...env };
 
   // Runs the real Worker code for a Node request.
   const relayHandler = async (req, res, u) => {
@@ -135,7 +150,7 @@ export async function start(gitRoot, env = {}, { split = false } = {}) {
   const appUrl = `http://127.0.0.1:${app.address().port}`;
   // The relay must only answer the app's own origin.
   if (split) workerEnv.ALLOWED_ORIGINS = appUrl;
-  return { appUrl, relayUrl, close: () => { app.close(); backend.close(); relayServer && relayServer.close(); globalThis.fetch = realFetch; } };
+  return { appUrl, relayUrl, workerEnv, aiCalls, close: () => { app.close(); backend.close(); relayServer && relayServer.close(); globalThis.fetch = realFetch; } };
 }
 
 const TEST_PAGES = {

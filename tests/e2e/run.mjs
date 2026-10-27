@@ -15,7 +15,7 @@ const stateRepo = makeRepo(root, 'tester', 'state', { 'README.md': '# state\n' }
 const appRepo = makeRepo(root, 'tester', 'app', { 'README.md': '# app\n', 'src/index.js': 'console.log("hi")\n' });
 git(appRepo, 'branch', 'release', 'main');
 const split = process.argv.includes('--split');
-const { appUrl, relayUrl, close } = await start(root, {}, { split });
+const { appUrl, relayUrl, workerEnv, aiCalls, close } = await start(root, {}, { split });
 if (split) console.log(`split mode: app ${appUrl}, relay ${relayUrl} (GitHub Pages setup)`);
 const browser = await chromium.launch();
 const results = [];
@@ -332,6 +332,50 @@ await check('model download: progress from the first moment, one download at a t
   assert.equal(r.bProgress, 0, 'and never downloaded anything itself');
   assert.equal(requests, 1, 'exactly one network download');
   assert.deepEqual(r.info, { total: SIZE, stored: SIZE, complete: true });
+  await ctx.close();
+});
+
+await check('cloud model: real engine through the relay, tool round trip, then a clear stop at the daily limit', async () => {
+  const ctx = await browser.newContext();
+  await ctx.route('https://api.github.com/**', r => r.fulfill({ status: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' }, contentType: 'application/json', body: JSON.stringify({ login: 'tester', id: 42 }) }));
+  const page = await ctx.newPage();
+  await page.goto(appUrl + '/');
+  const before = aiCalls.length;
+  const r = await page.evaluate(async () => {
+    const util = await import('/src/util.js'); await util.kv.set('auth', { access_token: 'tok' });
+    const gh = await import('/src/github.js'); await gh.loadAuth();
+    const engine = await import('/src/engine.js');
+    const info = await engine.downloadInfo('cloud');
+    await engine.load('cloud', 4096);
+    const tools = [{ name: 'web_search', description: 'Search the web.', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } }];
+    const conv = await engine.conversation({ system: 'You are Squiggle.', messages: [], tools, thinking: true, maxOutputTokens: 300 });
+    const r1 = await engine.respond(conv, "What's the weather in Phoenix?");
+    const r2 = await engine.respond(conv, [{ role: 'tool', content: [{ name: 'web_search', response: { results: 'sunny, 31C' } }] }]);
+    return { info, r1, r2, status: await gh.relayAiStatus() };
+  });
+  assert.deepEqual(r.info, { total: 0, stored: 0, complete: true }, 'nothing to download');
+  assert.deepEqual(r.r1.toolCalls.map(c => [c.function.name, c.function.arguments]), [['web_search', { query: 'weather Phoenix' }]]);
+  assert.equal(r.r2.text, 'Cloud says: sunny, 31C');
+  assert.equal(r.r2.thinking, 'Read the result.');
+  assert.equal(r.status.enabled, true);
+  assert.equal(r.status.used, 6);
+  assert.equal(aiCalls.length - before, 2);
+  // The second call carried the tool result linked to the first call's id.
+  const sent = aiCalls[aiCalls.length - 1].body.messages;
+  assert.deepEqual(sent.slice(-2).map(m => [m.role, m.tool_call_id || null]), [['assistant', null], ['tool', 'c1']]);
+  assert.equal(sent[sent.length - 2].tool_calls[0].id, 'c1');
+
+  // Over today's cap: refused before reaching Workers AI, with a clear message.
+  workerEnv.AI_DAILY_NEURONS = '7';
+  const n = aiCalls.length;
+  const err = await page.evaluate(async () => {
+    const engine = await import('/src/engine.js');
+    const conv = await engine.conversation({ system: 'You are Squiggle.', messages: [], tools: [], maxOutputTokens: 300 });
+    try { await engine.respond(conv, 'hello again'); return null; } catch (e) { return e.message; }
+  });
+  workerEnv.AI_DAILY_NEURONS = '9000';
+  assert.match(err || '', /You've hit today's free cloud limit, so the cloud model is paused\. It resets at .+\. Pick an on-device model/);
+  assert.equal(aiCalls.length, n, 'Workers AI was not called');
   await ctx.close();
 });
 

@@ -117,6 +117,33 @@ export async function gitAuth() {
   return { username: 'x-access-token', password: await token() };
 }
 
+// Cloud model on the relay. The relay checks who you are with your GitHub
+// token (the token stays in this module, like for git). Throws with the
+// relay's message; a daily-limit refusal carries .code = 'limit' and .resetsAt.
+export async function relayAi(body) {
+  let r;
+  try {
+    r = await fetch(apiBase() + '/ai/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + await token() },
+      body: JSON.stringify(body),
+    });
+  } catch { throw relayError('Can\'t reach the relay.'); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const e = new Error(data.message || data.error || `The relay answered with an error (${r.status}).`);
+    e.code = data.error === 'limit' ? 'limit' : 'relay';
+    e.resetsAt = data.resetsAt;
+    throw e;
+  }
+  return data;
+}
+
+export async function relayAiStatus() {
+  const r = await fetch(apiBase() + '/ai/status').catch(() => null);
+  return r && r.ok ? r.json() : { enabled: false };
+}
+
 // GitHub REST call. Returns parsed JSON (or null for 204); throws with
 // GitHub's message on failure, carrying .status.
 export async function gh(path, { method = 'GET', body, accept } = {}) {

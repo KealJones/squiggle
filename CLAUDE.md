@@ -32,7 +32,7 @@ app/                    static app, plain ES modules, no build step
     git.js              LightningFS + isomorphic-git wiring
     config.js           relay address: config.json / per-device override / same-origin
     util.js             ids, kv (IndexedDB), emitter, mutex
-worker/index.js         relay + static assets (wrangler.toml)
+worker/index.js         relay + static assets (wrangler.toml); cloud model route + AiBudget Durable Object
 tests/*.test.js         unit tests (node --test)
 tests/e2e/              Chromium end-to-end: real git server, real Worker code, scripted model
 ```
@@ -95,3 +95,12 @@ real-model behaviour needs a WebGPU device and is checked by hand.
   get tools in the system prompt and answer `<tool_call>{json}</tool_call>`; each round re-prefills.
 - Needs `shader-f16` for q4f16/q2f16 on WebGPU; without it the wasm (CPU) backend runs (slow).
 - Debug: `globalThis.SQUIGGLE_DEBUG = 1` logs load steps and raw generated text.
+
+## Cloud model (engine-cloud.js, worker /api/ai/*)
+
+- Gemma 4 26B A4B on Workers AI via the relay; off unless the Worker has the AI binding, the
+  AI_BUDGET Durable Object and AI_USERS (GitHub logins, checked with the caller's token).
+- Hard cap: each request reserves its worst-case neurons first; refused (429, error 'limit') when
+  that would pass AI_DAILY_NEURONS (default 9000, clamped to 9900 — under the free 10,000/day).
+  Settled with the real `usage.neurons` afterwards. Resets 00:00 UTC, like Cloudflare's.
+- The app shows the limit as a plain message; it never retries or falls back to billing.

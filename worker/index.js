@@ -10,6 +10,9 @@
 //   GET  /api/fetch?url=...              optional readable-web relay (ENABLE_FETCH)
 //   GET  /api/search?q=...               web search: DuckDuckGo Lite results plus its
 //                                        Instant Answer summary when it has one (ENABLE_FETCH)
+//   GET  /api/ai/status                  cloud model: enabled? today's usage and limit
+//   POST /api/ai/chat                    cloud model (Workers AI), for allowed GitHub users only,
+//                                        with a hard daily cap that never goes past the free tier
 //
 // It holds NO secrets: device-flow tokens are minted and refreshed with only
 // the public client ID. Tokens pass through the relay on their way to GitHub
@@ -60,7 +63,17 @@ async function route(request, url, env) {
       appSlug: env.GITHUB_APP_SLUG || null,
       clientConfigured: Boolean(env.GITHUB_CLIENT_ID),
       fetchEnabled: env.ENABLE_FETCH === 'true',
+      aiEnabled: aiEnabled(env),
     });
+  }
+
+  if (p === '/api/ai/status' && request.method === 'GET') {
+    if (!aiEnabled(env)) return json({ enabled: false });
+    return json({ enabled: true, ...(await budget(env, 'status')) });
+  }
+  if (p === '/api/ai/chat') {
+    if (request.method !== 'POST') return json({ error: 'Method not allowed.' }, 405);
+    return aiChat(request, env);
   }
 
   if (p.startsWith('/api/auth/')) {
@@ -261,6 +274,108 @@ async function webRelay(raw) {
   }
 }
 
+// ── Cloud model (Workers AI) ────────────────────────────────────────────────
+// Off unless the Worker has an AI binding, a budget Durable Object and a list
+// of GitHub logins allowed to use it (AI_USERS). Every request reserves its
+// worst-case cost against today's budget first and is refused when that would
+// go over AI_DAILY_NEURONS (default 9,000 — under Cloudflare's free 10,000 a
+// day, which also covers any other Workers AI use on the account). The budget
+// resets with Cloudflare's, at 00:00 UTC.
+export const AI_MODEL = '@cf/google/gemma-4-26b-a4b-it';
+const AI_RATES = { input: 9091 / 1e6, output: 27273 / 1e6 }; // neurons per token
+const AI_MAX_OUTPUT = 2048;
+const aiEnabled = (env) => Boolean(env.AI && env.AI_BUDGET && (env.AI_USERS || '').trim());
+export const aiLimit = (env) => Math.min(Number(env.AI_DAILY_NEURONS) || 9000, 9900);
+export function aiEstimate(body) {
+  const inputTokens = Math.ceil(JSON.stringify([body.messages, body.tools || []]).length / 3);
+  const out = Math.min(Number(body.max_tokens) || 1024, AI_MAX_OUTPUT);
+  return inputTokens * AI_RATES.input + out * AI_RATES.output;
+}
+export const utcDay = (t = Date.now()) => new Date(t).toISOString().slice(0, 10);
+export const nextReset = (t = Date.now()) => { const d = new Date(t); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1); };
+
+async function budget(env, op, amount = 0) {
+  const stub = env.AI_BUDGET.get(env.AI_BUDGET.idFromName('daily'));
+  const r = await stub.fetch('https://budget/' + op, { method: 'POST', body: JSON.stringify({ amount, limit: aiLimit(env) }) });
+  return r.json();
+}
+
+// Who is calling: the GitHub user behind the token (cached briefly per isolate).
+const userCache = new Map();
+async function githubLogin(auth) {
+  const hit = userCache.get(auth);
+  if (hit && hit.until > Date.now()) return hit.login;
+  const r = await fetch('https://api.github.com/user', { headers: { Authorization: auth, 'User-Agent': 'squiggle-relay', Accept: 'application/vnd.github+json' } });
+  const login = r.ok ? (await r.json()).login : null;
+  if (userCache.size > 100) userCache.clear();
+  userCache.set(auth, { login, until: Date.now() + 10 * 60 * 1000 });
+  return login;
+}
+
+async function aiChat(request, env) {
+  if (!aiEnabled(env)) return json({ error: 'The cloud model is not set up on this relay.' }, 404);
+  const auth = request.headers.get('Authorization') || '';
+  if (!/^(Bearer|token) \S+$/.test(auth)) return json({ error: 'Sign in first.' }, 401);
+  const login = await githubLogin(auth);
+  const allowed = (env.AI_USERS || '').split(',').map(u => u.trim().toLowerCase()).filter(Boolean);
+  if (!login || !allowed.includes(login.toLowerCase())) return json({ error: 'This GitHub account is not allowed to use the cloud model on this relay.' }, 403);
+
+  const body = await request.json().catch(() => null);
+  if (!body || !Array.isArray(body.messages) || !body.messages.length) return json({ error: 'messages required' }, 400);
+  const req = { messages: body.messages, max_tokens: Math.min(Number(body.max_tokens) || 1024, AI_MAX_OUTPUT) };
+  if (Array.isArray(body.tools) && body.tools.length) req.tools = body.tools;
+  if (typeof body.temperature === 'number') req.temperature = body.temperature;
+
+  const estimate = aiEstimate(req);
+  const held = await budget(env, 'reserve', estimate);
+  if (!held.ok) return json({ error: 'limit', message: "You've hit today's free cloud limit, so the cloud model is paused until it resets.", ...held }, 429);
+  let result;
+  try {
+    result = await env.AI.run(AI_MODEL, req);
+  } catch (e) {
+    await budget(env, 'settle', -estimate); // nothing was used (or Cloudflare refused)
+    const msg = String((e && e.message) || e);
+    if (/limit|quota|neuron|4006|exceeded/i.test(msg)) return json({ error: 'limit', message: "Cloudflare says today's free AI allowance is used up. The cloud model is paused until it resets.", resetsAt: nextReset() }, 429);
+    return json({ error: 'The cloud model failed: ' + msg }, 502);
+  }
+  const usage = result.usage || {};
+  const used = typeof usage.neurons === 'number' ? usage.neurons
+    : (usage.prompt_tokens || 0) * AI_RATES.input + (usage.completion_tokens || 0) * AI_RATES.output;
+  const after = await budget(env, 'settle', used - estimate);
+  const msg = (result.choices && result.choices[0] && result.choices[0].message) || {};
+  return json({
+    content: msg.content || result.response || '',
+    reasoning: msg.reasoning || '',
+    tool_calls: (msg.tool_calls || result.tool_calls || []).map(t => ({ id: t.id, function: { name: t.function ? t.function.name : t.name, arguments: t.function ? t.function.arguments : t.arguments } })),
+    usage: { input: usage.prompt_tokens || 0, output: usage.completion_tokens || 0, neurons: used },
+    budget: after,
+  });
+}
+
+// One instance ('daily') holds today's running total. Reservations make the
+// cap hold even when several requests are in flight at once.
+export class AiBudget {
+  constructor(state) { this.storage = state.storage; }
+  async fetch(request) {
+    const op = new URL(request.url).pathname.slice(1);
+    const { amount = 0, limit = 9000 } = await request.json().catch(() => ({}));
+    const day = utcDay();
+    let rec = (await this.storage.get('usage')) || { day, used: 0 };
+    if (rec.day !== day) rec = { day, used: 0 };
+    const view = (ok) => Response.json({ ok, used: Math.round(rec.used * 10) / 10, limit, resetsAt: nextReset() });
+    if (op === 'reserve') {
+      if (rec.used + amount > limit) return view(false);
+      rec.used += amount;
+    } else if (op === 'settle') {
+      rec.used = Math.max(0, rec.used + amount);
+    } else {
+      return view(rec.used < limit);
+    }
+    await this.storage.put('usage', rec);
+    return view(true);
+  }
+}
+
 export function allowedOrigin(origin, url, env) {
   if (!origin) return null;
   if (origin === url.origin) return origin;
@@ -284,4 +399,4 @@ function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-export const _test = { GIT_PATH, route, parseDdgLite, instantAnswer };
+export const _test = { GIT_PATH, route, parseDdgLite, instantAnswer, aiEstimate, AiBudget };

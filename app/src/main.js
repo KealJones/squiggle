@@ -123,7 +123,7 @@ async function startApp() {
     if (document.visibilityState === 'visible') storage.sync();
     else sessions.flush();
   });
-  initModel();
+  checkCloud().finally(() => initModel());
 }
 
 function fatal(e) {
@@ -317,8 +317,16 @@ async function chooseStorage(info, body) {
 }
 
 async function setupModel(body) {
+  await checkCloud();
   const gpu = await engine.webgpuStatus();
   const done = h('button', { class: 'btn primary', onclick: async () => { await startApp(); if (gpu.ok) ensureModel(); } }, gpu.ok ? 'Download and start' : 'Continue');
+  if (!gpu.ok && cloudOffered) {
+    agent.settings.model = 'cloud'; saveSettings();
+    body.append(h('h2', {}, 'This device can\'t run a model itself'), h('p', {}, gpu.reason),
+      h('p', {}, 'Squiggle will use the cloud model on your Cloudflare relay instead (free daily limit, then it pauses until midnight UTC).'),
+      h('button', { class: 'btn primary', onclick: async () => { await startApp(); } }, 'Start'));
+    return;
+  }
   if (!gpu.ok) {
     body.append(h('h2', {}, 'This device can\'t run the model'), h('p', {}, gpu.reason), h('p', { class: 'muted' }, 'Your sessions are set up and will be here when you open Squiggle on a device that can.'), done);
     return;
@@ -338,7 +346,7 @@ async function setupModel(body) {
 
 // Models this device can run, as a list of choices with size and a note.
 function modelPicker(value, onPick) {
-  const ids = Object.keys(engine.MODELS).filter(engine.modelFitsDevice);
+  const ids = Object.keys(engine.MODELS).filter(id => engine.modelFitsDevice(id) && (!engine.MODELS[id].needsRelay || cloudOffered));
   const list = h('div', { class: 'model-list', role: 'radiogroup', 'aria-label': 'Model' });
   const render = (v) => list.replaceChildren(...ids.map((id) => {
     const m = engine.MODELS[id];
@@ -633,6 +641,10 @@ async function initModel() {
       if (info && info.stored) await engine.deleteModel(id).catch(() => {});
     }
   }
+  if (engine.MODELS[agent.settings.model].runtime === 'cloud') {
+    if (!cloudOffered) { agent.settings.model = engine.deviceModel(); saveSettings(); return initModel(); }
+    return loadModel();
+  }
   const gpu = await engine.webgpuStatus();
   if (!gpu.ok) { modelState = 'unsupported'; banner(gpu.reason); return; }
   const info = await engine.downloadInfo(agent.settings.model);
@@ -641,6 +653,13 @@ async function initModel() {
   if (crashed) { modelState = 'idle'; showCrashBanner(crashed); return; }
   if (engine.isMobile()) { modelState = 'idle'; showLoadBanner(); return; }
   await loadModel();
+}
+
+// Whether the relay offers the cloud model (checked once at startup).
+let cloudOffered = false;
+async function checkCloud() {
+  try { cloudOffered = Boolean((await github.relayConfig()).aiEnabled); } catch { cloudOffered = false; }
+  return cloudOffered;
 }
 
 // Crash-loop guard. A note is written just before the model loads and
@@ -778,12 +797,13 @@ function ensureModel() {
 function updateComposerNote() {
   const note = $('#composer-note');
   if (!note || modelState !== 'ready') return;
-  note.textContent = `${engine.MODELS[agent.settings.model].label}, running on this device. ${agent.settings.contextMode === 'smart' ? 'Smart context is on.' : ''}`;
+  const cloud = engine.MODELS[agent.settings.model].runtime === 'cloud';
+  note.textContent = `${engine.MODELS[agent.settings.model].label}, ${cloud ? 'running on your Cloudflare relay (free daily limit)' : 'running on this device'}. ${agent.settings.contextMode === 'smart' ? 'Smart context is on.' : ''}`;
 }
 
 async function loadModel() {
   modelState = 'loading';
-  banner(squiggleWait(), h('span', {}, 'Loading the model onto your GPU…'));
+  banner(squiggleWait(), h('span', {}, engine.MODELS[agent.settings.model].runtime === 'cloud' ? 'Connecting to the cloud model…' : 'Loading the model onto your GPU…'));
   const S = agent.settings;
   setCrashMarker({ model: S.model, contextSize: S.contextSize, fast: S.fastDecode, at: Date.now() });
   try {
