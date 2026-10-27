@@ -72,6 +72,13 @@ function loadSettings() {
   }
   // Phones set up before the lighter defaults existed saved the desktop ones
   // (and could crash loading the model); move them over once.
+  // Phones used to default to the cloud model; Gemma 3 270M on the CPU is the
+  // phone default now. Move them over once (the cloud model stays in Settings).
+  if (mobile && !saved.phoneG3) {
+    if (agent.settings.model === 'cloud') agent.settings.model = 'G3';
+    saved = { ...saved, model: agent.settings.model, phoneG3: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
   if (mobile && !saved.mobileTuned) {
     Object.assign(agent.settings, { contextSize: 4096, fastDecode: false, mobileTuned: true });
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...saved, model: agent.settings.model, contextSize: 4096, fastDecode: false, mobileTuned: true })); } catch {}
@@ -327,13 +334,16 @@ async function setupModel(body) {
   const gpu = await engine.webgpuStatus();
   const done = h('button', { class: 'btn primary', onclick: async () => { await startApp(); if (gpu.ok) ensureModel(); } }, gpu.ok ? 'Download and start' : 'Continue');
   if (engine.isMobile()) {
-    // No on-device model fits a phone browser tab; phones use the cloud model.
-    if (cloudOffered) { agent.settings.model = 'cloud'; saveSettings(); }
+    // Gemma 4 doesn't fit a phone browser tab; phones run Gemma 3 270M on the
+    // CPU (no WebGPU needed), or the cloud model when the relay offers it.
+    if (!engine.modelFitsDevice(agent.settings.model) || (agent.settings.model === 'cloud' && !cloudOffered)) agent.settings.model = engine.deviceModel();
+    saveSettings();
+    const picker = modelPicker(agent.settings.model, (id) => { agent.settings.model = id; saveSettings(); });
     body.append(h('h2', {}, 'On your phone'),
-      h('p', {}, cloudOffered
-        ? 'Phone browsers don\'t have enough memory for an on-device model, so on this phone Squiggle uses the cloud model on your Cloudflare relay: Gemma 4 26B, nothing to download. It has a free daily limit, then pauses until midnight UTC. Your computer keeps running the model locally.'
-        : PHONE_NO_MODEL),
-      h('button', { class: 'btn primary', onclick: async () => { await startApp(); } }, cloudOffered ? 'Start' : 'Continue'));
+      h('p', {}, 'Phones run Gemma 3 270M right here: a 242 MB download, then it works offline. It\'s small, so it\'s quick but much less capable than Gemma 4, especially with tools.' +
+        (cloudOffered ? ' For harder tasks, pick the cloud model (Gemma 4 26B on your relay, free daily limit).' : '') + ' Your computer keeps running Gemma 4 locally.'),
+      picker,
+      h('button', { class: 'btn primary', onclick: async () => { await startApp(); if (agent.settings.model !== 'cloud') ensureModel(); } }, 'Start'));
     return;
   }
   if (!gpu.ok && cloudOffered) {
@@ -344,7 +354,11 @@ async function setupModel(body) {
     return;
   }
   if (!gpu.ok) {
-    body.append(h('h2', {}, 'This device can\'t run the model'), h('p', {}, gpu.reason), h('p', { class: 'muted' }, 'Your sessions are set up and will be here when you open Squiggle on a device that can.'), done);
+    // No WebGPU: the small CPU model still runs.
+    agent.settings.model = 'G3'; saveSettings();
+    body.append(h('h2', {}, 'No WebGPU on this browser'), h('p', {}, gpu.reason),
+      h('p', {}, 'Squiggle will run Gemma 3 270M on the CPU instead: a 242 MB download, much less capable than Gemma 4.'),
+      h('button', { class: 'btn primary', onclick: async () => { await startApp(); ensureModel(); } }, 'Download and start'));
     return;
   }
   if (!engine.modelFitsDevice(agent.settings.model)) agent.settings.model = engine.deviceModel();
@@ -802,23 +816,29 @@ async function initModel() {
     .then((n) => n && console.info(`Freed ${(n / 1e9).toFixed(1)} GB of old model downloads.`)).catch(() => {});
   if (engine.MODELS[agent.settings.model].runtime === 'cloud') {
     if (!cloudOffered) {
-      if (engine.isMobile()) { modelState = 'unsupported'; banner(PHONE_NO_MODEL); return; }
-      agent.settings.model = 'E4B'; saveSettings();
+      agent.settings.model = engine.deviceModel(); saveSettings();
       return initModel();
     }
     return loadModel();
   }
-  const gpu = await engine.webgpuStatus();
-  if (!gpu.ok) { modelState = 'unsupported'; banner(gpu.reason); return; }
+  if (engine.needsGpu(agent.settings.model)) {
+    const gpu = await engine.webgpuStatus();
+    if (!gpu.ok) {
+      // No WebGPU: Gemma 3 270M runs on the CPU instead.
+      agent.settings.model = 'G3'; saveSettings();
+      return initModel();
+    }
+  }
   const info = await engine.downloadInfo(agent.settings.model);
   if (!info.complete) { modelState = 'missing'; showDownloadBanner(info); return; }
-  const crashed = loadCrashMarker();
+  let crashed = loadCrashMarker();
+  // A crash with a different model (say Gemma 4 on a phone) says nothing about this one.
+  if (crashed && crashed.model !== agent.settings.model && !engine.needsGpu(agent.settings.model)) { setCrashMarker(null); crashed = null; }
   if (crashed) { modelState = 'idle'; showCrashBanner(crashed); return; }
-  if (engine.isMobile()) { modelState = 'idle'; showLoadBanner(); return; }
+  if (engine.isMobile() && engine.needsGpu(agent.settings.model)) { modelState = 'idle'; showLoadBanner(); return; }
   await loadModel();
 }
 
-const PHONE_NO_MODEL = 'No on-device model fits in a phone browser tab, and the cloud model isn\'t enabled on your relay (set AI_USERS on the Worker). Your chats sync here; use Squiggle on a computer to chat.';
 
 // Whether the relay offers the cloud model (checked once at startup).
 let cloudOffered = false;
@@ -846,7 +866,7 @@ function showLoadBanner() {
 }
 
 // Models from most to least memory needed; a crash offers the next one down.
-const BY_MEMORY = ['E4B', 'E2B'];
+const BY_MEMORY = ['E4B', 'E2B', 'G3'];
 function lighterModel(id) {
   const i = BY_MEMORY.indexOf(id);
   return BY_MEMORY.slice(i + 1).find(m => engine.MODELS[m] && engine.modelFitsDevice(m)) || null;
@@ -1185,7 +1205,7 @@ function renderSettingsPanel() {
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'Model'),
       modelPicker(S.model, async (v) => { if (v === S.model) return; S.model = v; saveSettings(); modelState = 'unknown'; await engine.unload(); initModel(); }),
       h('span', { class: 'hint' }, engine.isMobile()
-        ? 'Phones use the cloud model: no on-device model fits in a phone browser tab. Your computer runs Gemma 4 locally.'
+        ? 'Phones run Gemma 3 270M on the CPU by default: Gemma 4 doesn\'t fit in a phone browser tab. It\'s much less capable, especially with tools; the cloud model is the stronger option when your relay offers it.'
         : 'Gemma 4 E4B is the default on computers: the smartest and best with tools. Each model downloads once per device.')),
 
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'Context window'),

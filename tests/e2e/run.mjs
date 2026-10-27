@@ -730,7 +730,7 @@ await check('attachments: a PDF is read with pdf.js from the pinned CDN URL', as
   assert.equal(a.error, undefined);
 });
 
-await check('a crash while loading the model is caught on the next open; phones use the cloud model', async () => {
+await check('a crash while loading the model is caught on the next open; phones default to Gemma 3 270M', async () => {
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
   const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1';
   for (const phone of [false, true]) {
@@ -753,16 +753,16 @@ await check('a crash while loading the model is caught on the next open; phones 
     }, CFG);
     await page.reload();
     if (phone) {
-      // Phones don't load on-device models any more: straight to the cloud model.
+      // Phones run Gemma 3 270M on the CPU: the old Gemma 4 crash doesn't block it, and it loads right away.
       await page.waitForFunction(() => window.__loads === 1);
       const r = await page.evaluate(() => ({ last: window.__lastLoad, marker: localStorage.getItem('squiggle-model-loading'), saved: JSON.parse(localStorage.getItem('squiggle-settings')), cleanup: window.__cleanup }));
-      assert.equal(r.last.id, 'cloud', JSON.stringify(r));
-      assert.equal(r.saved.model, 'cloud');
+      assert.equal(r.last.id, 'G3', JSON.stringify(r));
+      assert.equal(r.saved.model, 'G3');
       assert.equal(r.marker, null);
-      assert.deepEqual(r.cleanup, ['cloud'], 'only the cloud model is kept; old on-device downloads are freed');
+      assert.deepEqual(r.cleanup, ['G3', 'cloud'], 'only phone models are kept; old Gemma 4 downloads are freed');
       await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
       await page.waitForSelector('#drawer .model-option');
-      assert.deepEqual(await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model)), ['cloud']);
+      assert.deepEqual(await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model)), ['G3', 'cloud']);
       if (shotsDir) await page.screenshot({ path: `${shotsDir}/phone-model-picker.png` });
     } else {
       await page.waitForSelector('#model-banner:not([hidden])');
@@ -776,7 +776,7 @@ await check('a crash while loading the model is caught on the next open; phones 
       const r = await page.evaluate(() => ({ last: window.__lastLoad, marker: localStorage.getItem('squiggle-model-loading'), cleanup: window.__cleanup }));
       assert.deepEqual(r.last, { id: 'E2B', ctx: 4096, opts: { fast: false } });
       assert.equal(r.marker, null, 'marker cleared after a good load');
-      assert.deepEqual(r.cleanup, ['E4B', 'E2B', 'cloud']);
+      assert.deepEqual(r.cleanup, ['E4B', 'E2B', 'G3', 'cloud']);
       // Replies are tracked too: progress writes the marker, idle clears it.
       await page.evaluate(() => window.__progress('writing the reply'));
       const mk = JSON.parse(await page.evaluate(() => localStorage.getItem('squiggle-model-loading')));
@@ -790,7 +790,7 @@ await check('a crash while loading the model is caught on the next open; phones 
       assert.match(await page.textContent('#model-banner'), /Fake E2B crashed this tab while answering, while writing the reply\./);
       await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
       await page.waitForSelector('#drawer .model-option');
-      assert.deepEqual(await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model)), ['E4B', 'E2B', 'cloud']);
+      assert.deepEqual(await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model)), ['E4B', 'E2B', 'G3', 'cloud']);
     }
     assert.deepEqual(page.errors, []);
     await ctx.close();
