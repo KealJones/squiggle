@@ -4,6 +4,7 @@
 export const MODELS = {
   E4B: { label: 'Fake E4B', size: '3.0 GB', note: 'test', url: 'fake://e4b', phone: false, runtime: 'litert' },
   E2B: { label: 'Fake E2B', size: '2.0 GB', note: 'test', url: 'fake://e2b', phone: false, runtime: 'litert' },
+  G3: { label: 'Fake G3', size: '242 MB', note: 'test', url: 'fake://g3', phone: true, runtime: 'wllama' },
   cloud: { label: 'Fake Cloud', size: 'no download', note: 'test', phone: true, runtime: 'cloud', needsRelay: true },
 };
 const log = (window.__engineLog = window.__engineLog || []);
@@ -15,7 +16,8 @@ export const engineReady = () => ready;
 export const currentModel = () => 'E2B';
 export const webgpuStatus = async () => ({ ok: true });
 export const suggestModel = () => 'E2B';
-export const deviceModel = () => (/iPhone|Android/.test(navigator.userAgent) ? 'cloud' : 'E4B');
+export const deviceModel = () => (/iPhone|Android/.test(navigator.userAgent) ? 'G3' : 'E4B');
+export const needsGpu = (id) => Boolean(MODELS[id] && MODELS[id].runtime === 'litert');
 export const cleanupStorage = async ({ keep } = {}) => { window.__cleanup = Object.keys(MODELS).filter(id => !keep || keep(id)); return 0; };
 export const modelFitsDevice = (id) => !isMobile() || Boolean(MODELS[id] && MODELS[id].phone);
 export const deleteModel = async (id) => { (window.__deleted = window.__deleted || []).push(id); };

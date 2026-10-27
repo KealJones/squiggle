@@ -1,5 +1,6 @@
 // Models. Gemma 4 E2B/E4B run on this device through LiteRT-LM on WebGPU;
-// the cloud model (Gemma 4 26B) runs on the relay (engine-cloud.js). Handles
+// Gemma 3 270M runs on the CPU through wllama (engine-wllama.js) and is the
+// phone default; the cloud model (Gemma 4 26B) runs on the relay (engine-cloud.js). Handles
 // the one-time resumable download into IndexedDB, engine startup, and
 // streaming generation with tools.
 import { kv, mutex } from './util.js';
@@ -13,6 +14,8 @@ export const MODELS = {
     url: HF + 'litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-web.litertlm' },
   E2B: { label: 'Gemma 4 E2B', size: '2.0 GB', note: 'faster, still good with tools', phone: false, runtime: 'litert',
     url: HF + 'litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.litertlm' },
+  G3: { label: 'Gemma 3 270M', size: '242 MB', note: 'tiny and fast; runs on a phone\'s CPU, no WebGPU needed. Has tools, but far less reliable with them than Gemma 4', phone: true, runtime: 'wllama',
+    url: HF + 'unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q4_0.gguf', bytes: 241574944 },
   // Not on this device: runs on the relay (only listed when the relay offers it).
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true },
 };
@@ -21,7 +24,7 @@ export const MODELS = {
 export function modelFiles(id) {
   const m = MODELS[id];
   if (!m) throw new Error(`Unknown model "${id}".`);
-  return m.runtime === 'cloud' ? [] : [{ url: m.url }];
+  return m.runtime === 'litert' ? [{ url: m.url }] : [];
 }
 
 const FLUSH_BYTES = 16 * 1024 * 1024;
@@ -66,12 +69,14 @@ export function isMobile() {
   return /Android|iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 }
 
-// The model for this device: computers run E4B; phones use the cloud model,
-// because no on-device model fits a phone browser tab's memory (iOS Safari
-// kills the tab). The UI falls back when the relay doesn't offer the cloud.
+// The model for this device: computers run E4B; phones run Gemma 3 270M on
+// the CPU, because Gemma 4 doesn't fit a phone browser tab's memory (iOS
+// Safari kills the tab). Phones can still pick the cloud model.
 export function deviceModel() {
-  return isMobile() ? 'cloud' : 'E4B';
+  return isMobile() ? 'G3' : 'E4B';
 }
+// Runs without WebGPU (CPU only).
+export const needsGpu = (id) => Boolean(MODELS[id] && MODELS[id].runtime === 'litert');
 export const suggestModel = deviceModel;
 export const modelFitsDevice = (id) => !isMobile() || Boolean(MODELS[id] && MODELS[id].phone);
 
@@ -81,6 +86,11 @@ const metaKey = (url) => 'model-meta:' + url;
 const recSize = (r) => (r == null ? 0 : r.size ?? r.byteLength);
 
 export async function downloadInfo(id) {
+  const wm = MODELS[id];
+  if (wm && wm.runtime === 'wllama') {
+    const done = await (await import('./engine-wllama.js')).isDownloaded(wm.url);
+    return { total: wm.bytes, stored: done ? wm.bytes : 0, complete: done };
+  }
   let total = 0, stored = 0, complete = true;
   for (const f of modelFiles(id)) {
     const m = (await kv.get(metaKey(f.url))) || { total: 0, stored: 0, complete: false };
@@ -110,6 +120,10 @@ export async function download(id, onProgress, signal, { onWaiting } = {}) {
 
 async function downloadUnlocked(id, onProgress, signal) {
   if ((await downloadInfo(id)).complete) return;
+  if (MODELS[id].runtime === 'wllama') {
+    try { await navigator.storage?.persist?.(); } catch {}
+    return (await import('./engine-wllama.js')).downloadModel(MODELS[id].url, onProgress, signal);
+  }
   const files = modelFiles(id);
   const metas = await Promise.all(files.map(f => kv.get(metaKey(f.url))));
   const sizes = files.map((f, i) => (metas[i] && metas[i].total) || f.size);
@@ -206,6 +220,7 @@ async function storedBytes(url) {
 }
 
 export async function deleteModel(id) {
+  if (MODELS[id] && MODELS[id].runtime === 'wllama') return (await import('./engine-wllama.js')).removeModel(MODELS[id].url);
   for (const { url } of modelFiles(id)) {
     for (const off of await chunkOffsets(url)) await kv.del([url, off], 'model');
     await kv.del(metaKey(url));
@@ -259,6 +274,11 @@ export async function load(id, contextSize, { fast = true, onStage = () => {} } 
   await unload();
   if (MODELS[id].runtime === 'cloud') {
     engine = (await import('./engine-cloud.js')).createEngine();
+    loadedModel = id; engineContext = contextSize; engineFast = fast;
+    return;
+  }
+  if (MODELS[id].runtime === 'wllama') {
+    engine = await (await import('./engine-wllama.js')).createEngine(MODELS[id].url, contextSize, onStage);
     loadedModel = id; engineContext = contextSize; engineFast = fast;
     return;
   }

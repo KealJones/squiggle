@@ -1,6 +1,6 @@
 # Squiggle — notes for engineers and coding agents
 
-A browser-only agent: Gemma 4 on WebGPU (LiteRT-LM) on computers, Gemma 4 26B on the relay's Workers AI on phones, state synced through a
+A browser-only agent: Gemma 4 on WebGPU (LiteRT-LM) on computers, Gemma 3 270M on the CPU (wllama) or Gemma 4 26B on the relay's Workers AI on phones, state synced through a
 private GitHub "storage repo", and a Cloudflare Worker that relays GitHub
 requests browsers can't make (device-flow login, git smart-HTTP). The app is
 static: either the Worker serves it (wrangler.toml, relay same-origin at /api)
@@ -18,6 +18,7 @@ app/                    static app, plain ES modules, no build step
     agent.js            turn loop (context → stream → tools → repeat) + background jobs
     engine.js           model registry, download (resumable, IndexedDB chunks), LiteRT engine, generation
     engine-cloud.js     cloud model through the relay (same conversation interface)
+    engine-wllama.js    Gemma 3 270M on llama.cpp WASM (phones): prompt-based tools + find_tools
     context.js          context assembly: compact (default) / smart (retrieval) / full; report
     search.js           BM25 + blend with optional embeddings (embed.js, MiniLM on CPU)
     tools.js            agent tools; run_js sandbox host
@@ -92,8 +93,14 @@ real-model behaviour needs a WebGPU device and is checked by hand.
 ## Phones
 
 iOS Safari kills tabs that load Gemma 4 E2B/E4B, and smaller ONNX models (tried and removed:
-Gemma 3, SmolLM, a QAT E2B build on onnxruntime-web) failed on WebGPU readback. Phones use the
-cloud model; `cleanupStorage` frees downloads of models that aren't offered or don't fit.
+Gemma 3, SmolLM, a QAT E2B build on onnxruntime-web) failed on WebGPU readback. Phones default to
+Gemma 3 270M (`G3`): unsloth's Q4_0 GGUF (242 MB) on wllama 3.8.1, CPU only (`n_gpu_layers: 0`),
+in `engine-wllama.js`; wllama caches the file itself. Also the fallback on computers without WebGPU.
+(ONNX on WASM failed too: the 4-bit export packs embeddings with GatherBlockQuantized, which the
+WASM build lacks, and the older full-precision export got the tab killed.) Gemma 3 has no tool
+format, so tools are prompt-based ```tool_call JSON blocks, and only tool names go in the prompt:
+the model looks tools up with `find_tools`, which the engine answers itself. The cloud model stays
+available on phones. `cleanupStorage` frees downloads of models that aren't offered or don't fit.
 Loads and replies write a crash marker with the current step, shown on the next open.
 
 ## Cloud model (engine-cloud.js, worker /api/ai/*)
