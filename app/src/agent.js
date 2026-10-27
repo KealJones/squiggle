@@ -48,7 +48,9 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
   return engine.foreground(async () => {
     const tools = toolSpecs(settings.tools);
     const toolTokens = estTokens(JSON.stringify(tools));
-    const budget = settings.contextSize - MAX_OUTPUT - toolTokens - 200;
+    // History gets about half the window; the rest stays free for this turn's
+    // tool results and the reply (a full window made turns fail at the start).
+    const budget = Math.max(1000, Math.min(settings.contextSize - MAX_OUTPUT - toolTokens - 200, Math.floor(settings.contextSize * 0.5) - toolTokens));
     const line = sessions.lineMessages(session, threadId).filter(m => m.id !== userMsg.id);
     const ctx = await assembleContext({
       line, session, threadId, query: text, budget, mode: settings.contextMode,
