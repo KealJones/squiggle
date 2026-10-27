@@ -161,13 +161,13 @@
           <ul class="facts">
             <li>270M parameters</li>
             <li>4-bit weights</li>
-            <li>≈345 MB once</li>
+            <li>≈820 MB once</li>
             <li id="fact-threads">CPU · 1 thread</li>
           </ul>
 
           <div class="card" id="load-card">
             <button class="btn primary" id="load-btn" type="button">Load the model</button>
-            <span class="sub" id="load-sub">The first time downloads about 345 MB from Hugging Face. After that it loads from this device.</span>
+            <span class="sub" id="load-sub">The first time downloads about 820 MB from Hugging Face, so Wi-Fi helps. After that it loads from this device.</span>
           </div>
 
           <div class="card" id="progress-card" hidden>
@@ -204,6 +204,10 @@
     import { pipeline, TextStreamer, InterruptableStoppingCriteria, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1/dist/transformers.min.js';
 
     const MODEL = 'onnx-community/gemma-3-270m-it-ONNX';
+    // Pinned to the Dec 2025 export: its 4-bit model uses only ops the WASM
+    // build has. The Mar 2026 re-export quantizes the embeddings with
+    // GatherBlockQuantized, which ONNX Runtime's WASM build can't run.
+    const REVISION = 'cfd5c04f84a64766d63efc5bb1d2cf31f34a4a90';
     env.allowLocalModels = false;
 
     let generator = null;
@@ -219,6 +223,7 @@
         try {
           generator = await pipeline('text-generation', MODEL, {
             dtype: 'q4',
+            revision: REVISION,
             device: 'wasm',
             progress_callback: (p) => {
               if (p.status === 'progress' || p.status === 'progress_total' || p.status === 'initiate' || p.status === 'done') {
@@ -275,7 +280,7 @@
 
   <script type="module">
     const $ = (id) => document.getElementById(id);
-    const MODEL_DATA_URL = 'https://huggingface.co/onnx-community/gemma-3-270m-it-ONNX/resolve/main/onnx/model_q4.onnx_data';
+    const MODEL_DATA_URL = 'https://huggingface.co/onnx-community/gemma-3-270m-it-ONNX/resolve/cfd5c04f84a64766d63efc5bb1d2cf31f34a4a90/onnx/model_q4.onnx_data';
     const SYSTEM = 'You are a helpful assistant. Keep answers short and clear.';
     const MAX_PAIRS = 3;                       // earlier turns sent with each message
     const CRASH_KEY = 'squiggle-lite-crash';
@@ -421,6 +426,13 @@
       files.clear();
       showProgress();
       try { navigator.storage.persist().catch(() => {}); } catch {}
+      // The first version of this page cached a model WASM can't run; free that space.
+      (async () => {
+        try {
+          const c = await caches.open('transformers-cache');
+          for (const r of await c.keys()) if (r.url.includes('/gemma-3-270m-it-ONNX/resolve/main/onnx/')) await c.delete(r);
+        } catch {}
+      })();
 
       if (state.worker) state.worker.terminate();
       const src = $('worker-src').textContent;
