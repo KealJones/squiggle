@@ -28,7 +28,7 @@ test('foreign origins are refused', async () => {
 test('config exposes no secrets', async () => {
   const r = await worker.fetch(req('/api/config'), env);
   const d = await r.json();
-  assert.deepEqual(d, { appSlug: 'squiggle-keal', clientConfigured: true, fetchEnabled: true });
+  assert.deepEqual(d, { appSlug: 'squiggle-keal', clientConfigured: true, fetchEnabled: true, aiEnabled: false });
 });
 
 test('device flow sends only the public client id to GitHub', async () => {
@@ -121,4 +121,92 @@ test('instant answers: picks answer, then abstract, then definition', () => {
   assert.equal(instantAnswer(null), null);
   assert.equal(instantAnswer({ Answer: '4', AnswerType: 'calc', AbstractText: 'x' }).text, '4');
   assert.equal(instantAnswer({ Definition: 'A wavy line.', DefinitionSource: 'Wordnik' }).source, 'Wordnik');
+});
+
+// ── Cloud model ───────────────────────────────────────────────────────────
+function aiEnv({ limit = '9000', run } = {}) {
+  const store = new Map();
+  const budget = new _test.AiBudget({ storage: { get: async (k) => store.get(k), put: async (k, v) => { store.set(k, v); } } });
+  const calls = [];
+  return {
+    calls, store,
+    env: {
+      ...env, AI_USERS: 'KealJones', AI_DAILY_NEURONS: limit,
+      AI_BUDGET: { idFromName: () => 'id', get: () => ({ fetch: (u, init) => budget.fetch(new Request(u, init)) }) },
+      AI: { run: async (model, body) => { calls.push({ model, body }); return run ? run(body) : { choices: [{ message: { content: 'Hi from the cloud', tool_calls: [{ id: 't1', type: 'function', function: { name: 'web_search', arguments: '{"query":"x"}' } }] } }], usage: { prompt_tokens: 80, completion_tokens: 50, neurons: 2.2 } }; } },
+    },
+  };
+}
+const aiReq = (login, body = { messages: [{ role: 'user', content: 'hi' }], max_tokens: 200 }) => req('/api/ai/chat', { method: 'POST', headers: { Authorization: 'Bearer tok-' + login, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const ghUser = (login) => mock.method(globalThis, 'fetch', async (u, init) => {
+  assert.equal(String(u), 'https://api.github.com/user');
+  assert.match(init.headers.Authorization, /^Bearer tok-/);
+  return Response.json({ login: init.headers.Authorization.replace('Bearer tok-', '') });
+});
+
+test('cloud model: off without config, only for allowed GitHub users', async () => {
+  let r = await worker.fetch(aiReq('KealJones'), env);
+  assert.equal(r.status, 404);
+  assert.equal((await (await worker.fetch(req('/api/config'), env)).json()).aiEnabled, false);
+  const { env: e, calls } = aiEnv();
+  const f = ghUser();
+  try {
+    r = await worker.fetch(aiReq('someone-else'), e);
+    assert.equal(r.status, 403);
+    r = await worker.fetch(req('/api/ai/chat', { method: 'POST', body: '{}' }), e);
+    assert.equal(r.status, 401);
+    assert.equal(calls.length, 0, 'never reached Workers AI');
+    r = await worker.fetch(aiReq('kealjones'), e); // logins compare case-insensitively
+    assert.equal(r.status, 200);
+    const d = await r.json();
+    assert.equal(d.content, 'Hi from the cloud');
+    assert.deepEqual(d.tool_calls, [{ id: 't1', function: { name: 'web_search', arguments: '{"query":"x"}' } }]);
+    assert.equal(d.budget.used, 2.2, 'charged the real usage, not the reservation');
+    assert.equal(calls[0].model, '@cf/google/gemma-4-26b-a4b-it');
+  } finally { f.mock.restore(); }
+});
+
+test('cloud model: hard daily cap, checked before calling Workers AI', async () => {
+  const { env: e, calls, store } = aiEnv({ limit: '20' });
+  const f = ghUser();
+  try {
+    // Worst case for 200 output tokens is ~5.5 neurons; real use 2.2 each.
+    for (let i = 0; i < 6; i++) assert.equal((await worker.fetch(aiReq('KealJones'), e)).status, 200);
+    assert.ok(Math.abs(store.get('usage').used - 13.2) < 0.01);
+    // The next requests would risk going over: refused without calling the model.
+    const before = calls.length;
+    let r;
+    for (let i = 0; i < 3; i++) r = await worker.fetch(aiReq('KealJones'), e);
+    const d = await r.json();
+    assert.equal(r.status, 429);
+    assert.equal(d.error, 'limit');
+    assert.match(d.message, /today's free cloud limit/);
+    assert.ok(d.resetsAt > Date.now());
+    assert.ok(calls.length - before <= 1);
+    assert.ok(store.get('usage').used <= 20);
+    // A new UTC day starts fresh.
+    store.set('usage', { day: '2000-01-01', used: 9999 });
+    assert.equal((await worker.fetch(aiReq('KealJones'), e)).status, 200);
+  } finally { f.mock.restore(); }
+});
+
+test('cloud model: the cap can never be set above the free tier', async () => {
+  assert.equal(_test.aiEstimate({ messages: [{ role: 'user', content: 'x'.repeat(3000) }], max_tokens: 1000 }) > 27, true);
+  const { env: e } = aiEnv({ limit: '50000' });
+  const f = ghUser();
+  try {
+    const d = await (await worker.fetch(aiReq('KealJones'), e)).json();
+    assert.equal(d.budget.limit, 9900);
+  } finally { f.mock.restore(); }
+});
+
+test('cloud model: a Workers AI quota error comes back as the limit message and refunds the reservation', async () => {
+  const { env: e, store } = aiEnv({ run: () => { throw new Error('AiError: 4006: you have used up your daily free allocation of 10,000 neurons'); } });
+  const f = ghUser();
+  try {
+    const r = await worker.fetch(aiReq('KealJones'), e);
+    assert.equal(r.status, 429);
+    assert.match((await r.json()).message, /allowance is used up/);
+    assert.equal(store.get('usage').used, 0);
+  } finally { f.mock.restore(); }
 });

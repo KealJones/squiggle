@@ -43,6 +43,8 @@ export const MODELS = {
     repo: 'onnx-community/SmolLM2-360M-Instruct-ONNX', family: 'smollm2', needsF16: true, stopText: ['<|im_end|>'],
     files: { 'onnx/model_q4f16.onnx': 272353302, 'tokenizer.json': 3522656, 'tokenizer_config.json': 3794, 'generation_config.json': 132 },
     graph: 'onnx/model_q4f16.onnx' },
+  // Not on this device: runs on the relay (only listed when the relay offers it).
+  cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true },
 };
 
 // Every file a model needs. ONNX files are stored as Blobs so single rows can
@@ -50,6 +52,7 @@ export const MODELS = {
 export function modelFiles(id) {
   const m = MODELS[id];
   if (!m) throw new Error(`Unknown model "${id}".`);
+  if (m.runtime === 'cloud') return [];
   if (m.runtime !== 'onnx') return [{ path: '', url: m.url, size: 0, blob: false }];
   return Object.entries(m.files).map(([path, size]) => ({ path, url: `${HF}${m.repo}/resolve/main/${path}`, size, blob: true }));
 }
@@ -293,6 +296,11 @@ let engineFast = null;
 export async function load(id, contextSize, { fast = true } = {}) {
   if (engine && loadedModel === id && engineContext === contextSize && engineFast === fast) return;
   await unload();
+  if (MODELS[id].runtime === 'cloud') {
+    engine = (await import('./engine-cloud.js')).createEngine();
+    loadedModel = id; engineContext = contextSize; engineFast = fast;
+    return;
+  }
   if (MODELS[id].runtime === 'onnx') {
     const onnx = await import('./engine-onnx.js');
     const spec = MODELS[id];

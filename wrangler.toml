@@ -19,3 +19,20 @@ GITHUB_APP_SLUG = "squiggle-github"
 ENABLE_FETCH = "true"
 # Only needed if you also host the app somewhere else (comma-separated origins).
 ALLOWED_ORIGINS = ""
+# GitHub logins allowed to use the cloud model (comma-separated; empty = off).
+AI_USERS = ""
+AI_DAILY_NEURONS = "9000"
+
+# Cloud model (optional): Gemma 4 26B on Workers AI for the GitHub logins in
+# AI_USERS, with a hard daily cap (AI_DAILY_NEURONS, default 9000) kept under
+# Cloudflare's free 10,000 neurons a day, so it never bills.
+[ai]
+binding = "AI"
+
+[[durable_objects.bindings]]
+name = "AI_BUDGET"
+class_name = "AiBudget"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AiBudget"]
