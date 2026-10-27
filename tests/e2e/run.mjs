@@ -296,6 +296,45 @@ if (split) await check('split: app talks to a relay on another origin; other ori
   assert.equal(ok.headers.get('access-control-allow-origin'), appUrl);
 });
 
+await check('model download: progress from the first moment, one download at a time, complete file', async () => {
+  // Real engine.js against a fake Hugging Face that honours Range requests.
+  const ctx = await browser.newContext();
+  const SIZE = 40 * 1024 * 1024 + 12345;
+  const file = Buffer.alloc(SIZE);
+  for (let i = 0; i < SIZE; i += 4096) file[i] = (i / 4096) & 255;
+  file.write('LITERTLM', 0);
+  let requests = 0;
+  await ctx.route('https://huggingface.co/**', async (route) => {
+    requests++;
+    const range = route.request().headers()['range'];
+    const start = range ? +range.match(/bytes=(\d+)-/)[1] : 0;
+    const body = file.subarray(start);
+    await route.fulfill({
+      status: range ? 206 : 200, body,
+      headers: { 'Content-Length': String(body.length), 'Access-Control-Allow-Origin': '*', 'Access-Control-Expose-Headers': 'Content-Range, Content-Length', ...(range ? { 'Content-Range': `bytes ${start}-${SIZE - 1}/${SIZE}` } : {}) },
+    });
+  });
+  const page = await ctx.newPage();
+  await page.goto(appUrl + '/');
+  const r = await page.evaluate(async () => {
+    const engine = await import('/src/engine.js');
+    const events = { a: [], b: [], waiting: 0 };
+    // Two downloads at once, like double taps or a second tab.
+    const first = engine.download('E2B', (got, total) => events.a.push([got, total]));
+    const second = engine.download('E2B', (got, total) => events.b.push([got, total]), undefined, { onWaiting: () => events.waiting++ });
+    await Promise.all([first, second]);
+    const info = await engine.downloadInfo('E2B');
+    return { info, waiting: events.waiting, firstProgress: events.a[0], last: events.a[events.a.length - 1], bProgress: events.b.length, aCount: events.a.length };
+  });
+  assert.deepEqual(r.firstProgress, [0, 0], 'reports immediately, before the network answers');
+  assert.equal(r.last[0], SIZE);
+  assert.equal(r.waiting, 1, 'the second download waited');
+  assert.equal(r.bProgress, 0, 'and never downloaded anything itself');
+  assert.equal(requests, 1, 'exactly one network download');
+  assert.deepEqual(r.info, { total: SIZE, stored: SIZE, complete: true });
+  await ctx.close();
+});
+
 await check('no page errors so far', async () => {
   const errs = [...A.page.errors, ...B.page.errors].filter(e => !/favicon|404|Failed to load resource/.test(e));
   assert.deepEqual(errs, []);

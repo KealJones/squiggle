@@ -619,7 +619,15 @@ function showDownloadBanner(info) {
   const m = engine.MODELS[agent.settings.model];
   const resumed = info && info.stored ? ` (${Math.round(100 * info.stored / (info.total || 1))}% done)` : '';
   banner(h('span', {}, `Download ${m.label} (${m.size}) to start chatting${resumed}.`),
-    h('button', { class: 'btn primary', onclick: () => ensureModel() }, info && info.stored ? 'Resume download' : 'Download'));
+    h('button', { class: 'btn primary', onclick: (e) => { e.currentTarget.disabled = true; ensureModel(); } }, info && info.stored ? 'Resume download' : 'Download'));
+}
+
+const gb = (n) => (n / 1e9).toFixed(2);
+function eta(seconds) {
+  if (!isFinite(seconds) || seconds <= 0) return '';
+  if (seconds < 90) return 'under 2 min left';
+  if (seconds < 3600) return `about ${Math.round(seconds / 60)} min left`;
+  return `about ${(seconds / 3600).toFixed(1)} h left`;
 }
 
 let modelPromise = null;
@@ -632,16 +640,37 @@ function ensureModel() {
       const info = await engine.downloadInfo(id);
       if (!info.complete) {
         modelState = 'downloading';
+        const m = engine.MODELS[id];
         const bar = h('div');
-        const label = h('span', {}, 'Downloading model…');
-        banner(label, h('div', { class: 'progress' }, bar));
+        const progress = h('div', { class: 'progress indeterminate', role: 'progressbar', 'aria-label': 'Model download' }, bar);
+        const label = h('span', {}, `Starting download of ${m.label}…`);
+        const detail = h('span', { class: 'muted' }, 'Keep this tab open. If it gets interrupted, it picks up where it stopped.');
+        banner(h('div', { class: 'dl' }, h('div', { class: 'dl-head' }, squiggleWait(), label), progress, detail));
+        // Keep the screen on while downloading (best effort; never blocks).
         let wake = null;
-        try { wake = await navigator.wakeLock?.request('screen'); } catch {}
+        navigator.wakeLock?.request('screen').then(w => { wake = w; }).catch(() => {});
+        // Smoothed speed for the time estimate.
+        let lastT = performance.now(), lastGot = null, speed = 0;
         try {
           await engine.download(id, (got, total) => {
-            const pct = total ? (100 * got / total) : 0;
+            const now = performance.now();
+            if (lastGot != null && now - lastT > 700) {
+              const inst = (got - lastGot) / ((now - lastT) / 1000);
+              speed = speed ? speed * 0.7 + inst * 0.3 : inst;
+              lastT = now; lastGot = got;
+            } else if (lastGot == null) { lastGot = got; lastT = now; }
+            if (!total) return;
+            const pct = Math.min(100, 100 * got / total);
+            progress.classList.remove('indeterminate');
+            progress.setAttribute('aria-valuenow', pct.toFixed(0));
             bar.style.width = pct.toFixed(1) + '%';
-            label.textContent = `Downloading model… ${(got / 1e9).toFixed(2)} of ${(total / 1e9).toFixed(2)} GB`;
+            label.textContent = `Downloading ${m.label}: ${gb(got)} of ${gb(total)} GB (${pct.toFixed(0)}%)`;
+            if (speed > 0) detail.textContent = `${(speed / 1e6).toFixed(1)} MB/s · ${eta((total - got) / speed)}`;
+          }, undefined, {
+            onWaiting: () => {
+              label.textContent = `${m.label} is downloading in another tab or window.`;
+              detail.textContent = 'This tab will continue as soon as it finishes.';
+            },
           });
         } finally { try { await wake?.release(); } catch {} }
       }
