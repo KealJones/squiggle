@@ -27,7 +27,7 @@ export const MODELS = {
     repo: 'onnx-community/gemma-3-1b-it-ONNX', family: 'gemma3', needsF16: true, stopText: ['<end_of_turn>'],
     files: { 'onnx/model_q4f16.onnx': 461341, 'onnx/model_q4f16.onnx_data': 763067904, 'tokenizer.json': 20323013, 'tokenizer_config.json': 2327, 'chat_template.jinja': 1532, 'generation_config.json': 244 },
     graph: 'onnx/model_q4f16.onnx', data: 'onnx/model_q4f16.onnx_data' },
-  'G3-270M': { label: 'Gemma 3 270M', size: '0.3 GB', note: 'tiny; simple chat only', phone: true, runtime: 'onnx',
+  'G3-270M': { label: 'Gemma 3 270M', size: '0.3 GB', note: 'tiny; simple chat only (no tools)', phone: true, runtime: 'onnx', tools: false,
     repo: 'onnx-community/gemma-3-270m-it-ONNX', family: 'gemma3', needsF16: true, stopText: ['<end_of_turn>'],
     files: { 'onnx/model_q4f16.onnx': 330717, 'onnx/model_q4f16.onnx_data': 272626176, 'tokenizer.json': 20323013, 'tokenizer_config.json': 2313, 'chat_template.jinja': 1532, 'generation_config.json': 202 },
     graph: 'onnx/model_q4f16.onnx', data: 'onnx/model_q4f16.onnx_data' },
@@ -39,7 +39,7 @@ export const MODELS = {
     repo: 'HuggingFaceTB/SmolLM2-1.7B-Instruct', family: 'smollm2', needsF16: true, stopText: ['<|im_end|>'],
     files: { 'onnx/model_q4f16.onnx': 1108730338, 'tokenizer.json': 2104556, 'tokenizer_config.json': 3764, 'generation_config.json': 132 },
     graph: 'onnx/model_q4f16.onnx' },
-  'SL2-360M': { label: 'SmolLM2 360M', size: '0.3 GB', note: 'tiny, fully open training data; simple chat only', phone: true, runtime: 'onnx',
+  'SL2-360M': { label: 'SmolLM2 360M', size: '0.3 GB', note: 'tiny, fully open training data; simple chat only (no tools)', phone: true, runtime: 'onnx', tools: false,
     repo: 'onnx-community/SmolLM2-360M-Instruct-ONNX', family: 'smollm2', needsF16: true, stopText: ['<|im_end|>'],
     files: { 'onnx/model_q4f16.onnx': 272353302, 'tokenizer.json': 3522656, 'tokenizer_config.json': 3794, 'generation_config.json': 132 },
     graph: 'onnx/model_q4f16.onnx' },
@@ -306,6 +306,10 @@ let engineFast = null;
 // onStage(text) reports each loading step (the UI keeps the last one, so a
 // tab that dies mid-load can say where). cpu: run ONNX models on the CPU.
 let engineCpu = false;
+// After loading, the same reports keep coming while a reply is generated
+// ("reading the prompt (96 of 1540 tokens)", then null when idle).
+let progress = () => {};
+export const setProgress = (fn) => { progress = fn || (() => {}); };
 export async function load(id, contextSize, { fast = true, cpu = false, onStage = () => {} } = {}) {
   if (engine && loadedModel === id && engineContext === contextSize && engineFast === fast && engineCpu === cpu) return;
   await unload();
@@ -319,7 +323,9 @@ export async function load(id, contextSize, { fast = true, cpu = false, onStage 
     const onnx = await import('./engine-onnx.js');
     const spec = MODELS[id];
     const useGpu = !cpu && (!spec.needsF16 || await onnx.gpuHasF16());
-    engine = await onnx.createEngine(spec, storedFiles(id), { contextSize, useGpu, onStage });
+    let loading = true;
+    engine = await onnx.createEngine(spec, storedFiles(id), { contextSize, useGpu, onStage: (st) => (loading ? st && onStage(st) : progress(st)) });
+    loading = false;
     loadedModel = id; engineContext = contextSize; engineFast = fast;
     return;
   }

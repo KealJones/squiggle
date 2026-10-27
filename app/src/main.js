@@ -706,11 +706,11 @@ function showCrashBanner(c) {
   const again = h('button', { class: changed ? 'btn primary' : 'btn', onclick: () => { setCrashMarker(null); loadModel(); } }, changed ? 'Load model' : 'Try again');
   const settingsText = `${engine.MODELS[S.model].label}, ${S.contextSize / 1024}K context, speed boost ${S.fastDecode ? 'on' : 'off'}`;
   const onnx = engine.MODELS[S.model].runtime === 'onnx';
-  const tryCpu = onnx && !S.cpu && /GPU|warming/i.test(c.stage || '') ? h('button', { class: 'btn', onclick: () => {
+  const tryCpu = onnx && !S.cpu && (c.phase === 'reply' || /GPU|warming/i.test(c.stage || '')) ? h('button', { class: 'btn', onclick: () => {
     S.cpu = true; saveSettings(); setCrashMarker(null); loadModel();
   } }, 'Try on the CPU (slow)') : '';
   banner(h('div', { class: 'dl' },
-    h('span', {}, `Loading ${m.label}${c.cpu ? ' on the CPU' : ''} crashed this tab last time${c.stage ? `, while ${c.stage}` : ''}.`),
+    h('span', {}, `${c.phase === 'reply' ? m.label + (c.cpu ? ' on the CPU' : '') + ' crashed this tab while answering' : 'Loading ' + m.label + (c.cpu ? ' on the CPU' : '') + ' crashed this tab last time'}${c.stage ? `, while ${c.stage}` : ''}.`),
     c.gpu ? h('span', { class: 'muted' }, `GPU: ${c.gpu}`) : '',
     h('span', { class: 'muted' }, changed
       ? `This device now uses lighter settings (${settingsText}), which need much less memory.`
@@ -819,6 +819,12 @@ async function loadModel() {
   try {
     await engine.load(S.model, S.contextSize, { fast: S.fastDecode, cpu: Boolean(S.cpu), onStage: (st) => { marker.stage = st; setCrashMarker(marker); step.textContent = st[0].toUpperCase() + st.slice(1) + '…'; } });
     setCrashMarker(null);
+    // While a reply is generated, keep a marker too: a crash mid-reply then
+    // says where on the next open ("while reading the prompt (96 of 1540 tokens)").
+    engine.setProgress((st) => {
+      if (!st) { setCrashMarker(null); return; }
+      setCrashMarker({ ...marker, phase: 'reply', stage: st, at: Date.now() });
+    });
     modelState = 'ready';
     banner();
     updateComposerNote();
