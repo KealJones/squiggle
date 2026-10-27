@@ -14,6 +14,7 @@
 import { estTokens, truncate } from './util.js';
 import { bm25, blend, cosine } from './search.js';
 import { wrapUntrusted } from './untrusted.js';
+import { replayNote } from './attachments.js';
 
 const RECENT_SHARE = { smart: 0.45, compact: 0.6, full: 1 };
 const MIN_RECENT = 2;
@@ -30,6 +31,7 @@ const day = (ts) => new Date(ts).toLocaleString(undefined, { month: 'short', day
 // tool actions go in a separate system-prompt section instead (see below).
 export function messageText(m, threadNotes) {
   let text = m.role === 'assistant' ? scrubFakeToolNotes(m.content).trim() : (m.content || '');
+  if (m.role === 'user' && m.attachments && m.attachments.length) text += '\n\n' + replayNote(m.attachments);
   const note = threadNotes && threadNotes.get(m.id);
   if (note) text += `\n\n[a side thread on this message concluded: ${note}]`;
   return text;

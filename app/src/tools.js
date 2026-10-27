@@ -26,6 +26,9 @@ function realPath(r) {
   return { kind: 'virtual' };
 }
 
+// Attached documents are outside content even though they live under /home.
+const isAttachmentPath = (p) => /^\/home\/attachments(\/|$)/.test(agentPath(resolveAgentPath(p)));
+
 async function readAgentFile(p) {
   const r = resolveAgentPath(p);
   const rp = realPath(r);
@@ -44,6 +47,16 @@ async function listAgentDir(p) {
 }
 
 async function safeReaddir(dir) { try { return await pfs.readdir(dir); } catch { return []; } }
+
+// The ~600 characters of `text` around the best-matching query word.
+function bestPart(text, query) {
+  const words = String(query).toLowerCase().split(/\W+/).filter(w => w.length > 2);
+  const low = text.toLowerCase();
+  let at = -1;
+  for (const w of words) { const i = low.indexOf(w); if (i >= 0 && (at < 0 || i < at)) at = i; }
+  const start = Math.max(0, at - 150);
+  return (start ? '…' : '') + text.slice(start, start + 600);
+}
 
 // ── Repo helpers ──────────────────────────────────────────────────────────
 async function repoDir(name) {
@@ -169,7 +182,7 @@ export const TOOLS = [
       }
       const fromRepo = resolveAgentPath(path).area === 'repos';
       return {
-        model: { path, total_lines: lines.length, start_line: start, end_line: end, content: fromRepo ? wrapUntrusted('file ' + path, out) : out, ...(end < lines.length ? { more: `lines ${end + 1}-${lines.length} not shown; read them with start_line, or grep for what you need` } : {}) },
+        model: { path, total_lines: lines.length, start_line: start, end_line: end, content: fromRepo || isAttachmentPath(path) ? wrapUntrusted('file ' + path, out) : out, ...(end < lines.length ? { more: `lines ${end + 1}-${lines.length} not shown; read them with start_line, or grep for what you need` } : {}) },
         label: `read ${path}${start > 1 || end < lines.length ? ` lines ${start}-${end}` : ''}`,
         observation: fromRepo ? { source: 'read_file', title: path, text: text.slice(0, 20000) } : null,
       };
@@ -205,7 +218,7 @@ export const TOOLS = [
       const fromRepo = resolveAgentPath(base).area === 'repos';
       const body = hits.join('\n') || '(no matches)';
       return {
-        model: { pattern, path: base, files_searched: scanned, matches: fromRepo ? wrapUntrusted('grep ' + base, body) : body, ...(more ? { more: `more matches not shown; call again with skip: ${skip + hits.length}, or narrow the pattern or path` } : {}) },
+        model: { pattern, path: base, files_searched: scanned, matches: fromRepo || hits.some(h => h.startsWith('/home/attachments/')) ? wrapUntrusted('grep ' + base, body) : body, ...(more ? { more: `more matches not shown; call again with skip: ${skip + hits.length}, or narrow the pattern or path` } : {}) },
         label: `grep "${truncate(String(pattern), 40)}" in ${base} (${hits.length}${more ? '+' : ''})`,
       };
     },
@@ -501,11 +514,15 @@ export const TOOLS = [
       const docs = [];
       for (const s of sessions.list()) {
         for (const m of s.messages) if (m.content) docs.push({ id: `${s.id}|${m.id}`, text: m.content, s, m });
+        // Attached documents are searchable too (their text is outside content).
+        for (const o of s.observations || []) if (o.source === 'attachment') docs.push({ id: `${s.id}|${o.id}`, text: o.title + '\n' + o.text, s, o });
       }
       const scores = bm25(docs)(query);
       const top = docs.filter(d => scores.has(d.id)).sort((a, b) => scores.get(b.id) - scores.get(a.id)).slice(0, 6);
       return {
-        model: { results: top.map(d => ({ session: d.s.title, when: new Date(d.m.ts).toISOString().slice(0, 10), role: d.m.role, text: truncate(d.m.content, 600), this_session: d.s.id === ctx.session.id })) },
+        model: { results: top.map(d => d.o
+          ? { session: d.s.title, when: new Date(d.o.ts).toISOString().slice(0, 10), role: 'attachment', file: d.o.title, text: wrapUntrusted('attachment ' + d.o.title, bestPart(d.o.text, query)), this_session: d.s.id === ctx.session.id }
+          : { session: d.s.title, when: new Date(d.m.ts).toISOString().slice(0, 10), role: d.m.role, text: truncate(d.m.content, 600), this_session: d.s.id === ctx.session.id }) },
         label: `searched history for "${query}"`,
       };
     },
