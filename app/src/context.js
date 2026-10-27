@@ -17,6 +17,7 @@ import { wrapUntrusted } from './untrusted.js';
 
 const RECENT_SHARE = { smart: 0.45, compact: 0.6, full: 1 };
 const MIN_RECENT = 2;
+const OBS_MIN_SCORE = 0.9;
 const MIN_SCORE = 0.18;
 const CHUNK_TOKENS = 700;
 
@@ -138,6 +139,26 @@ export async function assembleContext(o) {
     }
   }
 
+  // 3b. The agent's own notepad for this chat (all modes): what it decided
+  // matters. Kept whole when it fits; otherwise the newest notes.
+  const notes = Object.values(session.notes || {}).filter(n => !n.deleted).sort((a, b) => a.ts - b.ts);
+  if (notes.length) {
+    const cap = Math.floor(budget * 0.25);
+    const lines = [];
+    let t = 0;
+    for (const n of [...notes].reverse()) {
+      const ln = `- [${n.id}] ${n.text}`;
+      const lt = estTokens(ln);
+      if (t + lt > cap) break;
+      lines.unshift(ln); t += lt;
+      report.items.push({ kind: 'note', id: n.id, label: n.text.slice(0, 80), tokens: lt });
+    }
+    if (lines.length) {
+      sections.push(`## Your notes for this chat (update or delete with the note tool when they stop being relevant)\n${lines.join('\n')}${lines.length < notes.length ? `\n(${notes.length - lines.length} older notes not shown; delete ones you no longer need)` : ''}`);
+      used += t;
+    }
+  }
+
   // 4. Memory facts (all modes; they're small and about the person).
   if (o.recall) {
     const facts = (await o.recall(query, 10)).filter(r => r.score >= 0.25);
@@ -183,15 +204,25 @@ export async function assembleContext(o) {
       if (vecs) { sem = new Map(); cands.forEach((c, i) => sem.set(c.id, cosine(vecs[0], vecs[i + 1]))); }
       const scores = blend(kw, sem);
       const newest = Math.max(...cands.map(c => c.ts || 0));
+      // Old tool output only comes back on a strong match. When the message
+      // names a file, only output about that file qualifies (a README that
+      // mentions tools.js is not "about" tools.js). Notes cover the rest.
+      const named = [...String(query).matchAll(/[\w.-]+\.[a-z]{1,5}\b/gi)].map(m => m[0].toLowerCase()).filter(f => !/^\d/.test(f));
+      const obsOk = (c, s) => c.kind !== 'observation' || (named.length
+        ? named.some(f => c.label.toLowerCase().includes(f))
+        : s >= OBS_MIN_SCORE);
       const ranked = cands
         .map(c => ({ c, s: (scores.get(c.id) || 0) + 0.05 * recency(c.ts, newest) }))
-        .filter(x => x.s >= MIN_SCORE)
+        .filter(x => x.s >= MIN_SCORE && obsOk(x.c, x.s))
         .sort((a, b) => b.s - a.s);
+      const obsCap = Math.floor(budget * 0.25);
+      let obsUsed = 0;
       const picked = [];
       for (const { c, s } of ranked) {
         const body = c.render(truncate(c.text, 4000));
         const t = estTokens(body) + 4;
         if (used + t > budget) continue;
+        if (c.kind === 'observation') { if (obsUsed + t > obsCap) continue; obsUsed += t; }
         picked.push({ c, body, s });
         used += t;
         report.items.push({ kind: c.kind, id: c.id, ref: c.ref, label: c.label, tokens: t, score: round(s) });

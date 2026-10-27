@@ -403,6 +403,7 @@ function wireApp() {
     if (current && current.deleted) openSession(sessions.list()[0] || sessions.newSession());
   });
   memory.events.on('change', () => { if (drawerPanel === 'memory') renderMemoryPanel(); });
+  sessions.events.on('session', (id) => { if (drawerPanel === 'notes' && current && id === current.id) renderNotesPanel(); });
   addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeDrawer(); closeSidebar(); } });
 }
 
@@ -595,6 +596,7 @@ async function send(text, threadId) {
         onThinking: (t) => { think.hidden = false; think.lastChild.textContent = t; },
         onText: (t) => { body.innerHTML = md(agent.scrubFakeToolNotes(t)); scrollDown(scroller); },
         onTool: (t) => {
+          if (t.name === 'note' && !t.running && drawerPanel === 'notes') renderNotesPanel();
           const existing = liveTools.find(x => x.running && x.name === t.name);
           if (existing) Object.assign(existing, t); else liveTools.push({ ...t });
           trail.replaceChildren(toolTrail(liveTools));
@@ -867,7 +869,8 @@ function closeDrawer() {
 }
 
 function openPanel(name, arg) {
-  if (name === 'memory') renderMemoryPanel();
+  if (name === 'notes') renderNotesPanel();
+  else if (name === 'memory') renderMemoryPanel();
   else if (name === 'files') renderFilesPanel('/home');
   else if (name === 'settings') renderSettingsPanel();
   else if (name === 'context') renderContextPanel(arg);
@@ -904,6 +907,19 @@ function renderThreadPanel(focus = false) {
 }
 
 // Memory
+// The agent's notepad for the open chat (read-only here; the agent edits it).
+function renderNotesPanel() {
+  const c = openDrawer('Notes', 'notes');
+  const notes = current ? sessions.liveNotes(current) : [];
+  const body = h('div', { class: 'drawer-body' },
+    h('p', { class: 'hint' }, 'What the agent chose to remember for this chat. It adds, updates and erases these as it works; they\'re always in its context, instead of old tool output.'),
+    notes.length
+      ? h('ul', { class: 'fact-list notes-list' }, notes.map(n => h('li', {},
+          h('div', { class: 'fact' }, h('span', { class: 'muted' }, n.id + ' · ' + new Date(n.mts || n.ts).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })), h('div', { class: 'note-text' }, n.text)))))
+      : h('p', { class: 'muted' }, 'No notes yet in this chat.'));
+  c.append(body);
+}
+
 function renderMemoryPanel() {
   const c = openDrawer('Memory', 'memory');
   const body = h('div', { class: 'drawer-body' });

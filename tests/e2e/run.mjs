@@ -202,6 +202,13 @@ await check('agent git tools: agent/ pushes freely; other branches need approval
     out.escape = await run('read_file', { path: '/repos/app/../../state/.squiggle.json' });
     out.gitdir = await run('read_file', { path: '/repos/app/.git/config' });
     out.storageClone = await run('git_clone', { repo: 'tester/state' });
+    // The agent's notepad.
+    const n1 = await run('note', { action: 'add', text: 'tools.js: runTool near line 510' });
+    const n2 = await run('note', { action: 'add', text: 'temporary' });
+    out.noteUpd = await run('note', { action: 'update', id: n1.id, text: 'tools.js: runTool at line 512' });
+    out.noteDel = await run('note', { action: 'delete', id: n2.id });
+    out.noteBad = await run('note', { action: 'update', id: 'nope', text: 'x' });
+    out.notes = T.sessions.liveNotes(T.sessions.list()[0]).map(n => n.text);
     // Reading in parts and searching.
     await run('write_file', { path: '/repos/app/big.txt', content: Array.from({ length: 400 }, (_, i) => `line ${i + 1}${i % 50 === 0 ? ' NEEDLE' : ''}`).join('\n') });
     out.read1 = await run('read_file', { path: '/repos/app/big.txt' });
@@ -211,6 +218,9 @@ await check('agent git tools: agent/ pushes freely; other branches need approval
     return out;
   });
   assert.equal(r.clone.ok, true, JSON.stringify(r.clone));
+  assert.deepEqual(r.notes, ['tools.js: runTool at line 512']);
+  assert.equal(r.noteDel.ok, true);
+  assert.match(r.noteBad.error, /No note with id nope/);
   assert.equal(r.read1.total_lines, 400); assert.equal(r.read1.end_line, 150);
   assert.match(r.read1.more, /lines 151-400 not shown/);
   assert.match(r.read2.content, /151: line 151[\s\S]*160: line 160/);

@@ -32,6 +32,7 @@ function systemPrompt(threadId, session) {
     `Working on code: git_clone the repo, git_branch to start an agent/ branch (or switch to an existing one), edit files, git_commit, git_push, then github_open_pr if the user wants a review. agent/ branches push right away; pushing any other branch (like main) shows the user a permission prompt, so only do that when they asked for it. Never try to get around a refused push.`,
     `For current information or anything you're unsure of, use web_search, then fetch_url to read the most relevant results before answering. Mention which sites you used.`,
     `When you learn something lasting about the user or their projects (preferences, decisions, names), save it with remember. Use search_history to find things from past conversations.`,
+    `Keep a notepad for this chat with the note tool: after reading files or pages, note the facts you'll need (what's where, line numbers, decisions, next steps). Old tool output is not shown to you again, but your notes always are. Update or delete notes when they stop being relevant. For code, use grep to find things, then read_file with a line range.`,
     `Use tools when they help; answer directly when they don't. Be concise. Never invent file contents or tool results, and never say you saved, remembered, changed or pushed something unless you called the tool for it in this reply.`,
     thread ? `This is a side thread started on an earlier message ("${truncate(thread.title, 80)}"). Focus on that topic.` : '',
     UNTRUSTED_RULES(),
@@ -98,6 +99,7 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
           try { await conv.delete(); } catch {}
           conv = await engine.conversation({ system: ctx.system, messages: ctx.messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT });
           carried++;
+          sessions.setNote(session, null, 'Progress so far (saved when the context filled up): ' + notes.slice(0, 1500));
           reply.tools.push({ name: 'context', label: 'context was full: continued in a fresh one with notes', ok: true });
           ui.onTool && ui.onTool({ name: 'context', label: 'context was full: continued in a fresh one with notes', ok: true, running: false });
           pending = `${text}\n\n[Notes you wrote while working on this request; your context was reset to give you room. Continue from them, don't start over:]\n${notes}`;
