@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <title>Squiggle Lite</title>
-  <meta name="description" content="Gemma 3 270M running on this device's CPU through WebAssembly. No WebGPU needed, nothing leaves the device.">
+  <meta name="description" content="Gemma 3 270M running on this device's CPU with llama.cpp in WebAssembly. No WebGPU needed, nothing leaves the device.">
   <meta name="theme-color" content="#eef1f6" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#151a2e" media="(prefers-color-scheme: dark)">
   <style>
@@ -157,17 +157,17 @@
         <section class="empty" id="start">
           <svg aria-hidden="true"><use href="#squiggle"/></svg>
           <h1>A small model that runs on this phone</h1>
-          <p>Gemma 3 270M on the CPU through WebAssembly. No WebGPU, no server. After the first download it works offline.</p>
+          <p>Gemma 3 270M on the CPU with llama.cpp in WebAssembly. No WebGPU, no server. After the first download it works offline.</p>
           <ul class="facts">
             <li>270M parameters</li>
             <li>4-bit weights</li>
-            <li>≈820 MB once</li>
+            <li>≈242 MB once</li>
             <li id="fact-threads">CPU · 1 thread</li>
           </ul>
 
           <div class="card" id="load-card">
             <button class="btn primary" id="load-btn" type="button">Load the model</button>
-            <span class="sub" id="load-sub">The first time downloads about 820 MB from Hugging Face, so Wi-Fi helps. After that it loads from this device.</span>
+            <span class="sub" id="load-sub">The first time downloads about 242 MB from Hugging Face. After that it loads from this device.</span>
           </div>
 
           <div class="card" id="progress-card" hidden>
@@ -199,93 +199,20 @@
     </footer>
   </div>
 
-  <!-- The model runs in this worker so the page stays responsive while it thinks. -->
-  <script type="text/plain" id="worker-src">
-    import { pipeline, TextStreamer, InterruptableStoppingCriteria, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1/dist/transformers.min.js';
-
-    const MODEL = 'onnx-community/gemma-3-270m-it-ONNX';
-    // Pinned to the Dec 2025 export: its 4-bit model uses only ops the WASM
-    // build has. The Mar 2026 re-export quantizes the embeddings with
-    // GatherBlockQuantized, which ONNX Runtime's WASM build can't run.
-    const REVISION = 'cfd5c04f84a64766d63efc5bb1d2cf31f34a4a90';
-    env.allowLocalModels = false;
-
-    let generator = null;
-    const stopper = new InterruptableStoppingCriteria();
-    const post = (m) => self.postMessage(m);
-    const msg = (e) => String((e && e.message) || e);
-
-    self.onmessage = async ({ data }) => {
-      if (data.type === 'stop') { stopper.interrupt(); return; }
-
-      if (data.type === 'load') {
-        const t0 = performance.now();
-        try {
-          generator = await pipeline('text-generation', MODEL, {
-            dtype: 'q4',
-            revision: REVISION,
-            device: 'wasm',
-            progress_callback: (p) => {
-              if (p.status === 'progress' || p.status === 'progress_total' || p.status === 'initiate' || p.status === 'done') {
-                post({ type: 'progress', status: p.status, file: p.file || p.name, loaded: p.loaded || 0, total: p.total || 0 });
-              }
-            },
-          });
-          // Threads need a cross-origin isolated page; otherwise ONNX Runtime uses one.
-          const wasm = env.backends && env.backends.onnx && env.backends.onnx.wasm;
-          const threads = self.crossOriginIsolated ? (wasm && wasm.numThreads) || 1 : 1;
-          post({ type: 'ready', ms: performance.now() - t0, threads });
-        } catch (e) {
-          post({ type: 'error', where: 'load', message: msg(e) });
-        }
-        return;
-      }
-
-      if (data.type === 'generate') {
-        stopper.reset();
-        const t0 = performance.now();
-        let first = 0, tokens = 0;
-        const streamer = new TextStreamer(generator.tokenizer, {
-          skip_prompt: true,
-          skip_special_tokens: true,
-          callback_function: (text) => post({ type: 'text', id: data.id, text }),
-          token_callback_function: () => { tokens++; if (!first) first = performance.now(); },
-        });
-        try {
-          const out = await generator(data.messages, {
-            max_new_tokens: 512,
-            do_sample: true,
-            temperature: 0.8,
-            top_k: 64,
-            top_p: 0.95,
-            repetition_penalty: 1.1,
-            streamer,
-            stopping_criteria: stopper,
-          });
-          const end = performance.now();
-          const last = out && out[0] && out[0].generated_text;
-          const text = Array.isArray(last) ? (last.at(-1) || {}).content || '' : '';
-          post({
-            type: 'done', id: data.id, text, tokens,
-            firstMs: first ? first - t0 : end - t0,
-            tps: tokens > 1 && first ? (tokens - 1) / ((end - first) / 1000) : 0,
-            stopped: stopper.interrupted,
-          });
-        } catch (e) {
-          post({ type: 'error', where: 'generate', id: data.id, message: msg(e) });
-        }
-      }
-    };
-  </script>
-
   <script type="module">
     const $ = (id) => document.getElementById(id);
-    const MODEL_DATA_URL = 'https://huggingface.co/onnx-community/gemma-3-270m-it-ONNX/resolve/cfd5c04f84a64766d63efc5bb1d2cf31f34a4a90/onnx/model_q4.onnx_data';
+    // Gemma 3 270M as a 4-bit GGUF (~242 MB) on llama.cpp's WebAssembly build.
+    // GGUF keeps the embeddings packed too, so memory stays close to the file size.
+    const WLLAMA = 'https://cdn.jsdelivr.net/npm/@wllama/wllama@3.8.1/esm/index.min.js';
+    const WLLAMA_WASM = 'https://cdn.jsdelivr.net/npm/@wllama/wllama@3.8.1/esm/wasm/wllama.wasm';
+    const MODEL_URL = 'https://huggingface.co/unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q4_0.gguf';
+    const N_CTX = 2048;
     const SYSTEM = 'You are a helpful assistant. Keep answers short and clear.';
     const MAX_PAIRS = 3;                       // earlier turns sent with each message
     const CRASH_KEY = 'squiggle-lite-crash';
+    const LOADED_KEY = 'squiggle-lite-loaded'; // set once a load succeeds, so later visits load right away
 
-    const state = { worker: null, ready: false, busy: false, current: null, seq: 0, threads: 1, loadMs: 0 };
+    const state = { wllama: null, ready: false, busy: false, current: null, abort: null, threads: 1, loadMs: 0 };
     const turns = [];                          // { role, content, el, meta, stopped }
 
     // ── Crash marker: if iOS kills the tab, the next visit can say where. ──
@@ -387,22 +314,18 @@
     }
 
     // ── Loading ──
-    const files = new Map();                   // file -> { loaded, total }
     const mb = (n) => (n / 1048576).toFixed(0);
-
-    function showProgress() {
-      let loaded = 0, total = 0;
-      for (const f of files.values()) { loaded += f.loaded; total += f.total; }
+    function showProgress(loaded, total, label) {
       const bar = $('bar');
       if (total > 0 && loaded < total) {
         bar.classList.remove('indeterminate');
         bar.firstElementChild.style.width = Math.min(100, (loaded / total) * 100).toFixed(1) + '%';
-        $('stage').textContent = state.cached ? 'Loading from this device' : 'Downloading';
+        $('stage').textContent = label || 'Downloading';
         $('bytes').textContent = `${mb(loaded)} / ${mb(total)} MB`;
       } else {
         bar.classList.add('indeterminate');
         bar.firstElementChild.style.width = '';
-        $('stage').textContent = total ? 'Preparing the model…' : 'Starting the runtime…';
+        $('stage').textContent = label || 'Starting the runtime…';
         $('bytes').textContent = '';
       }
     }
@@ -413,7 +336,19 @@
       $('notice-card').hidden = false;
     }
 
-    function startLoad() {
+    function loadFailed(message) {
+      clearMarker();
+      $('progress-card').hidden = true;
+      showNotice('The model didn’t load', message);
+      $('retry-btn').hidden = false;
+    }
+
+    async function freeOldDownloads() {
+      // Earlier versions of this page cached ONNX files that can't run here.
+      try { await caches.delete('transformers-cache'); } catch {}
+    }
+
+    async function startLoad() {
       if (!('WebAssembly' in window) || !('Worker' in window)) {
         $('load-card').hidden = true;
         showNotice('This browser can’t run the model', 'It needs WebAssembly and Web Workers. Any recent Safari, Chrome or Firefox has both.');
@@ -423,100 +358,44 @@
       $('load-card').hidden = true;
       $('notice-card').hidden = true;
       $('progress-card').hidden = false;
-      files.clear();
-      showProgress();
+      showProgress(0, 0);
       try { navigator.storage.persist().catch(() => {}); } catch {}
-      // The first version of this page cached a model WASM can't run; free that space.
-      (async () => {
-        try {
-          const c = await caches.open('transformers-cache');
-          for (const r of await c.keys()) if (r.url.includes('/gemma-3-270m-it-ONNX/resolve/main/onnx/')) await c.delete(r);
-        } catch {}
-      })();
+      freeOldDownloads();
 
-      if (state.worker) state.worker.terminate();
-      const src = $('worker-src').textContent;
-      const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
-      let worker;
+      const t0 = performance.now();
+      let mod;
       try {
-        worker = new Worker(url, { type: 'module' });
+        mod = await import(WLLAMA);
       } catch (e) {
-        loadFailed('Could not start the model runtime: ' + (e.message || e));
+        loadFailed('Couldn’t load the runtime from cdn.jsdelivr.net. Check your connection, then try again.');
         return;
       }
-      state.worker = worker;
-      worker.onmessage = onWorker;
-      worker.onerror = (e) => {
-        e.preventDefault && e.preventDefault();
-        if (!state.ready) loadFailed('Couldn’t load the runtime from cdn.jsdelivr.net. Check your connection, then try again.');
-        else if (state.busy) onWorker({ data: { type: 'error', id: state.seq, message: e.message || 'the model stopped unexpectedly.' } });
-      };
-      setMarker('loading the model');
-      worker.postMessage({ type: 'load' });
-    }
-
-    function loadFailed(message) {
-      clearMarker();
-      $('progress-card').hidden = true;
-      showNotice('The model didn’t load', message);
-      $('retry-btn').hidden = false;
-    }
-
-    // ── Worker messages ──
-    function onWorker({ data }) {
-      if (data.type === 'progress') {
-        if (data.file && data.status === 'progress') files.set(data.file, { loaded: data.loaded, total: data.total });
-        if (data.file && data.status === 'done' && files.has(data.file)) { const f = files.get(data.file); f.loaded = f.total; }
-        showProgress();
-        return;
-      }
-      if (data.type === 'ready') {
+      try {
+        if (state.wllama) { try { await state.wllama.exit(); } catch {} }
+        state.wllama = new mod.Wllama({ default: WLLAMA_WASM }, { suppressNativeLog: true });
+        setMarker('loading the model');
+        let sawBytes = false;
+        await state.wllama.loadModelFromUrl(MODEL_URL, {
+          n_ctx: N_CTX,
+          n_gpu_layers: 0,                     // CPU only: no WebGPU on purpose
+          progressCallback: ({ loaded, total }) => {
+            sawBytes = sawBytes || loaded < total;
+            showProgress(loaded, total, sawBytes ? 'Downloading' : 'Loading from this device');
+            if (total && loaded >= total) showProgress(0, 0, 'Preparing the model…');
+          },
+        });
         clearMarker();
+        try { localStorage.setItem(LOADED_KEY, '1'); } catch {}
         state.ready = true;
-        state.threads = data.threads || 1;
-        state.loadMs = data.ms || 0;
+        state.loadMs = performance.now() - t0;
+        state.threads = self.crossOriginIsolated ? Math.max(1, Math.floor((navigator.hardwareConcurrency || 2) / 2)) : 1;
         $('progress-card').hidden = true;
         $('suggestions').hidden = false;
         $('fact-threads').textContent = `CPU · ${state.threads} thread${state.threads === 1 ? '' : 's'}`;
         setStatus();
         setComposer();
-        return;
-      }
-      if (data.type === 'error' && data.where === 'load') {
-        loadFailed(data.message || 'Something went wrong while loading.');
-        return;
-      }
-
-      const turn = state.current;
-      if (!turn || data.id !== state.seq) return;
-
-      if (data.type === 'text') {
-        if (turn.stopped) return;
-        turn.content += data.text;
-        schedulePaint(turn);
-        return;
-      }
-      if (data.type === 'done' || data.type === 'error') {
-        clearMarker();
-        if (data.type === 'done' && !turn.stopped && data.text) turn.content = data.text;
-        state.busy = false;
-        state.current = null;
-        if (data.type === 'error') {
-          turn.meta.textContent = 'Couldn’t finish the reply: ' + data.message;
-          turn.meta.classList.add('err');
-        } else {
-          const bits = [];
-          if (turn.stopped || data.stopped) bits.push('Stopped');
-          bits.push(`${data.tokens} tokens`);
-          if (data.tps) bits.push(`${data.tps.toFixed(1)} tokens/s`);
-          bits.push(`first word after ${(data.firstMs / 1000).toFixed(1)} s`);
-          turn.meta.textContent = bits.join(' · ');
-        }
-        turn.meta.hidden = false;
-        const stick = nearBottom();
-        paint(turn);
-        if (stick) toBottom();
-        setComposer();
+      } catch (e) {
+        loadFailed((e && e.message) || String(e));
       }
     }
 
@@ -534,7 +413,7 @@
       return msgs;
     }
 
-    function send(text) {
+    async function send(text) {
       text = text.trim();
       if (!text || !state.ready || state.busy) return;
       $('start').hidden = true;
@@ -542,19 +421,70 @@
       msgs.push({ role: 'user', content: text });
       addTurn('user', text);
       state.busy = true;
-      state.seq += 1;
-      state.current = addTurn('assistant', '');
+      const turn = state.current = addTurn('assistant', '');
+      const abort = state.abort = new AbortController();
       toBottom();
       setComposer();
       setMarker('writing a reply');
-      state.worker.postMessage({ type: 'generate', id: state.seq, messages: msgs });
+
+      const t0 = performance.now();
+      let first = 0, tokens = 0, timings = null, error = null;
+      try {
+        const stream = await state.wllama.createChatCompletion({
+          messages: msgs,
+          stream: true,
+          max_tokens: 512,
+          temperature: 0.8,
+          top_k: 64,
+          top_p: 0.95,
+          penalty_repeat: 1.1,
+          cache_prompt: true,
+          abortSignal: abort.signal,
+        });
+        for await (const chunk of stream) {
+          if (chunk.timings) timings = chunk.timings;
+          const piece = chunk.choices && chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content;
+          if (!piece) continue;
+          if (!first) first = performance.now();
+          tokens++;
+          if (turn.stopped) continue;
+          turn.content += piece;
+          schedulePaint(turn);
+        }
+      } catch (e) {
+        if (!turn.stopped && !(e && e.name === 'AbortError')) error = e;
+      }
+      const end = performance.now();
+      clearMarker();
+      state.busy = false;
+      state.current = null;
+      state.abort = null;
+      if (error) {
+        turn.meta.textContent = 'Couldn’t finish the reply: ' + ((error && error.message) || error);
+        turn.meta.classList.add('err');
+      } else {
+        const n = (timings && timings.predicted_n) || tokens;
+        const tps = (timings && timings.predicted_per_second) || (tokens > 1 && first ? (tokens - 1) / ((end - first) / 1000) : 0);
+        const firstMs = first ? first - t0 : end - t0;
+        const bits = [];
+        if (turn.stopped) bits.push('Stopped');
+        bits.push(`${n} tokens`);
+        if (tps) bits.push(`${tps.toFixed(1)} tokens/s`);
+        bits.push(`first word after ${(firstMs / 1000).toFixed(1)} s`);
+        turn.meta.textContent = bits.join(' · ');
+      }
+      turn.meta.hidden = false;
+      const stick = nearBottom();
+      paint(turn);
+      if (stick) toBottom();
+      setComposer();
     }
 
     function stop() {
       const turn = state.current;
       if (!turn || turn.stopped) return;
       turn.stopped = true;
-      state.worker.postMessage({ type: 'stop' });
+      try { state.abort && state.abort.abort(); } catch {}
       paint(turn);
       setComposer();
     }
@@ -562,7 +492,6 @@
     $('composer').addEventListener('submit', (e) => {
       e.preventDefault();
       if (state.busy) { stop(); return; }
-      const input = $('input');
       const text = input.value;
       input.value = '';
       autosize();
@@ -598,21 +527,20 @@
     $('retry-btn').addEventListener('click', startLoad);
 
     // ── Boot ──
-    (async () => {
-      setComposer();
-      const crash = readMarker();
-      clearMarker();
-      if (crash) {
-        $('load-card').hidden = true;
-        showNotice(
-          `The page reloaded itself while ${crash.stage}`,
-          'That usually means iOS ran out of memory for this tab. Closing other tabs can help. Then try again.'
-        );
-        return;                                // don't auto-load into the same crash
-      }
-      try { state.cached = 'caches' in window && Boolean(await (await caches.open('transformers-cache')).match(MODEL_DATA_URL)); } catch {}
-      if (state.cached) startLoad();
-    })();
+    setComposer();
+    const crash = readMarker();
+    clearMarker();
+    if (crash) {
+      $('load-card').hidden = true;
+      showNotice(
+        `The page reloaded itself while ${crash.stage}`,
+        'That usually means iOS ran out of memory for this tab. Closing other tabs can help. Then try again.'
+      );
+    } else {
+      let loadedBefore = false;
+      try { loadedBefore = localStorage.getItem(LOADED_KEY) === '1'; } catch {}
+      if (loadedBefore) startLoad();
+    }
   </script>
 </body>
 </html>
