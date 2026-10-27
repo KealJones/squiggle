@@ -12,7 +12,9 @@ export function limitMessage(resetsAt) {
 let callId = 0;
 class Conversation {
   constructor({ preface, sessionConfig }) {
-    this.messages = preface.messages.map(m => ({ role: m.role, content: m.content }));
+    // Squiggle's history uses Gemma's on-device role name "model"; the
+    // OpenAI-style API only accepts "assistant".
+    this.messages = preface.messages.map(m => ({ role: m.role === 'model' ? 'assistant' : m.role, content: m.content }));
     this.tools = preface.tools || [];
     this.max = sessionConfig.maxOutputTokens || 1024;
     this.temperature = sessionConfig.samplerParams && sessionConfig.samplerParams.type === 3 ? 0 : 0.7;
