@@ -63,12 +63,15 @@ function loadSettings() {
   const mobile = engine.isMobile();
   Object.assign(agent.settings, { model: engine.deviceModel() }, mobile ? { contextSize: 4096, fastDecode: false } : {}, saved);
   // Phones only run models that fit a phone; anything else moves to the default.
-  if (!engine.MODELS[agent.settings.model] || !engine.modelFitsDevice(agent.settings.model)) agent.settings.model = engine.deviceModel();
+  if (!engine.MODELS[agent.settings.model] || !engine.modelFitsDevice(agent.settings.model)) {
+    agent.settings.model = engine.deviceModel();
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...saved, model: agent.settings.model })); } catch {}
+  }
   // Phones set up before the lighter defaults existed saved the desktop ones
   // (and could crash loading the model); move them over once.
   if (mobile && !saved.mobileTuned) {
     Object.assign(agent.settings, { contextSize: 4096, fastDecode: false, mobileTuned: true });
-    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...saved, contextSize: 4096, fastDecode: false, mobileTuned: true })); } catch {}
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...saved, model: agent.settings.model, contextSize: 4096, fastDecode: false, mobileTuned: true })); } catch {}
   }
   if (saved.tools) agent.settings.tools = new Set(saved.tools);
   applyTheme();
@@ -320,6 +323,16 @@ async function setupModel(body) {
   await checkCloud();
   const gpu = await engine.webgpuStatus();
   const done = h('button', { class: 'btn primary', onclick: async () => { await startApp(); if (gpu.ok) ensureModel(); } }, gpu.ok ? 'Download and start' : 'Continue');
+  if (engine.isMobile()) {
+    // No on-device model fits a phone browser tab; phones use the cloud model.
+    if (cloudOffered) { agent.settings.model = 'cloud'; saveSettings(); }
+    body.append(h('h2', {}, 'On your phone'),
+      h('p', {}, cloudOffered
+        ? 'Phone browsers don\'t have enough memory for an on-device model, so on this phone Squiggle uses the cloud model on your Cloudflare relay: Gemma 4 26B, nothing to download. It has a free daily limit, then pauses until midnight UTC. Your computer keeps running the model locally.'
+        : PHONE_NO_MODEL),
+      h('button', { class: 'btn primary', onclick: async () => { await startApp(); } }, cloudOffered ? 'Start' : 'Continue'));
+    return;
+  }
   if (!gpu.ok && cloudOffered) {
     agent.settings.model = 'cloud'; saveSettings();
     body.append(h('h2', {}, 'This device can\'t run a model itself'), h('p', {}, gpu.reason),
@@ -634,15 +647,16 @@ function approvalCard(req, decide) {
 
 // ── Model ──────────────────────────────────────────────────────────────────
 async function initModel() {
-  if (engine.isMobile()) {
-    // Models a phone can't run (e.g. an older E2B/E4B download): free the space.
-    for (const id of Object.keys(engine.MODELS).filter(id => !engine.modelFitsDevice(id))) {
-      const info = await engine.downloadInfo(id).catch(() => null);
-      if (info && info.stored) await engine.deleteModel(id).catch(() => {});
-    }
-  }
+  // Free space taken by models Squiggle no longer offers, and on phones by
+  // on-device models a phone can't run.
+  engine.cleanupStorage({ keep: (id) => engine.modelFitsDevice(id) })
+    .then((n) => n && console.info(`Freed ${(n / 1e9).toFixed(1)} GB of old model downloads.`)).catch(() => {});
   if (engine.MODELS[agent.settings.model].runtime === 'cloud') {
-    if (!cloudOffered) { agent.settings.model = engine.deviceModel(); saveSettings(); return initModel(); }
+    if (!cloudOffered) {
+      if (engine.isMobile()) { modelState = 'unsupported'; banner(PHONE_NO_MODEL); return; }
+      agent.settings.model = 'E4B'; saveSettings();
+      return initModel();
+    }
     return loadModel();
   }
   const gpu = await engine.webgpuStatus();
@@ -654,6 +668,8 @@ async function initModel() {
   if (engine.isMobile()) { modelState = 'idle'; showLoadBanner(); return; }
   await loadModel();
 }
+
+const PHONE_NO_MODEL = 'No on-device model fits in a phone browser tab, and the cloud model isn\'t enabled on your relay (set AI_USERS on the Worker). Your chats sync here; use Squiggle on a computer to chat.';
 
 // Whether the relay offers the cloud model (checked once at startup).
 let cloudOffered = false;
@@ -681,7 +697,7 @@ function showLoadBanner() {
 }
 
 // Models from most to least memory needed; a crash offers the next one down.
-const BY_MEMORY = ['E4B', 'SL3-3B', 'E2B', 'SL2-1.7B', 'E2B-QAT', 'G3-1B', 'SL2-360M', 'G3-270M'];
+const BY_MEMORY = ['E4B', 'E2B'];
 function lighterModel(id) {
   const i = BY_MEMORY.indexOf(id);
   return BY_MEMORY.slice(i + 1).find(m => engine.MODELS[m] && engine.modelFitsDevice(m)) || null;
@@ -702,22 +718,18 @@ function showCrashBanner(c) {
     modelPromise = null; ensureModel(); // downloads the lighter model first if needed, then loads
   } }, next === S.model ? 'Use lighter settings' : `Use lighter settings (${nm.label}, ${nm.size})`);
   // Settings may have become lighter since the crash (e.g. phones moved to a phone model).
-  const changed = c.model !== S.model || c.contextSize !== S.contextSize || Boolean(c.fast) !== Boolean(S.fastDecode) || Boolean(c.cpu) !== Boolean(S.cpu);
+  const changed = c.model !== S.model || c.contextSize !== S.contextSize || Boolean(c.fast) !== Boolean(S.fastDecode);
   const again = h('button', { class: changed ? 'btn primary' : 'btn', onclick: () => { setCrashMarker(null); loadModel(); } }, changed ? 'Load model' : 'Try again');
   const settingsText = `${engine.MODELS[S.model].label}, ${S.contextSize / 1024}K context, speed boost ${S.fastDecode ? 'on' : 'off'}`;
-  const onnx = engine.MODELS[S.model].runtime === 'onnx';
-  const tryCpu = onnx && !S.cpu && (c.phase === 'reply' || /GPU|warming/i.test(c.stage || '')) ? h('button', { class: 'btn', onclick: () => {
-    S.cpu = true; saveSettings(); setCrashMarker(null); loadModel();
-  } }, 'Try on the CPU (slow)') : '';
   banner(h('div', { class: 'dl' },
-    h('span', {}, `${c.phase === 'reply' ? m.label + (c.cpu ? ' on the CPU' : '') + ' crashed this tab while answering' : 'Loading ' + m.label + (c.cpu ? ' on the CPU' : '') + ' crashed this tab last time'}${c.stage ? `, while ${c.stage}` : ''}.`),
+    h('span', {}, `${c.phase === 'reply' ? m.label + ' crashed this tab while answering' : 'Loading ' + m.label + ' crashed this tab last time'}${c.stage ? `, while ${c.stage}` : ''}.`),
     c.gpu ? h('span', { class: 'muted' }, `GPU: ${c.gpu}`) : '',
     h('span', { class: 'muted' }, changed
       ? `This device now uses lighter settings (${settingsText}), which need much less memory.`
       : lightest()
         ? 'This is already the lightest setup. Close other tabs and apps, then try again; some devices can\'t run the model.'
         : `Lighter settings use ${nm.label} (needs less memory), a 4K context and no speed boost.`),
-    h('div', { class: 'row' }, changed || lightest() ? '' : lighter, again, tryCpu)));
+    h('div', { class: 'row' }, changed || lightest() ? '' : lighter, again)));
 }
 
 function banner(...content) {
@@ -811,16 +823,16 @@ async function loadModel() {
   const S = agent.settings;
   const cloud = engine.MODELS[S.model].runtime === 'cloud';
   const step = h('span', { class: 'muted' });
-  banner(h('div', { class: 'dl' }, h('div', { class: 'dl-head' }, squiggleWait(), h('span', {}, cloud ? 'Connecting to the cloud model…' : `Loading ${engine.MODELS[S.model].label}${S.cpu ? ' on the CPU' : ''}…`)), step));
+  banner(h('div', { class: 'dl' }, h('div', { class: 'dl-head' }, squiggleWait(), h('span', {}, cloud ? 'Connecting to the cloud model…' : `Loading ${engine.MODELS[S.model].label}…`)), step));
   // The marker is rewritten at every step (localStorage writes are synchronous,
   // so it survives the tab being killed) and says where a crash happened.
-  const marker = { model: S.model, contextSize: S.contextSize, fast: S.fastDecode, cpu: Boolean(S.cpu), at: Date.now(), stage: 'starting', gpu: cloud ? '' : await engine.gpuSummary(), ua: navigator.userAgent };
+  const marker = { model: S.model, contextSize: S.contextSize, fast: S.fastDecode, at: Date.now(), stage: 'starting', gpu: cloud ? '' : await engine.gpuSummary(), ua: navigator.userAgent };
   setCrashMarker(marker);
   try {
-    await engine.load(S.model, S.contextSize, { fast: S.fastDecode, cpu: Boolean(S.cpu), onStage: (st) => { marker.stage = st; setCrashMarker(marker); step.textContent = st[0].toUpperCase() + st.slice(1) + '…'; } });
+    await engine.load(S.model, S.contextSize, { fast: S.fastDecode, onStage: (st) => { marker.stage = st; setCrashMarker(marker); step.textContent = st[0].toUpperCase() + st.slice(1) + '…'; } });
     setCrashMarker(null);
     // While a reply is generated, keep a marker too: a crash mid-reply then
-    // says where on the next open ("while reading the prompt (96 of 1540 tokens)").
+    // says so on the next open.
     engine.setProgress((st) => {
       if (!st) { setCrashMarker(null); return; }
       setCrashMarker({ ...marker, phase: 'reply', stage: st, at: Date.now() });
@@ -977,16 +989,12 @@ function renderSettingsPanel() {
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'Model'),
       modelPicker(S.model, async (v) => { if (v === S.model) return; S.model = v; saveSettings(); modelState = 'unknown'; await engine.unload(); initModel(); }),
       h('span', { class: 'hint' }, engine.isMobile()
-        ? 'Only models that fit a phone are listed. Each downloads once per device.'
+        ? 'Phones use the cloud model: no on-device model fits in a phone browser tab. Your computer runs Gemma 4 locally.'
         : 'Gemma 4 E4B is the default on computers: the smartest and best with tools. Each model downloads once per device.')),
 
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'Context window'),
       seg([[4096, '4K'], [8192, '8K'], [16384, '16K']], S.contextSize, async (v) => { S.contextSize = v; if (engine.engineReady()) await loadModel(); }),
       h('span', { class: 'hint' }, 'Bigger remembers more per turn but uses more memory and is slower to start. Phones are safest at 4K.')),
-
-    engine.MODELS[S.model].runtime !== 'onnx' ? '' : h('div', { class: 'field' }, h('label', { class: 'toggle' },
-      h('input', { type: 'checkbox', checked: S.cpu ? true : null, onchange: async (e) => { S.cpu = e.target.checked; saveSettings(); if (engine.engineReady()) await loadModel(); } }),
-      h('span', {}, h('strong', {}, 'Run on the CPU'), h('span', { class: 'hint', style: 'display:block' }, 'Much slower, but skips the GPU. Useful if loading on the GPU crashes on this device.')))),
 
     engine.MODELS[S.model].runtime !== 'litert' ? '' : h('div', { class: 'field' }, h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: S.fastDecode ? true : null, onchange: async (e) => { S.fastDecode = e.target.checked; saveSettings(); if (engine.engineReady()) await loadModel(); } }),

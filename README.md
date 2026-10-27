@@ -16,7 +16,7 @@ few GitHub requests browsers aren't allowed to make directly.
 
 ## What it does
 
-- **On-device models**: computers default to Gemma 4 E4B (3.0 GB); phones to Gemma 4 E2B Mobile (experimental: 2.3 GB download, about 1 GB in memory). Also Gemma 4 E2B, Gemma 3 1B / 270M, and SmolLM2 / SmolLM3 (fully open training data). Pick in Settings; phones only list models that fit. Each downloads once per device, resumable, then works offline.
+- **On-device model**: Gemma 4 E4B (3.0 GB, default) or E2B (2.0 GB) on computers. Downloads once per device, resumable, then works offline. Phones use the cloud model, since no on-device model fits a phone browser tab.
 - **Cloud model (optional)**: Gemma 4 26B on your relay's Workers AI, for GitHub logins in `AI_USERS`. It stops at a daily cap under Cloudflare's free 10,000 neurons (resets midnight UTC) and says so, so it never bills. Chats sent to it leave your device.
 - **Sessions that follow you**: every conversation syncs through your storage repo. Two devices can chat offline in the same session; their messages merge on the next sync instead of conflicting.
 - **Threads**: reply in a thread on any message. The thread knows the conversation up to that point, the main chat stays uncluttered, and a one-line outcome shows under the parent message.

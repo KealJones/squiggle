@@ -4,7 +4,7 @@
 //
 //   npm run vendor
 //
-// The large model runtimes (LiteRT-LM and onnxruntime-web, 15-30 MB of WebAssembly each) and the
+// The large model runtime (LiteRT-LM, ~20-30 MB of WebAssembly) and the
 // optional embedding library are NOT vendored; they load from pinned CDN URLs
 // in app/src/model/engine.js and app/src/context/embed.js.
 import { build } from 'esbuild';
@@ -24,11 +24,6 @@ const entries = {
   'markdown.js': `
     export { marked } from 'marked';
     export { default as DOMPurify } from 'dompurify';
-  `,
-  // Tokenizer + chat-template engine for Hugging Face (ONNX) models.
-  'hf.js': `
-    export { Tokenizer } from '@huggingface/tokenizers';
-    export { Template } from '@huggingface/jinja';
   `,
 };
 

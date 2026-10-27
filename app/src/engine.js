@@ -1,7 +1,7 @@
-// On-device models. Gemma 4 E2B/E4B run through LiteRT-LM on WebGPU; the
-// Hugging Face (ONNX) models — Gemma 4 E2B Mobile, Gemma 3, SmolLM — run
-// through onnxruntime-web (engine-onnx.js). Handles the one-time resumable
-// download into IndexedDB, engine startup, and streaming generation with tools.
+// Models. Gemma 4 E2B/E4B run on this device through LiteRT-LM on WebGPU;
+// the cloud model (Gemma 4 26B) runs on the relay (engine-cloud.js). Handles
+// the one-time resumable download into IndexedDB, engine startup, and
+// streaming generation with tools.
 import { kv, mutex } from './util.js';
 
 const LITERT = 'https://cdn.jsdelivr.net/npm/@litert-lm/core@0.14.0/+esm';
@@ -9,52 +9,19 @@ const HF = 'https://huggingface.co/';
 
 // phone: small enough for a phone's per-tab memory. size: download size.
 export const MODELS = {
-  E4B: { label: 'Gemma 4 E4B', size: '3.0 GB', note: 'smartest, best with tools', phone: false, runtime: 'litert',
+  E4B: { label: 'Gemma 4 E4B', size: '3.0 GB', note: 'smartest on-device model, best with tools', phone: false, runtime: 'litert',
     url: HF + 'litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-web.litertlm' },
   E2B: { label: 'Gemma 4 E2B', size: '2.0 GB', note: 'faster, still good with tools', phone: false, runtime: 'litert',
     url: HF + 'litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.litertlm' },
-  'E2B-QAT': { label: 'Gemma 4 E2B Mobile', size: '2.3 GB', note: 'experimental: E2B squeezed to about 1 GB of memory for phones (text only)', phone: true, runtime: 'onnx',
-    repo: 'onnx-community/gemma-4-E2B-it-qat-mobile-ONNX', family: 'gemma4', needsF16: true,
-    files: { 'onnx/decoder_model_merged_q2f16.onnx': 807184, 'onnx/decoder_model_merged_q2f16.onnx_data': 994621440, 'onnx/embed_tokens_q2f16.onnx_data': 1296564224,
-      'tokenizer.json': 32169626, 'tokenizer_config.json': 1877, 'chat_template.jinja': 17336, 'generation_config.json': 209 },
-    graph: 'onnx/decoder_model_merged_q2f16.onnx', data: 'onnx/decoder_model_merged_q2f16.onnx_data',
-    // The embedding tables stay in storage; rows are read per token.
-    lookup: { file: 'onnx/embed_tokens_q2f16.onnx_data', layers: 35, tables: [
-      { w: 0, rowBytes: 384, s: 100663296, blocks: 6, bits: 2, dim: 1536, mul: 39.191835884530846 },
-      { w: 103809024, rowBytes: 4480, s: 1278214144, blocks: 35, bits: 4, dim: 8960, mul: 16, zeroIds: [258880, 258881] },
-    ] } },
-  'G3-1B': { label: 'Gemma 3 1B', size: '0.8 GB', note: 'small and quick; fine for chat, weak with tools', phone: true, runtime: 'onnx',
-    repo: 'onnx-community/gemma-3-1b-it-ONNX', family: 'gemma3', needsF16: true, stopText: ['<end_of_turn>'],
-    files: { 'onnx/model_q4f16.onnx': 461341, 'onnx/model_q4f16.onnx_data': 763067904, 'tokenizer.json': 20323013, 'tokenizer_config.json': 2327, 'chat_template.jinja': 1532, 'generation_config.json': 244 },
-    graph: 'onnx/model_q4f16.onnx', data: 'onnx/model_q4f16.onnx_data' },
-  'G3-270M': { label: 'Gemma 3 270M', size: '0.3 GB', note: 'tiny; simple chat only (no tools)', phone: true, runtime: 'onnx', tools: false,
-    repo: 'onnx-community/gemma-3-270m-it-ONNX', family: 'gemma3', needsF16: true, stopText: ['<end_of_turn>'],
-    files: { 'onnx/model_q4f16.onnx': 330717, 'onnx/model_q4f16.onnx_data': 272626176, 'tokenizer.json': 20323013, 'tokenizer_config.json': 2313, 'chat_template.jinja': 1532, 'generation_config.json': 202 },
-    graph: 'onnx/model_q4f16.onnx', data: 'onnx/model_q4f16.onnx_data' },
-  'SL3-3B': { label: 'SmolLM3 3B', size: '2.1 GB', note: 'fully open training data; thinks before answering', phone: false, runtime: 'onnx',
-    repo: 'HuggingFaceTB/SmolLM3-3B-ONNX', family: 'smollm3', needsF16: true, stopText: ['<|im_end|>'],
-    files: { 'onnx/model_q4f16.onnx': 301534, 'onnx/model_q4f16.onnx_data': 2124320768, 'tokenizer.json': 11574059, 'tokenizer_config.json': 56256, 'chat_template.jinja': 5575, 'generation_config.json': 182 },
-    graph: 'onnx/model_q4f16.onnx', data: 'onnx/model_q4f16.onnx_data' },
-  'SL2-1.7B': { label: 'SmolLM2 1.7B', size: '1.1 GB', note: 'fully open training data', phone: false, runtime: 'onnx',
-    repo: 'HuggingFaceTB/SmolLM2-1.7B-Instruct', family: 'smollm2', needsF16: true, stopText: ['<|im_end|>'],
-    files: { 'onnx/model_q4f16.onnx': 1108730338, 'tokenizer.json': 2104556, 'tokenizer_config.json': 3764, 'generation_config.json': 132 },
-    graph: 'onnx/model_q4f16.onnx' },
-  'SL2-360M': { label: 'SmolLM2 360M', size: '0.3 GB', note: 'tiny, fully open training data; simple chat only (no tools)', phone: true, runtime: 'onnx', tools: false,
-    repo: 'onnx-community/SmolLM2-360M-Instruct-ONNX', family: 'smollm2', needsF16: true, stopText: ['<|im_end|>'],
-    files: { 'onnx/model_q4f16.onnx': 272353302, 'tokenizer.json': 3522656, 'tokenizer_config.json': 3794, 'generation_config.json': 132 },
-    graph: 'onnx/model_q4f16.onnx' },
   // Not on this device: runs on the relay (only listed when the relay offers it).
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true },
 };
 
-// Every file a model needs. ONNX files are stored as Blobs so single rows can
-// be read without loading the whole file.
+// Every file a model needs (none for the cloud model).
 export function modelFiles(id) {
   const m = MODELS[id];
   if (!m) throw new Error(`Unknown model "${id}".`);
-  if (m.runtime === 'cloud') return [];
-  if (m.runtime !== 'onnx') return [{ path: '', url: m.url, size: 0, blob: false }];
-  return Object.entries(m.files).map(([path, size]) => ({ path, url: `${HF}${m.repo}/resolve/main/${path}`, size, blob: true }));
+  return m.runtime === 'cloud' ? [] : [{ url: m.url }];
 }
 
 const FLUSH_BYTES = 16 * 1024 * 1024;
@@ -99,10 +66,11 @@ export function isMobile() {
   return /Android|iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 }
 
-// The model for this device: computers use E4B; phones use E2B Mobile, the
-// only Gemma 4 build that fits a phone's per-tab memory.
+// The model for this device: computers run E4B; phones use the cloud model,
+// because no on-device model fits a phone browser tab's memory (iOS Safari
+// kills the tab). The UI falls back when the relay doesn't offer the cloud.
 export function deviceModel() {
-  return isMobile() ? 'E2B-QAT' : 'E4B';
+  return isMobile() ? 'cloud' : 'E4B';
 }
 export const suggestModel = deviceModel;
 export const modelFitsDevice = (id) => !isMobile() || Boolean(MODELS[id] && MODELS[id].phone);
@@ -154,7 +122,7 @@ async function downloadUnlocked(id, onProgress, signal) {
   }
 }
 
-async function downloadFile({ url, blob }, onProgress, signal) {
+async function downloadFile({ url }, onProgress, signal) {
   const meta = (await kv.get(metaKey(url))) || { total: 0, stored: 0, complete: false };
   if (meta.complete) { onProgress && onProgress(meta.total, meta.total); return; }
   try { await navigator.storage?.persist?.(); } catch {}
@@ -198,7 +166,7 @@ async function downloadFile({ url, blob }, onProgress, signal) {
       let o = 0;
       for (const c of pending) { batch.set(c, o); o += c.byteLength; }
       pending = []; pendingBytes = 0;
-      await kv.set([url, batchStart], blob ? new Blob([batch]) : batch, 'model');
+      await kv.set([url, batchStart], batch, 'model');
       batchStart += batch.byteLength;
       await kv.set(metaKey(url), { total, stored: batchStart, complete: false });
     };
@@ -258,44 +226,21 @@ function modelStream(url, offsets) {
   }, new CountQueuingStrategy({ highWaterMark: 1 }));
 }
 
-// Stored files for the ONNX engine: whole files as bytes, or random access.
-async function records(url) {
-  const out = [];
-  for (const off of await chunkOffsets(url)) {
-    const rec = await kv.get([url, off], 'model');
-    if (!rec) throw new Error('Model data is missing; download it again.');
-    out.push({ off, rec, size: recSize(rec) });
-  }
-  if (!out.length) throw new Error('Model is not downloaded yet.');
-  return out;
-}
-async function readAll(url) {
-  const recs = await records(url);
-  const buf = new Uint8Array(recs.reduce((n, r) => n + r.size, 0));
-  for (const r of recs) buf.set(await asBytes(r.rec), r.off);
-  return buf;
-}
-function randomReader(url) {
-  let recsP = null;
-  return async (start, len) => {
-    const recs = await (recsP = recsP || records(url));
-    const out = new Uint8Array(len);
-    let lo = 0, hi = recs.length - 1;
-    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (recs[mid].off <= start) lo = mid; else hi = mid - 1; }
-    let got = 0;
-    for (let i = lo; got < len && i < recs.length; i++) {
-      const r = recs[i], a = start + got - r.off, b = Math.min(r.size, a + (len - got));
-      const part = r.rec instanceof Blob ? new Uint8Array(await r.rec.slice(a, b).arrayBuffer()) : r.rec.subarray(a, b);
-      out.set(part, got); got += part.byteLength;
+// Frees space taken by downloads of models Squiggle no longer offers (and,
+// on phones, ones that can't run there). Returns the bytes freed.
+export async function cleanupStorage({ keep = null } = {}) {
+  const wanted = new Set(Object.keys(MODELS).filter(id => !keep || keep(id)).flatMap(id => modelFiles(id).map(f => f.url)));
+  let freed = 0;
+  for (const key of await kv.keys()) {
+    if (typeof key === 'string' && key.startsWith('model-meta:') && !wanted.has(key.slice(11))) {
+      freed += ((await kv.get(key)) || {}).stored || 0;
+      await kv.del(key);
     }
-    return out;
-  };
-}
-function storedFiles(id) {
-  const byPath = new Map(modelFiles(id).map(f => [f.path, f.url]));
-  const url = (p) => { if (!byPath.has(p)) throw new Error(`Missing model file ${p}.`); return byPath.get(p); };
-  const text = async (p) => new TextDecoder().decode(await readAll(url(p)));
-  return { bytes: (p) => readAll(url(p)), text, json: async (p) => JSON.parse(await text(p)), reader: (p) => randomReader(url(p)) };
+  }
+  for (const key of await kv.keys(undefined, 'model')) {
+    if (Array.isArray(key) && !wanted.has(key[0])) await kv.del(key, 'model');
+  }
+  return freed;
 }
 
 // ── Engine ────────────────────────────────────────────────────────────────
@@ -304,28 +249,16 @@ function storedFiles(id) {
 // faster replies, but it loads an extra small model, so it costs memory.
 let engineFast = null;
 // onStage(text) reports each loading step (the UI keeps the last one, so a
-// tab that dies mid-load can say where). cpu: run ONNX models on the CPU.
-let engineCpu = false;
-// After loading, the same reports keep coming while a reply is generated
-// ("reading the prompt (96 of 1540 tokens)", then null when idle).
+// tab that dies mid-load can say where).
+// While a reply is generated on this device, progress('writing the reply')
+// is reported, then null when done, so a tab killed mid-reply can say so.
 let progress = () => {};
 export const setProgress = (fn) => { progress = fn || (() => {}); };
-export async function load(id, contextSize, { fast = true, cpu = false, onStage = () => {} } = {}) {
-  if (engine && loadedModel === id && engineContext === contextSize && engineFast === fast && engineCpu === cpu) return;
+export async function load(id, contextSize, { fast = true, onStage = () => {} } = {}) {
+  if (engine && loadedModel === id && engineContext === contextSize && engineFast === fast) return;
   await unload();
-  engineCpu = cpu;
   if (MODELS[id].runtime === 'cloud') {
     engine = (await import('./engine-cloud.js')).createEngine();
-    loadedModel = id; engineContext = contextSize; engineFast = fast;
-    return;
-  }
-  if (MODELS[id].runtime === 'onnx') {
-    const onnx = await import('./engine-onnx.js');
-    const spec = MODELS[id];
-    const useGpu = !cpu && (!spec.needsF16 || await onnx.gpuHasF16());
-    let loading = true;
-    engine = await onnx.createEngine(spec, storedFiles(id), { contextSize, useGpu, onStage: (st) => (loading ? st && onStage(st) : progress(st)) });
-    loading = false;
     loadedModel = id; engineContext = contextSize; engineFast = fast;
     return;
   }
@@ -393,6 +326,8 @@ export async function conversation({ system, messages = [], tools = [], thinking
 // Streams one model response. Returns { text, thinking, toolCalls }.
 export async function respond(conv, input, { onText, onThinking, signal } = {}) {
   activeConv = conv;
+  const local = MODELS[loadedModel] && MODELS[loadedModel].runtime !== 'cloud';
+  if (local) progress('writing the reply');
   const out = { text: '', thinking: '', toolCalls: [] };
   const abort = () => { try { conv.cancel(); } catch {} };
   if (signal) signal.addEventListener('abort', abort, { once: true });
@@ -409,6 +344,7 @@ export async function respond(conv, input, { onText, onThinking, signal } = {}) 
   } finally {
     if (signal) signal.removeEventListener('abort', abort);
     if (activeConv === conv) activeConv = null;
+    if (local) progress(null);
   }
   return out;
 }
