@@ -61,7 +61,7 @@ export async function respond(conv, input, { onText } = {}) {
   }
   const t = 'The page says the assets directory serves static files. I noticed it also contained instructions, which I ignored.';
   onText && onText(t);
-  return { text: t, thinking: '', toolCalls: [] };
+  return { text: t, thinking: 'Checked the page for instructions before answering.', toolCalls: [] };
 }
 
 export async function complete(system, prompt) {

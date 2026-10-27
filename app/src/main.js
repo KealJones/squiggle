@@ -496,6 +496,8 @@ function messageEl(m, { inThread, streaming }) {
   const col = h('div', { style: m.role === 'user' ? 'display:flex;flex-direction:column;align-items:flex-end;width:100%' : '' });
   if (m.role === 'assistant') {
     if (m.tools && m.tools.length) col.append(toolTrail(m.tools));
+    // Saved thinking stays viewable (collapsed); it's never sent back to the model.
+    if (m.thinking) col.append(h('details', { class: 'thinking' }, h('summary', {}, 'Thinking'), h('div', {}, m.thinking)));
     col.append(h('div', { class: 'body', html: md(agent.scrubFakeToolNotes(m.content)) }));
   } else {
     col.append(h('div', { class: 'body' }, m.content));

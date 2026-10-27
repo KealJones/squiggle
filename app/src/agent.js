@@ -61,6 +61,7 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
     });
 
     const reply = { role: 'assistant', content: '', thread: threadId, tools: [], context: ctx.report };
+    let thinking = '';
     ui.onStart && ui.onStart(reply);
     let conv;
     try {
@@ -81,6 +82,7 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
           onThinking: (t) => ui.onThinking && ui.onThinking(t),
         });
         if (r.text) prefix += r.text + (r.toolCalls.length ? '\n\n' : '');
+        if (r.thinking && r.thinking.trim()) thinking += (thinking ? '\n\n' : '') + r.thinking.trim();
         used += estTokens((r.text || '') + (r.thinking || '') + JSON.stringify(r.toolCalls || []));
         if (!r.toolCalls.length || signal?.aborted) break;
         if (wrapUp) { prefix += '\n\n_(Stopped: the context filled up. Say "continue" in a new message to keep going.)_'; break; }
@@ -131,6 +133,7 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
         pending = results;
       }
       reply.content = scrubFakeToolNotes(prefix).trim();
+      if (thinking) reply.thinking = thinking.slice(-20000); // shown in the UI only; never replayed to the model
     } catch (e) {
       const msg = /too many tokens|context|kv.?cache|exceed/i.test(String(e && e.message || e))
         ? 'The conversation got too long for the model\'s context window. Start a new chat, or raise the context window in Settings.'
