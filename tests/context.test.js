@@ -112,3 +112,31 @@ test('older saved replies with a fake tool note are cleaned before replay', asyn
   const r = await assembleContext({ line, session, query: 'hi', budget: 3000, mode: 'compact', system: 's' });
   assert.ok(r.messages.every(m => !/tools used/i.test(m.content)), JSON.stringify(r.messages));
 });
+
+test('notes are always in context; erased notes are not', async () => {
+  const line = [msg('user', 'hi'), msg('assistant', 'hey')];
+  const session = { messages: line, threads: {}, observations: [], summaries: {}, notes: {
+    a: { id: 'n1', text: 'tools.js: runTool at line 512', ts: 1 },
+    b: { id: 'n2', text: 'erased thing', ts: 2, deleted: true },
+  } };
+  for (const mode of ['compact', 'smart']) {
+    const r = await assembleContext({ line, session, query: 'anything', budget: 3000, mode, system: 's' });
+    assert.match(r.system, /## Your notes for this chat[\s\S]*\[n1\] tools\.js: runTool at line 512/);
+    assert.ok(!r.system.includes('erased thing'));
+    assert.ok(r.report.items.some(i => i.kind === 'note'));
+  }
+});
+
+test('smart: naming a file only brings back old output about that file', async () => {
+  const line = [msg('user', 'review the repo'), msg('assistant', 'ok')];
+  const obs = (id, title, text) => ({ id, ts: 1, source: 'read_file', title, text });
+  const session = { messages: line, threads: {}, summaries: {}, observations: [
+    obs('o1', '/repos/app/src/tools.js', 'export async function runTool(call, ctx) { tools registry }'),
+    obs('o2', '/repos/app/README.md', 'tools.js holds the agent tools; main.js the UI'),
+    obs('o3', '/repos/app/src/main.js', 'imports tools.js; renders the tools trail'),
+  ] };
+  const r = await assembleContext({ line: [], session, query: 'take a look at tools.js', budget: 4000, mode: 'smart', system: 's' });
+  const got = r.report.items.filter(i => i.kind === 'observation').map(i => i.label);
+  assert.ok(got.length && got.every(l => l.includes('tools.js')), JSON.stringify(got));
+  assert.ok(!got.some(l => /README|main\.js/.test(l)), JSON.stringify(got));
+});

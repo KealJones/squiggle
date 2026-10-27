@@ -11,7 +11,7 @@ const pendingSave = new Set();
 
 export function newSession(title = 'New chat') {
   const now = Date.now();
-  const s = { v: 1, id: uid('s'), title, created: now, updated: now, messages: [], threads: {}, observations: [], summaries: {} };
+  const s = { v: 1, id: uid('s'), title, created: now, updated: now, messages: [], threads: {}, observations: [], summaries: {}, notes: {} };
   cache.set(s.id, s);
   return s;
 }
@@ -136,10 +136,32 @@ export function addObservation(session, obs) {
   return o;
 }
 
+// The agent's notepad for this chat. Deleting keeps a tombstone so the
+// delete syncs (merge keeps the newest version of each note).
+export const liveNotes = (session) => Object.values(session.notes || {}).filter(n => !n.deleted).sort((a, b) => a.ts - b.ts);
+export function setNote(session, id, text) {
+  session.notes = session.notes || {};
+  const now = Date.now();
+  const prev = id && session.notes[id];
+  if (id && (!prev || prev.deleted)) return null;
+  const n = prev ? { ...prev, text, mts: now } : { id: 'n' + (Object.keys(session.notes).length + 1) + '-' + uid('').slice(-4), text, ts: now, mts: now };
+  session.notes[n.id] = n;
+  touch(session);
+  return n;
+}
+export function deleteNote(session, id) {
+  const prev = session.notes && session.notes[id];
+  if (!prev || prev.deleted) return false;
+  session.notes[id] = { id, deleted: true, ts: prev.ts, mts: Date.now() };
+  touch(session);
+  return true;
+}
+
 function parse(text) { try { return JSON.parse(text); } catch { return null; } }
 
 function normalize(s) {
   s.messages = s.messages || [];
+  s.notes = s.notes || {};
   s.threads = s.threads || {};
   s.observations = s.observations || [];
   s.summaries = s.summaries || {};
