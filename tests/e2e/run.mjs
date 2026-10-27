@@ -346,6 +346,16 @@ await check('model runtime loads under the page CSP', async () => {
     document.addEventListener('securitypolicyviolation', e => violations.push(`${e.violatedDirective} ${e.blockedURI}`));
     let imported = false, err = null;
     try { const m = await import('https://cdn.jsdelivr.net/npm/@litert-lm/core@0.14.0/+esm'); imported = Boolean(m.Engine); } catch (e) { err = String(e); }
+    // onnxruntime-web, as the ONNX engine loads it: module, wasm glue and the wasm itself.
+    try {
+      const ort = await import('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.webgpu.min.mjs');
+      ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/'; ort.env.wasm.numThreads = 1; ort.env.wasm.proxy = false;
+      // Smallest valid model: Identity(x) -> y.
+      const bytes = Uint8Array.from(atob('CAg6PwoQCgF4EgF5IghJZGVudGl0eRIBZ1oTCgF4Eg4KDAgBEggKAggBCgIIAmITCgF5Eg4KDAgBEggKAggBCgIIAkIECgAQDQ=='), c => c.charCodeAt(0));
+      const s = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] });
+      const out = await s.run({ x: new ort.Tensor('float32', new Float32Array([1, 2]), [1, 2]) });
+      imported = imported && out.y.data[1] === 2;
+    } catch (e) { err = (err ? err + ' | ' : '') + String(e); }
     await new Promise(r => setTimeout(r, 300));
     return { imported, err, violations };
   });
@@ -472,24 +482,43 @@ await check('a crash while loading the model is caught on the next open; phones 
     await page.waitForSelector('#model-banner:not([hidden])');
     const text = await page.textContent('#model-banner');
     assert.match(text, /crashed this tab last time/, text);
-    // Desktop offers the lighter setup; a phone is already on it, so it only offers to try again.
-    assert.match(text, phone ? /now uses lighter settings \(Fake E2B, 4K context, speed boost off\)/ : /Use lighter settings/, text);
+    // Desktop offers the next lighter model; a phone has already moved to its phone model.
+    assert.match(text, phone ? /now uses lighter settings \(Fake E2B Mobile, 4K context, speed boost off\)/ : /Use lighter settings \(Fake E2B, 2\.0 GB\)/, text);
     assert.equal(await page.evaluate(() => window.__loads), 0, 'no automatic load after a crash');
     if (phone && shotsDir) await page.screenshot({ path: `${shotsDir}/phone-crash-banner.png` });
     await page.click(phone ? '#model-banner button:has-text("Load model")' : '#model-banner button:has-text("Use lighter settings")');
     await page.waitForFunction(() => window.__loads === 1);
     const r = await page.evaluate(() => ({ last: window.__lastLoad, marker: localStorage.getItem('squiggle-model-loading'), saved: JSON.parse(localStorage.getItem('squiggle-settings')) }));
-    assert.deepEqual(r.last, { id: 'E2B', ctx: 4096, opts: { fast: false } });
+    assert.deepEqual(r.last, { id: phone ? 'E2B-QAT' : 'E2B', ctx: 4096, opts: { fast: false } });
     assert.equal(r.marker, null, 'marker cleared after a good load');
     if (phone) {
       assert.equal(r.saved.mobileTuned, true);
-      assert.ok((await page.evaluate(() => window.__deleted || [])).includes('E4B'), 'leftover E4B copy removed on the phone');
+      const deleted = await page.evaluate(() => window.__deleted || []);
+      assert.ok(deleted.includes('E4B') && deleted.includes('E2B'), 'downloads a phone cannot run are removed: ' + deleted);
+      assert.ok(!deleted.includes('E2B-QAT'));
       // Next open on the phone: no crash, no auto-load, a Load button instead.
       await page.reload();
       await page.waitForSelector('#model-banner button:has-text("Load model")');
       assert.equal(await page.evaluate(() => window.__loads), 0);
       await page.click('#model-banner button:has-text("Load model")');
       await page.waitForFunction(() => window.__loads === 1);
+      // Settings lists only phone models.
+      await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
+      await page.waitForSelector('#drawer .model-option');
+      const listed = await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model));
+      assert.deepEqual(listed, ['E2B-QAT', 'G3-1B']);
+      if (shotsDir) await page.screenshot({ path: `${shotsDir}/phone-model-picker.png` });
+      // A crash on the phone model offers the next lighter one.
+      await page.evaluate(() => localStorage.setItem('squiggle-model-loading', JSON.stringify({ model: 'E2B-QAT', contextSize: 4096, fast: false, at: Date.now() })));
+      await page.reload();
+      await page.waitForSelector('#model-banner:not([hidden])');
+      const t2 = await page.textContent('#model-banner');
+      assert.match(t2, /Use lighter settings \(Fake Gemma 3 1B, 0\.8 GB\)/, t2);
+    } else {
+      await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
+      await page.waitForSelector('#drawer .model-option');
+      const listed = await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model));
+      assert.deepEqual(listed, ['E4B', 'E2B', 'E2B-QAT', 'G3-1B']);
     }
     assert.deepEqual(page.errors, []);
     await ctx.close();

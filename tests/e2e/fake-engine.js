@@ -1,7 +1,12 @@
 // Stand-in for app/src/engine.js in end-to-end tests (no GPU in CI). Scripted:
 // a user message mentioning a URL makes it call fetch_url, then remember; tool
 // results produce a final answer. Every call is recorded on window.__engineLog.
-export const MODELS = { E2B: { label: 'Fake E2B', size: '0 GB', note: 'test', url: 'fake://e2b' }, E4B: { label: 'Fake E4B', size: '0 GB', note: 'test', url: 'fake://e4b' } };
+export const MODELS = {
+  E4B: { label: 'Fake E4B', size: '3.0 GB', note: 'test', url: 'fake://e4b', phone: false, runtime: 'litert' },
+  E2B: { label: 'Fake E2B', size: '2.0 GB', note: 'test', url: 'fake://e2b', phone: false, runtime: 'litert' },
+  'E2B-QAT': { label: 'Fake E2B Mobile', size: '2.3 GB', note: 'test', phone: true, runtime: 'onnx' },
+  'G3-1B': { label: 'Fake Gemma 3 1B', size: '0.8 GB', note: 'test', phone: true, runtime: 'onnx' },
+};
 const log = (window.__engineLog = window.__engineLog || []);
 let ready = false;
 let chain = Promise.resolve();
@@ -11,7 +16,8 @@ export const engineReady = () => ready;
 export const currentModel = () => 'E2B';
 export const webgpuStatus = async () => ({ ok: true });
 export const suggestModel = () => 'E2B';
-export const deviceModel = () => (/iPhone|Android/.test(navigator.userAgent) ? 'E2B' : 'E4B');
+export const deviceModel = () => (/iPhone|Android/.test(navigator.userAgent) ? 'E2B-QAT' : 'E4B');
+export const modelFitsDevice = (id) => !isMobile() || Boolean(MODELS[id] && MODELS[id].phone);
 export const deleteModel = async (id) => { (window.__deleted = window.__deleted || []).push(id); };
 export const isMobile = () => /iPhone|Android/.test(navigator.userAgent);
 window.__loads = 0;

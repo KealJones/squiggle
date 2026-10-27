@@ -16,7 +16,7 @@ few GitHub requests browsers aren't allowed to make directly.
 
 ## What it does
 
-- **On-device model**: Gemma 4 E2B (1.9 GB, fast, fine on phones) or E4B (2.8 GB, smarter). Downloads once per device, resumable, then works offline.
+- **On-device models**: computers default to Gemma 4 E4B (3.0 GB); phones to Gemma 4 E2B Mobile (experimental: 2.3 GB download, about 1 GB in memory). Also Gemma 4 E2B, Gemma 3 1B / 270M, and SmolLM2 / SmolLM3 (fully open training data). Pick in Settings; phones only list models that fit. Each downloads once per device, resumable, then works offline.
 - **Sessions that follow you**: every conversation syncs through your storage repo. Two devices can chat offline in the same session; their messages merge on the next sync instead of conflicting.
 - **Threads**: reply in a thread on any message. The thread knows the conversation up to that point, the main chat stays uncluttered, and a one-line outcome shows under the parent message.
 - **Git workspace**: `/home` is the agent's own synced folder; `/repos/<name>` holds clones. Tools: clone, status, branch, commit, push, pull, log, open PR, list repos.
