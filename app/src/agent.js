@@ -67,7 +67,7 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
       // Running estimate of what's in the model's context this turn, so tool
       // results are sized to fit and the model is told to wrap up before the
       // context overflows (which would fail the whole reply).
-      let wrapUp = false;
+      let wrapUp = false, carried = 0;
       let used = estTokens(ctx.system) + estTokens(JSON.stringify(ctx.messages)) + toolTokens + estTokens(text);
       const reserve = Math.min(MAX_OUTPUT, 700);
       const roomChars = () => Math.max(0, (settings.contextSize - used - reserve) * 3);
@@ -86,7 +86,22 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
           break;
         }
         const results = [];
-        // Almost full: no more tools; ask for an answer from what it has.
+        // Almost full: ask for notes, then carry them into a fresh context and
+        // keep going (up to twice); after that, ask for an answer.
+        if (roomChars() < 2500 && carried < 2) {
+          const ask = r.toolCalls.map(call => ({ role: 'tool', content: [{ name: (call.function && call.function.name) || 'unknown', response: { error: 'Not run: your context is full. Reply with short notes only (no tools): what you have found so far that matters, and exactly what you still need to do. Your context will then be reset with these notes so you can continue.' } }] }));
+          const n = await engine.respond(conv, ask, { signal });
+          const notes = (n.text || '').trim();
+          if (signal?.aborted || !notes) break;
+          try { await conv.delete(); } catch {}
+          conv = await engine.conversation({ system: ctx.system, messages: ctx.messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT });
+          carried++;
+          reply.tools.push({ name: 'context', label: 'context was full: continued in a fresh one with notes', ok: true });
+          ui.onTool && ui.onTool({ name: 'context', label: 'context was full: continued in a fresh one with notes', ok: true, running: false });
+          pending = `${text}\n\n[Notes you wrote while working on this request; your context was reset to give you room. Continue from them, don't start over:]\n${notes}`;
+          used = estTokens(ctx.system) + estTokens(JSON.stringify(ctx.messages)) + toolTokens + estTokens(pending);
+          continue;
+        }
         if (roomChars() < 2500) {
           for (const call of r.toolCalls) results.push({ role: 'tool', content: [{ name: (call.function && call.function.name) || 'unknown', response: { error: 'Not run: your context is almost full. Answer now with what you already have, and say what you would look at next.' } }] });
           used += 60 * r.toolCalls.length;
