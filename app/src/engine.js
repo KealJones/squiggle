@@ -53,7 +53,26 @@ export async function downloadInfo(id) {
   return (await kv.get(metaKey(url))) || { total: 0, stored: 0, complete: false };
 }
 
-export async function download(id, onProgress, signal) {
+// One download at a time per device: a lock shared by every tab and window,
+// so extra taps, reloads or a second tab never start a parallel download
+// (which would interleave writes and corrupt the stored model). A tab that
+// finds the lock taken calls onWaiting, then waits its turn; by then the
+// model is usually complete and it returns immediately.
+const DOWNLOAD_LOCK = 'squiggle-model-download';
+
+export async function download(id, onProgress, signal, { onWaiting } = {}) {
+  if (!navigator.locks) return downloadUnlocked(id, onProgress, signal);
+  const done = await navigator.locks.request(DOWNLOAD_LOCK, { ifAvailable: true }, async (lock) => {
+    if (!lock) return false;
+    await downloadUnlocked(id, onProgress, signal);
+    return true;
+  });
+  if (done) return;
+  onWaiting && onWaiting();
+  await navigator.locks.request(DOWNLOAD_LOCK, signal ? { signal } : {}, () => downloadUnlocked(id, onProgress, signal));
+}
+
+async function downloadUnlocked(id, onProgress, signal) {
   const url = MODELS[id].url;
   const meta = await downloadInfo(id);
   if (meta.complete) return;
@@ -68,6 +87,7 @@ export async function download(id, onProgress, signal) {
   }
   // Drop anything after a gap (shouldn't happen, but keeps resume correct).
   for (const off of offsets) if (off >= offset) await kv.del([url, off], 'model');
+  onProgress && onProgress(offset, meta.total || 0);
 
   const ctrl = new AbortController();
   if (signal) signal.addEventListener('abort', () => ctrl.abort(), { once: true });
