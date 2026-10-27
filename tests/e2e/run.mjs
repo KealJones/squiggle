@@ -571,6 +571,17 @@ await check('a crash while loading the model is caught on the next open; phones 
       await page.waitForFunction((n) => window.__loads === n + 1, loadsBefore);
       assert.deepEqual(await page.evaluate(() => window.__lastLoad.opts), { fast: false, cpu: true });
       assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('squiggle-settings')).cpu), true);
+      // Replies are tracked too: progress writes the marker, idle clears it.
+      await page.evaluate(() => window.__progress('reading the prompt (96 of 1540 tokens)'));
+      const mk = JSON.parse(await page.evaluate(() => localStorage.getItem('squiggle-model-loading')));
+      assert.equal(mk.phase, 'reply'); assert.equal(mk.stage, 'reading the prompt (96 of 1540 tokens)');
+      await page.evaluate(() => window.__progress(null));
+      assert.equal(await page.evaluate(() => localStorage.getItem('squiggle-model-loading')), null);
+      // A crash mid-reply says so on the next open.
+      await page.evaluate(() => window.__progress('writing the reply (16 tokens so far)'));
+      await page.reload();
+      await page.waitForSelector('#model-banner:not([hidden])');
+      assert.match(await page.textContent('#model-banner'), /crashed this tab while answering, while writing the reply \(16 tokens so far\)\./);
     } else {
       await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
       await page.waitForSelector('#drawer .model-option');

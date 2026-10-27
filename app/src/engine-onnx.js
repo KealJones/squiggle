@@ -234,7 +234,7 @@ export async function createEngine(spec, files, { contextSize = 4096, useGpu = t
     // Runs tokens through the model; returns logits for the last one.
     async forward(tokens) {
       if (this.pos + tokens.length > contextSize) throw new Error(`This conversation is longer than the ${contextSize / 1024}K context window. Start a new chat or raise the context size in Settings.`);
-      const chunk = spec.lookup ? 128 : 32;
+      const chunk = spec.lookup ? 128 : 16;
       // Models that return scores for every position: run the last token on
       // its own, so only one row (not chunk × vocabulary, ~16 MB) is ever read
       // back from the GPU. iOS Safari fails large reads ("map async was not
@@ -244,8 +244,11 @@ export async function createEngine(spec, files, { contextSize = 4096, useGpu = t
       for (let s = 0; s < body; s += chunk) parts.push(tokens.slice(s, Math.min(s + chunk, body)));
       if (body < tokens.length) parts.push(tokens.slice(body));
       let logits = null;
+      let done = 0;
       for (let pi = 0; pi < parts.length; pi++) {
         const part = parts[pi], n = part.length;
+        if (tokens.length > 1) onStage(`reading the prompt (${done} of ${tokens.length} tokens)`);
+        done += n;
         const feeds = {};
         if (lookup) {
           const [e, p] = await lookup.embed(part);
@@ -310,7 +313,9 @@ export async function createEngine(spec, files, { contextSize = 4096, useGpu = t
       this.system = preface.messages[0].content;
       // Squiggle's history uses Gemma's role name "model"; chat templates expect "assistant".
       this.history = preface.messages.slice(1).map(m => (m.role === 'model' ? { ...m, role: 'assistant' } : m));
-      this.tools = (preface.tools || []).map(t => t.function);
+      // The tiniest models can't use tools reliably; leaving them out also
+      // keeps the prompt (and GPU memory) small.
+      this.tools = spec.tools === false ? [] : (preface.tools || []).map(t => t.function);
       this.thinking = Boolean(preface.extra_context && preface.extra_context.enable_thinking) && native;
       this.max = sessionConfig.maxOutputTokens || 1024;
       this.greedy = sessionConfig.samplerParams && sessionConfig.samplerParams.type === 3;
@@ -355,6 +360,7 @@ export async function createEngine(spec, files, { contextSize = 4096, useGpu = t
         return d;
       };
       for (let n = 0; n < this.max && !this.cancelled; n++) {
+        if (n % 8 === 0) onStage(`writing the reply (${n} tokens so far)`);
         const tok = sample(logits, this.greedy);
         this.lastTok = tok;
         (this.raw = this.raw || []).push(tok);
@@ -393,6 +399,7 @@ export async function createEngine(spec, files, { contextSize = 4096, useGpu = t
         const call = parseGemmaCall(tokenizer.decode(callBuf, { skip_special_tokens: true }));
         if (call) yield { tool_calls: [call] };
       }
+      onStage(null);
       dbg('generated', JSON.stringify(tokenizer.decode(this.raw || [], { skip_special_tokens: false })));
       this.raw = [];
       if (!native) {

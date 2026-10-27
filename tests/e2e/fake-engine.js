@@ -28,6 +28,7 @@ export const load = async (id, ctx, opts = {}) => {
   window.__loads++; window.__lastLoad = { id, ctx, opts: { fast: opts.fast, cpu: opts.cpu } }; ready = true;
 };
 export const gpuSummary = async () => 'fake gpu, f16';
+export const setProgress = (fn) => { window.__progress = fn; };
 export const unload = async () => { ready = false; };
 export const foreground = (fn) => lock(fn);
 export const background = (fn) => lock(fn);
