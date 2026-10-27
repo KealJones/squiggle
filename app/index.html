@@ -24,6 +24,7 @@
     <symbol id="i-send" viewBox="0 0 24 24"><path d="M5 12h12M12 6l6 6-6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
     <symbol id="i-attach" viewBox="0 0 24 24"><path d="M20 11.5l-7.6 7.6a4.5 4.5 0 01-6.4-6.4l8-8a3 3 0 014.3 4.3l-8 8a1.5 1.5 0 01-2.1-2.1l7.3-7.3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></symbol>
     <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></symbol>
+    <symbol id="i-call" viewBox="0 0 24 24"><path d="M5 14v-2a7 7 0 0114 0v2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/><rect x="3.5" y="13" width="4" height="6" rx="1.5" stroke="currentColor" stroke-width="1.8" fill="none"/><rect x="16.5" y="13" width="4" height="6" rx="1.5" stroke="currentColor" stroke-width="1.8" fill="none"/></symbol>
     <symbol id="i-thread" viewBox="0 0 24 24"><path d="M5 5h14v10H11l-4 4v-4H5z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" fill="none"/></symbol>
     <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" fill="none"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M5 15V6a1 1 0 011-1h9" stroke="currentColor" stroke-width="1.8" fill="none"/></symbol>
@@ -65,6 +66,7 @@
       <form class="composer" id="composer">
         <div class="composer-inner">
           <textarea id="input" rows="1" placeholder="Message Squiggle" aria-label="Message"></textarea>
+          <button class="icon-btn" id="call" type="button" aria-label="Start a voice call" title="Voice call"><svg><use href="#i-call"/></svg></button>
           <button class="icon-btn" id="send" type="submit" aria-label="Send"><svg><use href="#i-send"/></svg></button>
         </div>
         <div class="note" id="composer-note"></div>
