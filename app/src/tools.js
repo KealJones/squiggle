@@ -140,6 +140,7 @@ function getSandbox() {
 const S = (props, required = []) => ({ type: 'object', properties: props, required });
 const str = (description) => ({ type: 'string', description });
 const num = (description) => ({ type: 'integer', description });
+const bool = (description) => ({ type: 'boolean', description });
 
 export const TOOLS = [
   // Files
@@ -151,17 +152,61 @@ export const TOOLS = [
     },
   },
   {
-    spec: { name: 'read_file', description: 'Read a text file from the workspace.', parameters: S({ path: str('File path, e.g. /home/notes.md or /repos/app/README.md'), offset: num('Character offset to start from (for long files)') }, ['path']) },
-    async run({ path, offset = 0 }) {
+    spec: { name: 'read_file', description: 'Read lines of a text file from the workspace, with line numbers. Long files come in parts: use grep to find the lines you need, then read just that range.', parameters: S({ path: str('File path, e.g. /home/notes.md or /repos/app/README.md'), start_line: num('First line to read (default 1)'), end_line: num('Last line to read (default start_line + 150)') }, ['path']) },
+    async run({ path, start_line = 1, end_line }, ctx = {}) {
       const text = await readAgentFile(path);
       if (text == null) return { model: { error: `No such file: ${path}` }, label: `read ${path} (missing)` };
-      const part = text.slice(offset, offset + MAX_READ);
-      const more = text.length > offset + MAX_READ;
+      const lines = text.split('\n');
+      const start = Math.max(1, Math.floor(start_line) || 1);
+      let end = Math.min(lines.length, Math.floor(end_line) || start + 149);
+      // Never more than the room left in the model's context (ctx.room, in chars).
+      const cap = Math.min(MAX_READ, ctx.room || MAX_READ);
+      let out = '';
+      for (let i = start; i <= end; i++) {
+        const line = `${i}: ${lines[i - 1]}\n`;
+        if (out.length + line.length > cap) { end = i - 1; break; }
+        out += line;
+      }
       const fromRepo = resolveAgentPath(path).area === 'repos';
       return {
-        model: { path, chars: text.length, offset, content: fromRepo ? wrapUntrusted('file ' + path, part) : part, ...(more ? { next_offset: offset + MAX_READ } : {}) },
-        label: `read ${path}`,
+        model: { path, total_lines: lines.length, start_line: start, end_line: end, content: fromRepo ? wrapUntrusted('file ' + path, out) : out, ...(end < lines.length ? { more: `lines ${end + 1}-${lines.length} not shown; read them with start_line, or grep for what you need` } : {}) },
+        label: `read ${path}${start > 1 || end < lines.length ? ` lines ${start}-${end}` : ''}`,
         observation: fromRepo ? { source: 'read_file', title: path, text: text.slice(0, 20000) } : null,
+      };
+    },
+  },
+  {
+    spec: { name: 'grep', description: 'Search files for a word or regular expression. Returns matching lines as path:line: text. Use it to find where something is before reading.', parameters: S({ pattern: str('Text or regular expression, e.g. "function send" or "TODO|FIXME"'), path: str('Folder or file to search, e.g. /repos/app or /repos/app/src (default /home)'), ignore_case: bool('Case-insensitive (default true)'), skip: num('Skip this many matches (to get the next page)') }, ['pattern']) },
+    async run({ pattern, path = '/home', ignore_case = true, skip = 0 }, ctx = {}) {
+      let re;
+      try { re = new RegExp(pattern, ignore_case ? 'i' : ''); } catch { re = new RegExp(String(pattern).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), ignore_case ? 'i' : ''); }
+      const base = agentPath(resolveAgentPath(path));
+      const single = await readAgentFile(base);
+      const files = single != null ? [''] : (await listAgentDir(base)).map(e => e.replace(/\s+\(\d+ B\)$/, '')).filter(f => !f.endsWith('/'));
+      const cap = Math.min(6000, ctx.room || 6000);
+      const hits = [];
+      let size = 0, scanned = 0, more = false, seen = 0;
+      for (const f of files) {
+        if (/\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|woff2?|ttf|wasm|lock|map|min\.js)$/i.test(f)) continue;
+        const fp = f ? base.replace(/\/$/, '') + '/' + f : base;
+        const text = f ? await readAgentFile(fp) : single;
+        if (text == null || text.length > 1e6) continue;
+        scanned++;
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (!re.test(lines[i])) continue;
+          if (seen++ < skip) continue;
+          const hit = `${fp}:${i + 1}: ${lines[i].trim().slice(0, 160)}`;
+          if (size + hit.length > cap || hits.length >= 60) { more = true; break; }
+          hits.push(hit); size += hit.length + 1;
+        }
+        if (more) break;
+      }
+      const fromRepo = resolveAgentPath(base).area === 'repos';
+      const body = hits.join('\n') || '(no matches)';
+      return {
+        model: { pattern, path: base, files_searched: scanned, matches: fromRepo ? wrapUntrusted('grep ' + base, body) : body, ...(more ? { more: `more matches not shown; call again with skip: ${skip + hits.length}, or narrow the pattern or path` } : {}) },
+        label: `grep "${truncate(String(pattern), 40)}" in ${base} (${hits.length}${more ? '+' : ''})`,
       };
     },
   },

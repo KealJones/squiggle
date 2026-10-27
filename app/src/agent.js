@@ -64,6 +64,13 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
       conv = await engine.conversation({ system: ctx.system, messages: ctx.messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT });
       let pending = text;
       let prefix = '';
+      // Running estimate of what's in the model's context this turn, so tool
+      // results are sized to fit and the model is told to wrap up before the
+      // context overflows (which would fail the whole reply).
+      let wrapUp = false;
+      let used = estTokens(ctx.system) + estTokens(JSON.stringify(ctx.messages)) + toolTokens + estTokens(text);
+      const reserve = Math.min(MAX_OUTPUT, 700);
+      const roomChars = () => Math.max(0, (settings.contextSize - used - reserve) * 3);
       for (let round = 0; ; round++) {
         const r = await engine.respond(conv, pending, {
           signal,
@@ -71,26 +78,43 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
           onThinking: (t) => ui.onThinking && ui.onThinking(t),
         });
         if (r.text) prefix += r.text + (r.toolCalls.length ? '\n\n' : '');
+        used += estTokens((r.text || '') + (r.thinking || '') + JSON.stringify(r.toolCalls || []));
         if (!r.toolCalls.length || signal?.aborted) break;
+        if (wrapUp) { prefix += '\n\n_(Stopped: the context filled up. Say "continue" in a new message to keep going.)_'; break; }
         if (round >= settings.maxToolRounds) {
           prefix += `\n\n_(Stopped after ${settings.maxToolRounds} rounds of tool use. Say "continue" to keep going.)_`;
           break;
         }
         const results = [];
+        // Almost full: no more tools; ask for an answer from what it has.
+        if (roomChars() < 2500) {
+          for (const call of r.toolCalls) results.push({ role: 'tool', content: [{ name: (call.function && call.function.name) || 'unknown', response: { error: 'Not run: your context is almost full. Answer now with what you already have, and say what you would look at next.' } }] });
+          used += 60 * r.toolCalls.length;
+          pending = results;
+          wrapUp = true;
+          continue;
+        }
         for (const call of r.toolCalls) {
           ui.onTool && ui.onTool({ name: call.function && call.function.name, running: true });
-          const res = await runTool(call, { session, threadId, approve: (req) => askApproval(req, ui, signal) });
+          const room = Math.floor(roomChars() / r.toolCalls.length);
+          const res = await runTool(call, { session, threadId, room, approve: (req) => askApproval(req, ui, signal) });
           reply.tools.push({ name: res.name, label: res.label, ok: res.ok });
           ui.onTool && ui.onTool({ name: res.name, label: res.label, ok: res.ok, running: false });
           if (res.observation) sessions.addObservation(session, { ...res.observation, thread: threadId });
-          const response = res.model && typeof res.model === 'object' ? res.model : { value: res.model };
+          let response = res.model && typeof res.model === 'object' ? res.model : { value: res.model };
+          const json = JSON.stringify(response);
+          if (json.length > room) response = { truncated: 'Result cut to fit your context; ask for less (e.g. grep, or a line range).', partial: json.slice(0, Math.max(0, room - 200)) };
+          used += estTokens(JSON.stringify(response)) + 10;
           results.push({ role: 'tool', content: [{ name: res.name || 'unknown', response }] });
         }
         pending = results;
       }
       reply.content = scrubFakeToolNotes(prefix).trim();
     } catch (e) {
-      reply.content = (reply.content || '') + `\n\n⚠️ ${e.message || e}`;
+      const msg = /too many tokens|context|kv.?cache|exceed/i.test(String(e && e.message || e))
+        ? 'The conversation got too long for the model\'s context window. Start a new chat, or raise the context window in Settings.'
+        : (e.message || e);
+      reply.content = (reply.content || '') + `\n\n⚠️ ${msg}`;
       ui.onError && ui.onError(e);
     } finally {
       if (conv) { try { await conv.delete(); } catch {} }

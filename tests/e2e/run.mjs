@@ -202,9 +202,22 @@ await check('agent git tools: agent/ pushes freely; other branches need approval
     out.escape = await run('read_file', { path: '/repos/app/../../state/.squiggle.json' });
     out.gitdir = await run('read_file', { path: '/repos/app/.git/config' });
     out.storageClone = await run('git_clone', { repo: 'tester/state' });
+    // Reading in parts and searching.
+    await run('write_file', { path: '/repos/app/big.txt', content: Array.from({ length: 400 }, (_, i) => `line ${i + 1}${i % 50 === 0 ? ' NEEDLE' : ''}`).join('\n') });
+    out.read1 = await run('read_file', { path: '/repos/app/big.txt' });
+    out.read2 = await run('read_file', { path: '/repos/app/big.txt', start_line: 151, end_line: 160 });
+    out.grep1 = await run('grep', { pattern: 'needle', path: '/repos/app' });
+    out.grepFile = await run('grep', { pattern: 'NEEDLE', path: '/repos/app/big.txt', ignore_case: false, skip: 6 });
     return out;
   });
   assert.equal(r.clone.ok, true, JSON.stringify(r.clone));
+  assert.equal(r.read1.total_lines, 400); assert.equal(r.read1.end_line, 150);
+  assert.match(r.read1.more, /lines 151-400 not shown/);
+  assert.match(r.read2.content, /151: line 151[\s\S]*160: line 160/);
+  assert.equal(r.read2.end_line, 160);
+  assert.match(r.grep1.matches, /\/repos\/app\/big\.txt:1: line 1 NEEDLE[\s\S]*big\.txt:351: line 351 NEEDLE/);
+  assert.match(r.grepFile.matches, /big\.txt:301: line 301 NEEDLE[\s\S]*big\.txt:351/);
+  assert.doesNotMatch(r.grepFile.matches, /:251:/, 'skip pages past earlier matches');
   assert.equal(r.branch.branch, 'agent/fix-greeting');
   assert.deepEqual(r.status.changes, ['M src/index.js']);
   assert.equal(r.commit.ok, true);
