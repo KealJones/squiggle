@@ -235,9 +235,17 @@ export async function createEngine(spec, files, { contextSize = 4096, useGpu = t
     async forward(tokens) {
       if (this.pos + tokens.length > contextSize) throw new Error(`This conversation is longer than the ${contextSize / 1024}K context window. Start a new chat or raise the context size in Settings.`);
       const chunk = spec.lookup ? 128 : 32;
+      // Models that return scores for every position: run the last token on
+      // its own, so only one row (not chunk × vocabulary, ~16 MB) is ever read
+      // back from the GPU. iOS Safari fails large reads ("map async was not
+      // successful"); a single row is what the warm-up already proved works.
+      const parts = [];
+      const body = inputs.has('num_logits_to_keep') ? tokens.length : tokens.length - 1;
+      for (let s = 0; s < body; s += chunk) parts.push(tokens.slice(s, Math.min(s + chunk, body)));
+      if (body < tokens.length) parts.push(tokens.slice(body));
       let logits = null;
-      for (let s = 0; s < tokens.length; s += chunk) {
-        const part = tokens.slice(s, s + chunk), n = part.length;
+      for (let pi = 0; pi < parts.length; pi++) {
+        const part = parts[pi], n = part.length;
         const feeds = {};
         if (lookup) {
           const [e, p] = await lookup.embed(part);
@@ -257,7 +265,7 @@ export async function createEngine(spec, files, { contextSize = 4096, useGpu = t
         for (const name of pastNames) this.past[name] = out[name.replace('past_key_values', 'present')];
         if (old) for (const t of Object.values(old)) try { t.dispose?.(); } catch {}
         logits = out.logits;
-        if (s + chunk < tokens.length) { try { logits.dispose?.(); } catch {} logits = null; }
+        if (pi < parts.length - 1) { try { logits.dispose?.(); } catch {} logits = null; }
         this.pos = total;
       }
       return lastLogits(logits);
