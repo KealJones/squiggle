@@ -60,7 +60,16 @@ const SETTINGS_KEY = 'squiggle-settings';
 function loadSettings() {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch {}
-  Object.assign(agent.settings, { model: engine.suggestModel() }, saved);
+  const mobile = engine.isMobile();
+  Object.assign(agent.settings, { model: engine.deviceModel() }, mobile ? { contextSize: 4096, fastDecode: false } : {}, saved);
+  // Phones always run E2B, whatever was saved before.
+  if (mobile) agent.settings.model = 'E2B';
+  // Phones set up before the lighter defaults existed saved the desktop ones
+  // (and could crash loading the model); move them over once.
+  if (mobile && !saved.mobileTuned) {
+    Object.assign(agent.settings, { contextSize: 4096, fastDecode: false, mobileTuned: true });
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...saved, contextSize: 4096, fastDecode: false, mobileTuned: true })); } catch {}
+  }
   if (saved.tools) agent.settings.tools = new Set(saved.tools);
   applyTheme();
 }
@@ -314,15 +323,13 @@ async function setupModel(body) {
     body.append(h('h2', {}, 'This device can\'t run the model'), h('p', {}, gpu.reason), h('p', { class: 'muted' }, 'Your sessions are set up and will be here when you open Squiggle on a device that can.'), done);
     return;
   }
-  const choice = agent.settings.model;
+  const m = engine.MODELS[engine.deviceModel()];
+  agent.settings.model = engine.deviceModel();
+  saveSettings();
   body.append(
     h('h2', {}, 'Download the model'),
-    h('p', {}, 'Squiggle runs Gemma 4 right here on your device. It downloads once per device, then works offline. Keep this tab open while it downloads; if it gets interrupted, it resumes where it stopped.'),
-    ...Object.entries(engine.MODELS).map(([id, m]) => h('button', {
-      class: 'choice', 'aria-pressed': String(id === choice),
-      style: id === choice ? 'border-color: var(--action)' : '',
-      onclick: () => { agent.settings.model = id; saveSettings(); showSetup('model'); },
-    }, h('strong', {}, `${m.label} · ${m.size}`), h('span', {}, m.note + (id === engine.suggestModel() ? ' (suggested for this device)' : '')))),
+    h('p', {}, `Squiggle runs ${m.label} right here on your ${engine.isMobile() ? 'phone' : 'computer'}. It's a one-time ${m.size} download, then it works offline.`),
+    h('p', { class: 'muted' }, 'Wi-Fi is best. If the download gets interrupted, it picks up where it stopped.'),
     h('div', { class: 'row' }, done),
   );
 }
@@ -521,6 +528,7 @@ function setBusy(on) {
 async function send(text, threadId) {
   if (busy) return;
   if (modelState !== 'ready') {
+    if (loadCrashMarker()) return; // the crash banner is showing; let the person choose
     const ok = await ensureModel();
     if (!ok) return;
   }
@@ -601,11 +609,63 @@ function approvalCard(req, decide) {
 
 // ── Model ──────────────────────────────────────────────────────────────────
 async function initModel() {
+  if (engine.isMobile()) {
+    const big = await engine.downloadInfo('E4B').catch(() => null);
+    if (big && big.stored) await engine.deleteModel('E4B').catch(() => {}); // can't run on a phone; free the space
+  }
   const gpu = await engine.webgpuStatus();
   if (!gpu.ok) { modelState = 'unsupported'; banner(gpu.reason); return; }
   const info = await engine.downloadInfo(agent.settings.model);
   if (!info.complete) { modelState = 'missing'; showDownloadBanner(info); return; }
+  const crashed = loadCrashMarker();
+  if (crashed) { modelState = 'idle'; showCrashBanner(crashed); return; }
+  if (engine.isMobile()) { modelState = 'idle'; showLoadBanner(); return; }
   await loadModel();
+}
+
+// Crash-loop guard. A note is written just before the model loads and
+// removed once it's loaded (or fails normally). If the browser killed the
+// tab mid-load (out of memory), the note is still there next time, and
+// Squiggle asks instead of loading again.
+const LOADING_KEY = 'squiggle-model-loading';
+function loadCrashMarker() {
+  try { return JSON.parse(localStorage.getItem(LOADING_KEY) || 'null'); } catch { return null; }
+}
+function setCrashMarker(v) {
+  try { v ? localStorage.setItem(LOADING_KEY, JSON.stringify(v)) : localStorage.removeItem(LOADING_KEY); } catch {}
+}
+
+function showLoadBanner() {
+  const m = engine.MODELS[agent.settings.model];
+  banner(h('span', {}, `${m.label} is downloaded.`),
+    h('button', { class: 'btn primary', onclick: (e) => { e.currentTarget.disabled = true; loadModel(); } }, 'Load model'));
+}
+
+function lightest() {
+  const S = agent.settings;
+  return S.model === 'E2B' && S.contextSize <= 4096 && !S.fastDecode;
+}
+
+function showCrashBanner(c) {
+  const m = engine.MODELS[c.model] || engine.MODELS[agent.settings.model];
+  const lighter = h('button', { class: 'btn primary', onclick: async () => {
+    Object.assign(agent.settings, { model: 'E2B', contextSize: 4096, fastDecode: false });
+    saveSettings(); setCrashMarker(null);
+    modelPromise = null; ensureModel(); // downloads E2B first if needed, then loads
+  } }, agent.settings.model === 'E2B' ? 'Use lighter settings' : 'Use lighter settings (E2B, 2.0 GB download)');
+  const S = agent.settings;
+  // Settings may have become lighter since the crash (e.g. phones moved to E2B).
+  const changed = c.model !== S.model || c.contextSize !== S.contextSize || Boolean(c.fast) !== Boolean(S.fastDecode);
+  const again = h('button', { class: changed ? 'btn primary' : 'btn', onclick: () => { setCrashMarker(null); loadModel(); } }, changed ? 'Load model' : 'Try again');
+  const settingsText = `${engine.MODELS[S.model].label}, ${S.contextSize / 1024}K context, speed boost ${S.fastDecode ? 'on' : 'off'}`;
+  banner(h('div', { class: 'dl' },
+    h('span', {}, `Loading ${m.label} crashed this tab last time. The device probably ran out of memory for it.`),
+    h('span', { class: 'muted' }, changed
+      ? `This device now uses lighter settings (${settingsText}), which need much less memory.`
+      : lightest()
+        ? 'This is already the lightest setup. Close other tabs and apps, then try again; some devices can\'t run the model.'
+        : 'Lighter settings use the smaller E2B model, a 4K context and no speed boost.'),
+    h('div', { class: 'row' }, changed || lightest() ? '' : lighter, again)));
 }
 
 function banner(...content) {
@@ -696,13 +756,17 @@ function updateComposerNote() {
 async function loadModel() {
   modelState = 'loading';
   banner(squiggleWait(), h('span', {}, 'Loading the model onto your GPU…'));
+  const S = agent.settings;
+  setCrashMarker({ model: S.model, contextSize: S.contextSize, fast: S.fastDecode, at: Date.now() });
   try {
-    await engine.load(agent.settings.model, agent.settings.contextSize);
+    await engine.load(S.model, S.contextSize, { fast: S.fastDecode });
+    setCrashMarker(null);
     modelState = 'ready';
     banner();
     updateComposerNote();
     if (agent.settings.contextMode === 'smart') loadEmbedder();
   } catch (e) {
+    setCrashMarker(null);
     modelState = 'error';
     banner(h('span', { class: 'error' }, 'Could not start the model: ' + e.message), h('button', { class: 'btn', onclick: () => loadModel() }, 'Try again'));
   }
@@ -846,13 +910,19 @@ function renderSettingsPanel() {
   const cfg = storage.storageConfig();
 
   body.append(
-    h('div', { class: 'field' }, h('span', { class: 'label' }, 'Model'),
-      seg(Object.entries(engine.MODELS).map(([id, m]) => [id, `${m.label.replace('Gemma 4 ', '')} · ${m.size}`]), S.model, async (v) => { S.model = v; modelState = 'unknown'; await engine.unload(); initModel(); }),
-      h('span', { class: 'hint' }, 'E2B is faster; E4B is smarter and better with tools. Each downloads once per device.')),
+    engine.isMobile()
+      ? h('div', { class: 'field' }, h('span', { class: 'label' }, 'Model'), h('span', {}, `${engine.MODELS.E2B.label} (the model that fits phones)`))
+      : h('div', { class: 'field' }, h('span', { class: 'label' }, 'Model'),
+        seg(Object.entries(engine.MODELS).map(([id, m]) => [id, `${m.label.replace('Gemma 4 ', '')} · ${m.size}`]), S.model, async (v) => { S.model = v; modelState = 'unknown'; await engine.unload(); initModel(); }),
+        h('span', { class: 'hint' }, 'E4B is the default on computers: smarter and better with tools. E2B is faster and lighter. Each downloads once per device.')),
 
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'Context window'),
       seg([[4096, '4K'], [8192, '8K'], [16384, '16K']], S.contextSize, async (v) => { S.contextSize = v; if (engine.engineReady()) await loadModel(); }),
-      h('span', { class: 'hint' }, 'Bigger remembers more per turn but uses more GPU memory and is slower to start.')),
+      h('span', { class: 'hint' }, 'Bigger remembers more per turn but uses more memory and is slower to start. Phones are safest at 4K.')),
+
+    h('div', { class: 'field' }, h('label', { class: 'toggle' },
+      h('input', { type: 'checkbox', checked: S.fastDecode ? true : null, onchange: async (e) => { S.fastDecode = e.target.checked; saveSettings(); if (engine.engineReady()) await loadModel(); } }),
+      h('span', {}, h('strong', {}, 'Speed boost'), h('span', { class: 'hint', style: 'display:block' }, 'Replies come noticeably faster, but it loads an extra helper model and needs more memory. Off by default on phones.')))),
 
     h('div', { class: 'field' }, h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: S.contextMode === 'smart' ? true : null, onchange: (e) => { S.contextMode = e.target.checked ? 'smart' : 'compact'; saveSettings(); if (S.contextMode === 'smart') loadEmbedder(); updateComposerNote(); } }),

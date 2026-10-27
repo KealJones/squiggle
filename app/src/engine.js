@@ -6,9 +6,9 @@ import { kv, mutex } from './util.js';
 const LITERT = 'https://cdn.jsdelivr.net/npm/@litert-lm/core@0.14.0/+esm';
 
 export const MODELS = {
-  E2B: { label: 'Gemma 4 E2B', size: '1.9 GB', note: 'faster, good on phones',
+  E2B: { label: 'Gemma 4 E2B', size: '2.0 GB', note: 'faster, good on phones',
     url: 'https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.litertlm' },
-  E4B: { label: 'Gemma 4 E4B', size: '2.8 GB', note: 'smarter, better with tools',
+  E4B: { label: 'Gemma 4 E4B', size: '3.0 GB', note: 'smarter, better with tools',
     url: 'https://huggingface.co/litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-web.litertlm' },
 };
 
@@ -37,12 +37,19 @@ export async function webgpuStatus() {
   }
 }
 
-// Picks E4B when the device looks capable, else E2B.
-export function suggestModel() {
-  const mem = navigator.deviceMemory || 4;
-  const mobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
-  return !mobile && mem >= 8 ? 'E4B' : 'E2B';
+// Phones and tablets: tighter per-tab memory limits (iOS Safari kills a tab
+// that goes over), so they get lighter defaults. iPadOS reports as a Mac.
+export function isMobile() {
+  const ua = navigator.userAgent;
+  return /Android|iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 }
+
+// The model for this device: phones and tablets use E2B (E4B doesn't fit
+// their per-tab memory); computers use E4B.
+export function deviceModel() {
+  return isMobile() ? 'E2B' : 'E4B';
+}
+export const suggestModel = deviceModel;
 
 // ── Download (resumable, chunked into IndexedDB) ──────────────────────────
 
@@ -175,14 +182,23 @@ function modelStream(url, offsets) {
 
 // ── Engine ────────────────────────────────────────────────────────────────
 
-export async function load(id, contextSize) {
-  if (engine && loadedModel === id && engineContext === contextSize) return;
+// fast: multi-token prediction (Gemma 4's speculative drafter). Noticeably
+// faster replies, but it loads an extra small model, so it costs memory.
+let engineFast = null;
+export async function load(id, contextSize, { fast = true } = {}) {
+  if (engine && loadedModel === id && engineContext === contextSize && engineFast === fast) return;
   await unload();
   lib = lib || await import(LITERT);
   const url = MODELS[id].url;
   const offsets = await chunkOffsets(url);
   if (!offsets.length) throw new Error('Model is not downloaded yet.');
   const base = { maxNumTokens: contextSize };
+  engineFast = fast;
+  if (!fast) {
+    engine = await lib.Engine.create({ model: modelStream(url, offsets), mainExecutorSettings: base });
+    loadedModel = id; engineContext = contextSize;
+    return;
+  }
   try {
     // Multi-token prediction (Gemma 4's speculative drafter) is notably faster;
     // fall back to a plain config if the GPU rejects it.
