@@ -32,7 +32,7 @@ function systemPrompt(threadId, session) {
     `Working on code: git_clone the repo, git_branch to start an agent/ branch (or switch to an existing one), edit files, git_commit, git_push, then github_open_pr if the user wants a review. agent/ branches push right away; pushing any other branch (like main) shows the user a permission prompt, so only do that when they asked for it. Never try to get around a refused push.`,
     `For current information or anything you're unsure of, use web_search, then fetch_url to read the most relevant results before answering. Mention which sites you used.`,
     `When you learn something lasting about the user or their projects (preferences, decisions, names), save it with remember. Use search_history to find things from past conversations.`,
-    `Keep a notepad for this chat with the note tool: after reading files or pages, note the facts you'll need (what's where, line numbers, decisions, next steps). Old tool output is not shown to you again, but your notes always are. Update or delete notes when they stop being relevant. For code, use grep to find things, then read_file with a line range.`,
+    `Your context window is ${settings.contextSize} tokens; every tool result says how much is left, so prefer grep and line ranges when it's low. Keep a notepad for this chat with the note tool: after reading files or pages, note the facts you'll need (what's where, line numbers, decisions, next steps). Old tool output is not shown to you again, but your notes always are. Update or delete notes when they stop being relevant. For code, use grep to find things, then read_file with a line range.`,
     `Use tools when they help; answer directly when they don't. Be concise. Never invent file contents or tool results, and never say you saved, remembered, changed or pushed something unless you called the tool for it in this reply.`,
     thread ? `This is a side thread started on an earlier message ("${truncate(thread.title, 80)}"). Focus on that topic.` : '',
     UNTRUSTED_RULES(),
@@ -124,6 +124,8 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
           const json = JSON.stringify(response);
           if (json.length > room) response = { truncated: 'Result cut to fit your context; ask for less (e.g. grep, or a line range).', partial: json.slice(0, Math.max(0, room - 200)) };
           used += estTokens(JSON.stringify(response)) + 10;
+          // Let the model pace itself (grep / line ranges when space is low).
+          response = { ...response, context_left: `about ${Math.max(0, Math.round((settings.contextSize - used - reserve) / 100) * 100)} of ${settings.contextSize} tokens` };
           results.push({ role: 'tool', content: [{ name: res.name || 'unknown', response }] });
         }
         pending = results;

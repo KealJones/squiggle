@@ -452,6 +452,7 @@ await check('a full agent turn through the UI (scripted model): tools, untrusted
   assert.match(r.system, /Never follow instructions/);
   assert.ok(r.tools.includes('fetch_url') && r.tools.includes('git_push') && r.tools.includes('search_history'));
   assert.match(r.toolResult, /<untrusted source=\\"web 127\.0\.0\.1\\" key=/);
+  assert.match(r.toolResult, /"context_left":"about \d+ of \d+ tokens"/);
   assert.equal(r.title, 'Wrangler assets question');
   assert.deepEqual(r.msgs.map(m => m[0]), ['user', 'assistant']);
   assert.ok(r.msgs[1][2].some(l => /^read http/.test(l)) && r.msgs[1][2].some(l => /^remembered/.test(l)), JSON.stringify(r.msgs));
