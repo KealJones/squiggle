@@ -390,16 +390,6 @@ await check('model runtime loads under the page CSP', async () => {
     document.addEventListener('securitypolicyviolation', e => violations.push(`${e.violatedDirective} ${e.blockedURI}`));
     let imported = false, err = null;
     try { const m = await import('https://cdn.jsdelivr.net/npm/@litert-lm/core@0.14.0/+esm'); imported = Boolean(m.Engine); } catch (e) { err = String(e); }
-    // onnxruntime-web, as the ONNX engine loads it: module, wasm glue and the wasm itself.
-    try {
-      const ort = await import('https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.webgpu.min.mjs');
-      ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/'; ort.env.wasm.numThreads = 1; ort.env.wasm.proxy = false;
-      // Smallest valid model: Identity(x) -> y.
-      const bytes = Uint8Array.from(atob('CAg6PwoQCgF4EgF5IghJZGVudGl0eRIBZ1oTCgF4Eg4KDAgBEggKAggBCgIIAmITCgF5Eg4KDAgBEggKAggBCgIIAkIECgAQDQ=='), c => c.charCodeAt(0));
-      const s = await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] });
-      const out = await s.run({ x: new ort.Tensor('float32', new Float32Array([1, 2]), [1, 2]) });
-      imported = imported && out.y.data[1] === 2;
-    } catch (e) { err = (err ? err + ' | ' : '') + String(e); }
     await new Promise(r => setTimeout(r, 300));
     return { imported, err, violations };
   });
@@ -501,7 +491,7 @@ await check('a full agent turn through the UI (scripted model): tools, untrusted
   assert.deepEqual(errs, []);
 });
 
-await check('a crash while loading the model is caught on the next open; phones load on a tap with lighter settings', async () => {
+await check('a crash while loading the model is caught on the next open; phones use the cloud model', async () => {
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
   const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1';
   for (const phone of [false, true]) {
@@ -517,76 +507,51 @@ await check('a crash while loading the model is caught on the next open; phones 
       const util = await import('/src/util.js'); await util.kv.set('auth', { access_token: 't' });
       const gh = await import('/src/github.js'); await gh.loadAuth();
       await (await import('/src/storage.js')).useStorage(cfg);
-      // An old phone install saved the desktop defaults.
+      // An old install saved the desktop defaults.
       localStorage.setItem('squiggle-settings', JSON.stringify({ model: 'E4B', contextSize: 8192, fastDecode: true }));
       // The previous load never finished: the tab was killed.
-      localStorage.setItem('squiggle-model-loading', JSON.stringify({ model: 'E4B', contextSize: 8192, fast: true, at: Date.now() }));
+      localStorage.setItem('squiggle-model-loading', JSON.stringify({ model: 'E4B', contextSize: 8192, fast: true, at: Date.now(), stage: 'loading the model onto the GPU', gpu: 'apple common-3, f16' }));
     }, CFG);
     await page.reload();
-    await page.waitForSelector('#model-banner:not([hidden])');
-    const text = await page.textContent('#model-banner');
-    assert.match(text, /crashed this tab last time/, text);
-    // Desktop offers the next lighter model; a phone has already moved to its phone model.
-    assert.match(text, phone ? /now uses lighter settings \(Fake E2B Mobile, 4K context, speed boost off\)/ : /Use lighter settings \(Fake E2B, 2\.0 GB\)/, text);
-    assert.equal(await page.evaluate(() => window.__loads), 0, 'no automatic load after a crash');
-    if (phone && shotsDir) await page.screenshot({ path: `${shotsDir}/phone-crash-banner.png` });
-    await page.click(phone ? '#model-banner button:has-text("Load model")' : '#model-banner button:has-text("Use lighter settings")');
-    await page.waitForFunction(() => window.__loads === 1);
-    const r = await page.evaluate(() => ({ last: window.__lastLoad, marker: localStorage.getItem('squiggle-model-loading'), saved: JSON.parse(localStorage.getItem('squiggle-settings')) }));
-    assert.deepEqual(r.last, { id: phone ? 'E2B-QAT' : 'E2B', ctx: 4096, opts: { fast: false, cpu: false } });
-    assert.equal(r.marker, null, 'marker cleared after a good load');
     if (phone) {
-      assert.equal(r.saved.mobileTuned, true);
-      const deleted = await page.evaluate(() => window.__deleted || []);
-      assert.ok(deleted.includes('E4B') && deleted.includes('E2B'), 'downloads a phone cannot run are removed: ' + deleted);
-      assert.ok(!deleted.includes('E2B-QAT'));
-      // Next open on the phone: no crash, no auto-load, a Load button instead.
-      await page.reload();
-      await page.waitForSelector('#model-banner button:has-text("Load model")');
-      assert.equal(await page.evaluate(() => window.__loads), 0);
-      await page.click('#model-banner button:has-text("Load model")');
+      // Phones don't load on-device models any more: straight to the cloud model.
       await page.waitForFunction(() => window.__loads === 1);
-      // Settings lists only phone models.
+      const r = await page.evaluate(() => ({ last: window.__lastLoad, marker: localStorage.getItem('squiggle-model-loading'), saved: JSON.parse(localStorage.getItem('squiggle-settings')), cleanup: window.__cleanup }));
+      assert.equal(r.last.id, 'cloud', JSON.stringify(r));
+      assert.equal(r.saved.model, 'cloud');
+      assert.equal(r.marker, null);
+      assert.deepEqual(r.cleanup, ['cloud'], 'only the cloud model is kept; old on-device downloads are freed');
       await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
       await page.waitForSelector('#drawer .model-option');
-      const listed = await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model));
-      assert.deepEqual(listed, ['E2B-QAT', 'G3-1B']);
+      assert.deepEqual(await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model)), ['cloud']);
       if (shotsDir) await page.screenshot({ path: `${shotsDir}/phone-model-picker.png` });
-      // A crash on the phone model offers the next lighter one.
-      await page.evaluate(() => localStorage.setItem('squiggle-model-loading', JSON.stringify({ model: 'E2B-QAT', contextSize: 4096, fast: false, at: Date.now() })));
-      await page.reload();
+    } else {
       await page.waitForSelector('#model-banner:not([hidden])');
-      const t2 = await page.textContent('#model-banner');
-      assert.match(t2, /Use lighter settings \(Fake Gemma 3 1B, 0\.8 GB\)/, t2);
-      // A crash while setting up the GPU says where, and offers the CPU.
-      await page.evaluate(() => localStorage.setItem('squiggle-model-loading', JSON.stringify({ model: 'E2B-QAT', contextSize: 4096, fast: false, cpu: false, at: Date.now(), stage: 'creating the GPU session', gpu: 'apple common-3, f16' })));
-      await page.reload();
-      await page.waitForSelector('#model-banner button:has-text("Try on the CPU")');
-      const t3 = await page.textContent('#model-banner');
-      assert.match(t3, /crashed this tab last time, while creating the GPU session\./, t3);
-      assert.match(t3, /GPU: apple common-3, f16/, t3);
-      if (shotsDir) await page.screenshot({ path: `${shotsDir}/phone-crash-stage.png` });
-      const loadsBefore = await page.evaluate(() => window.__loads);
-      await page.click('#model-banner button:has-text("Try on the CPU")');
-      await page.waitForFunction((n) => window.__loads === n + 1, loadsBefore);
-      assert.deepEqual(await page.evaluate(() => window.__lastLoad.opts), { fast: false, cpu: true });
-      assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('squiggle-settings')).cpu), true);
+      const text = await page.textContent('#model-banner');
+      assert.match(text, /Loading Fake E4B crashed this tab last time, while loading the model onto the GPU\./, text);
+      assert.match(text, /GPU: apple common-3, f16/, text);
+      assert.match(text, /Use lighter settings \(Fake E2B, 2\.0 GB\)/, text);
+      assert.equal(await page.evaluate(() => window.__loads), 0, 'no automatic load after a crash');
+      await page.click('#model-banner button:has-text("Use lighter settings")');
+      await page.waitForFunction(() => window.__loads === 1);
+      const r = await page.evaluate(() => ({ last: window.__lastLoad, marker: localStorage.getItem('squiggle-model-loading'), cleanup: window.__cleanup }));
+      assert.deepEqual(r.last, { id: 'E2B', ctx: 4096, opts: { fast: false } });
+      assert.equal(r.marker, null, 'marker cleared after a good load');
+      assert.deepEqual(r.cleanup, ['E4B', 'E2B', 'cloud']);
       // Replies are tracked too: progress writes the marker, idle clears it.
-      await page.evaluate(() => window.__progress('reading the prompt (96 of 1540 tokens)'));
+      await page.evaluate(() => window.__progress('writing the reply'));
       const mk = JSON.parse(await page.evaluate(() => localStorage.getItem('squiggle-model-loading')));
-      assert.equal(mk.phase, 'reply'); assert.equal(mk.stage, 'reading the prompt (96 of 1540 tokens)');
+      assert.equal(mk.phase, 'reply'); assert.equal(mk.stage, 'writing the reply');
       await page.evaluate(() => window.__progress(null));
       assert.equal(await page.evaluate(() => localStorage.getItem('squiggle-model-loading')), null);
       // A crash mid-reply says so on the next open.
-      await page.evaluate(() => window.__progress('writing the reply (16 tokens so far)'));
+      await page.evaluate(() => window.__progress('writing the reply'));
       await page.reload();
       await page.waitForSelector('#model-banner:not([hidden])');
-      assert.match(await page.textContent('#model-banner'), /crashed this tab while answering, while writing the reply \(16 tokens so far\)\./);
-    } else {
+      assert.match(await page.textContent('#model-banner'), /Fake E2B crashed this tab while answering, while writing the reply\./);
       await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
       await page.waitForSelector('#drawer .model-option');
-      const listed = await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model));
-      assert.deepEqual(listed, ['E4B', 'E2B', 'E2B-QAT', 'G3-1B']);
+      assert.deepEqual(await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model)), ['E4B', 'E2B', 'cloud']);
     }
     assert.deepEqual(page.errors, []);
     await ctx.close();

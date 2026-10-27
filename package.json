@@ -16,8 +16,6 @@
     "esbuild": "0.25.10",
     "isomorphic-git": "1.44.5",
     "marked": "18.1.2",
-    "wrangler": "^4",
-    "@huggingface/tokenizers": "0.2.0",
-    "@huggingface/jinja": "0.5.10"
+    "wrangler": "^4"
   }
 }
