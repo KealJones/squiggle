@@ -24,7 +24,7 @@ const check = async (name, fn) => {
     await Promise.race([fn(), new Promise((_, rej) => setTimeout(() => rej(new Error('timed out after 60s')), 60000))]);
     results.push(['ok', name]); console.log('ok  ', name);
   }
-  catch (e) { results.push(['FAIL', name, e]); console.log('FAIL', name, '\n     ', e.message.split('\n').slice(0, 6).join('\n      ')); }
+  catch (e) { results.push(['FAIL', name, e]); console.log('FAIL', name, '\n     ', (e.stack||e.message).split('\n').slice(0, 8).join('\n      ')); }
 };
 
 async function device(label, viewport) {
@@ -419,6 +419,140 @@ await check('model runtime loads under the page CSP', async () => {
   if (r.err && /Failed to fetch|NetworkError|net::/.test(r.err)) { console.log('      (skipped: CDN not reachable from this sandbox)'); return; }
   assert.deepEqual(r.violations, []);
   assert.equal(r.imported, true, r.err);
+});
+
+// Stand-ins for the Web Speech API: recognition that records start/abort and lets the test
+// "say" things; synthesis that records each utterance (and whether recognition was running).
+const VOICE_STUB = `(() => {
+  const V = window.__voice = { recs: [], spoken: [], events: [], deny: false, noRecognition: false };
+  class SR {
+    constructor() { V.recs.push(this); this.running = false; }
+    start() {
+      if (this.running) throw Object.assign(new Error('already started'), { name: 'InvalidStateError' });
+      this.running = true; V.events.push('start');
+      setTimeout(() => { if (V.deny) { this.running = false; this.onerror && this.onerror({ error: 'not-allowed' }); this.onend && this.onend(); } else this.onstart && this.onstart(); }, 0);
+    }
+    abort() { if (!this.running) return; this.running = false; V.events.push('abort'); setTimeout(() => this.onend && this.onend(), 0); }
+    stop() { this.abort(); }
+  }
+  window.SpeechRecognition = SR;
+  Object.defineProperty(window, 'webkitSpeechRecognition', { value: SR, configurable: true });
+  class U { constructor(t) { this.text = t; this.rate = 1; } }
+  window.SpeechSynthesisUtterance = U;
+  let pending = [];
+  const synth = {
+    getVoices: () => [{ name: 'Test Voice', lang: 'en-US', voiceURI: 'test', default: true, localService: true }],
+    addEventListener() {}, speaking: false,
+    speak(u) {
+      if (!u.text) { V.primed = true; return; }
+      const running = V.recs.some(r => r.running);
+      V.spoken.push({ text: u.text, recRunning: running, rate: u.rate, voice: u.voice && u.voice.name });
+      const t = setTimeout(() => { pending = pending.filter(x => x !== t); u.onend && u.onend(); }, 250);
+      pending.push(t);
+    },
+    cancel() { V.events.push('cancel'); pending.forEach(clearTimeout); pending = []; },
+  };
+  Object.defineProperty(window, 'speechSynthesis', { value: synth, configurable: true });
+  window.__say = (text, isFinal = true) => {
+    const r = V.recs[V.recs.length - 1];
+    const res = Object.assign([{ transcript: text }], { isFinal });
+    r.onresult && r.onresult({ resultIndex: 0, results: [res] });
+  };
+})();`;
+
+await check('voice call: speech in → message, reply spoken in chunks (markdown stripped), mic paused while speaking, barge-in, repeat, End', async () => {
+  const D = await device('voice');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.ctx.addInitScript(VOICE_STUB);
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  const state = () => D.page.$eval('.call .call-head span[aria-live]', el => el.textContent);
+  await D.page.click('#call');
+  await D.page.waitForSelector('.call');
+  assert.equal(await state(), 'Listening');
+  assert.ok(await D.page.evaluate(() => window.__voice.primed), 'speechSynthesis was primed inside the tap');
+  assert.ok(await D.page.evaluate(() => window.__voice.recs[0].running), 'recognition runs while listening');
+  assert.equal(await D.page.$eval('#composer', el => getComputedStyle(el).display), 'none');
+
+  // Interim text shows live; a final result then ~1.2 s of silence sends it as a normal message.
+  await D.page.evaluate(() => window.__say('markdown reply', false));
+  assert.match(await D.page.textContent('.call-transcript'), /markdown reply/);
+  await D.page.evaluate(() => window.__say('markdown reply please', true));
+  await D.page.waitForFunction(() => [...document.querySelectorAll('.msg.user .body')].some(b => b.textContent === 'markdown reply please'), null, { timeout: 8000 });
+  await D.page.waitForFunction(() => window.__voice.spoken.length >= 3, null, { timeout: 8000 });
+  await D.page.waitForFunction(() => document.querySelector('.call[data-state="listening"]') && window.__voice.recs[0].running, null, { timeout: 8000 });
+  const spoken = await D.page.evaluate(() => window.__voice.spoken);
+  assert.deepEqual(spoken.map(s => s.text), ['Bold answer with a link. Second sentence is here.', 'Code omitted.', 'All done now.'], JSON.stringify(spoken));
+  assert.ok(spoken.every(s => !s.recRunning), 'recognition was paused for every utterance');
+  assert.ok(spoken.every(s => !/[*`\[\]]|https?:/.test(s.text)), 'no markdown or URLs spoken');
+  assert.equal(spoken[0].voice, 'Test Voice');
+  assert.equal(await D.page.evaluate(() => window.__voice.recs.length), 1, 'same recognizer is reused');
+  assert.equal(await D.page.$eval('.call-actions button:not(.primary)', el => el.hidden), false, 'Repeat is offered');
+
+  // Repeat re-speaks the last reply.
+  await D.page.click('.call-actions button:not(.primary)');
+  await D.page.waitForFunction(() => window.__voice.spoken.length > 3 && document.querySelector('.call[data-state="listening"]'), null, { timeout: 8000 });
+
+  // Barge-in: tap the bar while it speaks.
+  const before = await D.page.evaluate(() => window.__voice.spoken.length);
+  await D.page.evaluate(() => window.__say('markdown reply again', true));
+  await D.page.waitForFunction((n) => window.__voice.spoken.length > n, before, { timeout: 8000 });
+  assert.equal(await state(), 'Speaking');
+  const cancels = await D.page.evaluate(() => window.__voice.events.filter(e => e === 'cancel').length);
+  await D.page.click('.call .call-hint');
+  assert.equal(await state(), 'Listening');
+  assert.ok(await D.page.evaluate(() => window.__voice.events.filter(e => e === 'cancel').length) > cancels, 'speech was cancelled');
+  await D.page.waitForFunction(() => window.__voice.recs[0].running, null, { timeout: 3000 });
+  const n = await D.page.evaluate(() => window.__voice.spoken.length);
+  await D.page.waitForTimeout(700);
+  assert.equal(await D.page.evaluate(() => window.__voice.spoken.length), n, 'nothing more is spoken after barge-in');
+
+  // End stops recognition and speech and brings the composer back.
+  await D.page.evaluate(() => window.__say('markdown reply third', true));
+  await D.page.waitForFunction((m) => window.__voice.spoken.length > m, n, { timeout: 8000 });
+  await D.page.click('.call-actions .primary');
+  await D.page.waitForSelector('.call', { state: 'detached' });
+  const m = await D.page.evaluate(() => window.__voice.spoken.length);
+  await D.page.waitForTimeout(700);
+  const end = await D.page.evaluate(() => ({ spoken: window.__voice.spoken.length, running: window.__voice.recs.some(r => r.running), last: window.__voice.events.at(-1) }));
+  assert.equal(end.spoken, m);
+  assert.equal(end.running, false);
+  assert.ok(['cancel', 'abort'].includes(end.last));
+  assert.notEqual(await D.page.$eval('#composer', el => getComputedStyle(el).display), 'none');
+  assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+  // The call's messages are ordinary chat messages that sync.
+  const saved = await D.page.evaluate(async () => (await import('/src/sessions.js')).list().flatMap(s => s.messages).filter(x => x.role === 'user').map(x => x.content));
+  assert.ok(saved.includes('markdown reply please'));
+});
+
+await check('voice call: unsupported browser and blocked microphone give clear messages (phone width)', async () => {
+  const D = await device('voice-phone', { width: 390, height: 844 });
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#open-sidebar');
+  await D.page.click('#new-chat');
+  // Unsupported: no SpeechRecognition at all.
+  await D.page.evaluate(() => { Object.defineProperty(window, 'webkitSpeechRecognition', { value: undefined, configurable: true }); window.SpeechRecognition = undefined; });
+  await D.page.click('#call');
+  assert.match(await D.page.textContent('.call .call-error'), /speech recognition/i);
+  await D.page.click('.call .primary');
+  await D.page.waitForSelector('.call', { state: 'detached' });
+  await D.ctx.addInitScript(VOICE_STUB);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.evaluate(() => { window.__voice.deny = true; });
+  await D.page.click('#call');
+  await D.page.waitForFunction(() => /Microphone access is blocked/.test(document.querySelector('.call .call-error')?.textContent || ''), null, { timeout: 5000 });
+  assert.equal(await D.page.$eval('.call .primary', el => el.textContent), 'Close');
+  const w = await D.page.evaluate(() => [document.documentElement.scrollWidth, innerWidth]);
+  assert.ok(w[0] <= w[1], 'no horizontal scroll at phone width');
+  assert.notEqual(await D.page.$eval('#composer', el => getComputedStyle(el).display), 'none');
 });
 
 await check('a full agent turn through the UI (scripted model): tools, untrusted labels, memory, thread', async () => {

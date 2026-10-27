@@ -45,6 +45,11 @@ export async function respond(conv, input, { onText } = {}) {
     if (push) return { text: '', thinking: '', toolCalls: [{ type: 'function', function: { name: 'git_push', arguments: { repo: 'app' } } }] };
     const url = (input.match(/https?:\/\/\S+/) || [])[0];
     if (url) return { text: 'Let me read that.', thinking: '', toolCalls: [{ type: 'function', function: { name: 'fetch_url', arguments: { url } } }] };
+    if (/markdown reply/i.test(input)) {
+      const t = '**Bold** answer with a [link](https://www.example.com/page). Second sentence is here.\n\n```js\ncode()\n```\nAll `done` now.';
+      onText && onText(t.slice(0, 60)); onText && onText(t);
+      return { text: t, thinking: '', toolCalls: [] };
+    }
     const t = 'Plain answer to: ' + input;
     onText && onText(t);
     return { text: t, thinking: '', toolCalls: [] };
