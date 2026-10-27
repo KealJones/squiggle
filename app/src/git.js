@@ -11,8 +11,24 @@ export const corsProxy = () => apiBase() + '/git';
 
 export const remoteUrl = (owner, name) => `https://github.com/${owner}/${name}.git`;
 
+// Sends the token with the first request instead of waiting for a 401 and
+// retrying (which logged a 401 in the console on every sync). onAuth stays
+// as the fallback; signed out, requests go without credentials.
+const authedHttp = {
+  async request(req) {
+    const has = Object.keys(req.headers || {}).some(k => k.toLowerCase() === 'authorization');
+    if (!has) {
+      try {
+        const { username, password } = await gitAuth();
+        req = { ...req, headers: { ...req.headers, Authorization: 'Basic ' + btoa(`${username}:${password}`) } };
+      } catch {}
+    }
+    return http.request(req);
+  },
+};
+
 // Options every network git call needs.
-export const net = () => ({ http, corsProxy: corsProxy(), onAuth: gitAuth, onAuthFailure: () => ({ cancel: true }) });
+export const net = () => ({ http: authedHttp, corsProxy: corsProxy(), onAuth: gitAuth, onAuthFailure: () => ({ cancel: true }) });
 
 export async function author() { return commitAuthor(); }
 
