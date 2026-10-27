@@ -447,6 +447,55 @@ await check('a full agent turn through the UI (scripted model): tools, untrusted
   assert.deepEqual(errs, []);
 });
 
+await check('a crash while loading the model is caught on the next open; phones load on a tap with lighter settings', async () => {
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1';
+  for (const phone of [false, true]) {
+    const ctx = await browser.newContext(phone ? { userAgent: IPHONE, viewport: { width: 390, height: 844 } } : {});
+    await ctx.route('https://api.github.com/**', r => r.fulfill({ status: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' }, contentType: 'application/json', body: JSON.stringify({ login: 'tester', id: 42, name: 'Test Er' }) }));
+    await ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+    const page = await ctx.newPage();
+    page.errors = [];
+    page.on('pageerror', e => page.errors.push(String(e)));
+    await page.goto(appUrl + '/');
+    await page.waitForSelector('#setup:not([hidden]) button'); // let first-run boot finish
+    await page.evaluate(async (cfg) => {
+      const util = await import('/src/util.js'); await util.kv.set('auth', { access_token: 't' });
+      const gh = await import('/src/github.js'); await gh.loadAuth();
+      await (await import('/src/storage.js')).useStorage(cfg);
+      // An old phone install saved the desktop defaults.
+      localStorage.setItem('squiggle-settings', JSON.stringify({ model: 'E4B', contextSize: 8192, fastDecode: true }));
+      // The previous load never finished: the tab was killed.
+      localStorage.setItem('squiggle-model-loading', JSON.stringify({ model: 'E4B', contextSize: 8192, fast: true, at: Date.now() }));
+    }, CFG);
+    await page.reload();
+    await page.waitForSelector('#model-banner:not([hidden])');
+    const text = await page.textContent('#model-banner');
+    assert.match(text, /crashed this tab last time/, text);
+    // Desktop offers the lighter setup; a phone is already on it, so it only offers to try again.
+    assert.match(text, phone ? /now uses lighter settings \(Fake E2B, 4K context, speed boost off\)/ : /Use lighter settings/, text);
+    assert.equal(await page.evaluate(() => window.__loads), 0, 'no automatic load after a crash');
+    if (phone && shotsDir) await page.screenshot({ path: `${shotsDir}/phone-crash-banner.png` });
+    await page.click(phone ? '#model-banner button:has-text("Load model")' : '#model-banner button:has-text("Use lighter settings")');
+    await page.waitForFunction(() => window.__loads === 1);
+    const r = await page.evaluate(() => ({ last: window.__lastLoad, marker: localStorage.getItem('squiggle-model-loading'), saved: JSON.parse(localStorage.getItem('squiggle-settings')) }));
+    assert.deepEqual(r.last, { id: 'E2B', ctx: 4096, opts: { fast: false } });
+    assert.equal(r.marker, null, 'marker cleared after a good load');
+    if (phone) {
+      assert.equal(r.saved.mobileTuned, true);
+      assert.ok((await page.evaluate(() => window.__deleted || [])).includes('E4B'), 'leftover E4B copy removed on the phone');
+      // Next open on the phone: no crash, no auto-load, a Load button instead.
+      await page.reload();
+      await page.waitForSelector('#model-banner button:has-text("Load model")');
+      assert.equal(await page.evaluate(() => window.__loads), 0);
+      await page.click('#model-banner button:has-text("Load model")');
+      await page.waitForFunction(() => window.__loads === 1);
+    }
+    assert.deepEqual(page.errors, []);
+    await ctx.close();
+  }
+});
+
 // UI screenshots: reload into the app with seeded data.
 if (shotsDir) {
   await check('UI renders (screenshots)', async () => {

@@ -15,6 +15,7 @@ import { parseJsonl } from './merge.js';
 export const settings = {
   model: 'E2B',
   contextSize: 8192,
+  fastDecode: true,         // multi-token prediction: faster, uses more memory
   contextMode: 'compact',   // 'compact' (default) | 'smart' (experimental) | 'full'
   maxToolRounds: 6,
   learn: true,              // extract memory facts after turns
