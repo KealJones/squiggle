@@ -533,7 +533,7 @@ await check('a crash while loading the model is caught on the next open; phones 
     await page.click(phone ? '#model-banner button:has-text("Load model")' : '#model-banner button:has-text("Use lighter settings")');
     await page.waitForFunction(() => window.__loads === 1);
     const r = await page.evaluate(() => ({ last: window.__lastLoad, marker: localStorage.getItem('squiggle-model-loading'), saved: JSON.parse(localStorage.getItem('squiggle-settings')) }));
-    assert.deepEqual(r.last, { id: phone ? 'E2B-QAT' : 'E2B', ctx: 4096, opts: { fast: false } });
+    assert.deepEqual(r.last, { id: phone ? 'E2B-QAT' : 'E2B', ctx: 4096, opts: { fast: false, cpu: false } });
     assert.equal(r.marker, null, 'marker cleared after a good load');
     if (phone) {
       assert.equal(r.saved.mobileTuned, true);
@@ -558,6 +558,19 @@ await check('a crash while loading the model is caught on the next open; phones 
       await page.waitForSelector('#model-banner:not([hidden])');
       const t2 = await page.textContent('#model-banner');
       assert.match(t2, /Use lighter settings \(Fake Gemma 3 1B, 0\.8 GB\)/, t2);
+      // A crash while setting up the GPU says where, and offers the CPU.
+      await page.evaluate(() => localStorage.setItem('squiggle-model-loading', JSON.stringify({ model: 'E2B-QAT', contextSize: 4096, fast: false, cpu: false, at: Date.now(), stage: 'creating the GPU session', gpu: 'apple common-3, f16' })));
+      await page.reload();
+      await page.waitForSelector('#model-banner button:has-text("Try on the CPU")');
+      const t3 = await page.textContent('#model-banner');
+      assert.match(t3, /crashed this tab last time, while creating the GPU session\./, t3);
+      assert.match(t3, /GPU: apple common-3, f16/, t3);
+      if (shotsDir) await page.screenshot({ path: `${shotsDir}/phone-crash-stage.png` });
+      const loadsBefore = await page.evaluate(() => window.__loads);
+      await page.click('#model-banner button:has-text("Try on the CPU")');
+      await page.waitForFunction((n) => window.__loads === n + 1, loadsBefore);
+      assert.deepEqual(await page.evaluate(() => window.__lastLoad.opts), { fast: false, cpu: true });
+      assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('squiggle-settings')).cpu), true);
     } else {
       await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
       await page.waitForSelector('#drawer .model-option');
