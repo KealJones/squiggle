@@ -14,6 +14,7 @@ import { pfs, walk } from './git.js';
 import { bm25 } from './search.js';
 import * as attachments from './attachments.js';
 import { checkFiles, fmtSize } from './attachments.js';
+import * as voice from './voice.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const h = (tag, attrs = {}, ...kids) => {
@@ -388,6 +389,7 @@ function wireApp() {
   document.querySelectorAll('.side-nav [data-panel]').forEach(b => b.onclick = () => { closeSidebar(); openPanel(b.dataset.panel); });
   $('#session-search').addEventListener('input', () => renderSessions());
   setupComposer($('#composer'), $('#input'), (text, files) => send(text, null, files));
+  $('#call').onclick = () => (call ? endCall() : startCall());
   sessions.events.on('list', () => renderSessions());
   sessions.events.on('session', (id) => {
     if (busy || !current || id !== current.id) return;
@@ -621,6 +623,7 @@ async function send(text, threadId, files = []) {
   const scroller = threadId ? $('#thread-scroll') : $('#messages');
   if (!threadId && !session.messages.some(m => !m.thread)) container.replaceChildren();
   let live = null, body = null, trail = null, think = null;
+  const vc = !threadId && call ? call.ctl : null; // a voice call speaks this reply as it streams
   const liveTools = [];
   setBusy(true);
   controller = new AbortController();
@@ -640,7 +643,7 @@ async function send(text, threadId, files = []) {
           scrollDown(scroller);
         },
         onThinking: (t) => { think.hidden = false; think.lastChild.textContent = t; },
-        onText: (t) => { body.innerHTML = md(agent.scrubFakeToolNotes(t)); scrollDown(scroller); },
+        onText: (t) => { const clean = agent.scrubFakeToolNotes(t); body.innerHTML = md(clean); scrollDown(scroller); if (vc) vc.feed(clean); },
         onTool: (t) => {
           if (t.name === 'note' && !t.running && drawerPanel === 'notes') renderNotesPanel();
           const existing = liveTools.find(x => x.running && x.name === t.name);
@@ -655,7 +658,7 @@ async function send(text, threadId, files = []) {
           scrollDown(scroller);
           card.querySelector('button').focus({ preventScroll: true });
         },
-        onDone: (m) => { live.replaceWith(messageEl(m, { inThread: Boolean(threadId) })); if (!threadId) $('#chat-title').textContent = session.title; },
+        onDone: (m) => { if (vc) vc.finish(agent.scrubFakeToolNotes(m.content)); live.replaceWith(messageEl(m, { inThread: Boolean(threadId) })); if (!threadId) $('#chat-title').textContent = session.title; },
       },
     });
   } finally {
@@ -671,6 +674,96 @@ async function readFiles(files, session) {
   const taken = new Set(session.messages.flatMap(m => (m.attachments || []).map(a => String(a.path || a.name).split('/').pop().toLowerCase())));
   for (const f of files) out.push(await attachments.readAttachment(f, taken, session.id));
   return out;
+}
+
+// ── Voice call ─────────────────────────────────────────────────────────────
+// Hands-free: speech in through the Web Speech API, replies spoken sentence by
+// sentence. Utterances go through send() like typed messages. voice.js owns the
+// state machine; this is the bar that shows it.
+let call = null;
+const CALL_LABELS = { listening: 'Listening', thinking: 'Thinking', speaking: 'Speaking', idle: 'Call ended' };
+
+function startCall() {
+  const sup = voice.support(window);
+  if (!sup.ok) { callBar(null, sup.recognition ? 'Voice calls need speech synthesis, which this browser doesn\'t have.' : voice.UNSUPPORTED_MESSAGE); return; }
+  if (!current) return;
+  const bar = callBar();
+  const ctl = voice.createCall({
+    SR: sup.recognition, synth: window.speechSynthesis, Utterance: window.SpeechSynthesisUtterance,
+    lang: navigator.language || 'en-US',
+    getSettings: () => agent.settings,
+    send: (text) => send(text, null),
+    onChange: (snap) => bar.update(snap),
+    onError: (message, fatal) => { if (!fatal) bar.update({ ...ctl.snapshot(), error: message }); },
+  });
+  call = { ctl, bar };
+  // start() must run inside this tap: iOS only lets speech begin from a gesture.
+  ctl.start();
+  bar.update(ctl.snapshot());
+  keepAwake(true);
+}
+
+function endCall() {
+  if (!call) return;
+  const { ctl, bar } = call;
+  call = null;
+  ctl.end();
+  bar.close();
+  keepAwake(false);
+}
+
+let wakeLock = null;
+async function keepAwake(on) {
+  try {
+    if (on) wakeLock = await navigator.wakeLock?.request('screen');
+    else { await wakeLock?.release(); wakeLock = null; }
+  } catch {}
+}
+
+// The call bar replaces the composer while a call is on. With `message` it is
+// only an explanation (unsupported browser) and closes on its own button.
+function callBar(_unused, message) {
+  $('.call')?.remove();
+  const state = h('span', { 'aria-live': 'polite' }, message ? 'Voice calls unavailable' : 'Starting…');
+  const dot = h('span', { class: 'call-dot', 'aria-hidden': 'true' });
+  const wait = squiggleWait(); wait.hidden = true;
+  const said = h('div', { class: 'call-transcript' });
+  const hint = h('div', { class: 'call-hint' }, message ? '' : 'Tap anywhere on this bar to interrupt.');
+  const err = h('div', { class: 'call-error', role: 'alert' }, message || '');
+  const repeat = h('button', { class: 'btn', type: 'button', hidden: true, onclick: (e) => { e.stopPropagation(); call && call.ctl.repeat(); } }, 'Repeat');
+  const endBtn = h('button', { class: 'btn primary', type: 'button', onclick: (e) => { e.stopPropagation(); message ? el.remove() : endCall(); } }, message ? 'Close' : 'End');
+  const el = h('section', { class: 'call', 'data-state': message ? 'error' : 'listening', 'aria-label': 'Voice call', onclick: () => call && call.ctl.bargeIn() },
+    h('div', { class: 'call-inner' },
+      h('div', { class: 'call-head' }, dot, state, wait),
+      said, hint, err,
+      h('div', { class: 'call-actions' }, repeat, endBtn)));
+  const main = $('.main');
+  main.insertBefore(el, $('#composer'));
+  if (!message) { main.classList.add('in-call'); $('#call').setAttribute('aria-pressed', 'true'); }
+  scrollDown($('#messages'));
+  const self = {
+    update(snap) {
+      const idle = snap.state === 'idle';
+      el.dataset.state = snap.error ? 'error' : snap.state;
+      state.textContent = snap.error && idle ? 'Call ended' : CALL_LABELS[snap.state] || snap.state;
+      wait.hidden = !(snap.state === 'thinking' || snap.state === 'speaking');
+      said.textContent = snap.transcript ? `“${snap.transcript}”` : '';
+      said.classList.toggle('interim', Boolean(snap.interim));
+      err.textContent = snap.error || '';
+      repeat.hidden = !snap.canRepeat;
+      hint.hidden = idle;
+      if (idle && snap.error) {
+        // The call stopped itself (blocked microphone, ...): keep the reason on screen.
+        if (call && call.bar === self) call = null;
+        keepAwake(false);
+        main.classList.remove('in-call'); $('#call').removeAttribute('aria-pressed');
+        endBtn.textContent = 'Close'; endBtn.onclick = (e) => { e.stopPropagation(); el.remove(); };
+        el.onclick = null;
+      }
+    },
+    close() { el.remove(); main.classList.remove('in-call'); $('#call').removeAttribute('aria-pressed'); },
+  };
+  return self;
 }
 
 // Permission card for actions outside the agent's own space (pushing to a
@@ -1047,6 +1140,39 @@ function renderContextPanel(m) {
   c.append(body);
 }
 
+// Voice for calls: which installed voice speaks, how fast, and whether talking
+// over a reply interrupts it (off by default: speakers make the mic hear itself).
+let voicesWatched = false;
+function voiceSettingsField(S, seg) {
+  const synth = window.speechSynthesis;
+  if (!voicesWatched) {
+    voicesWatched = true;
+    synth.addEventListener?.('voiceschanged', () => { if (drawerPanel === 'settings') renderSettingsPanel(); });
+  }
+  const lang = navigator.language || 'en-US';
+  const voices = Array.from(synth.getVoices() || []).sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
+  const auto = voice.pickVoice(voices, lang, '');
+  const select = h('select', { id: 'voice-select', 'aria-label': 'Voice', onchange: (e) => { S.voiceURI = e.target.value; saveSettings(); } },
+    h('option', { value: '' }, auto ? `Automatic (${auto.name})` : 'Automatic'),
+    voices.map(v => h('option', { value: v.voiceURI, selected: v.voiceURI === S.voiceURI ? true : null }, `${v.name} (${v.lang})`)));
+  const test = () => {
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance('Hi, this is how I sound on a call.');
+    const v = voice.pickVoice(synth.getVoices(), lang, S.voiceURI);
+    if (v) { u.voice = v; u.lang = v.lang; }
+    u.rate = Number(S.voiceRate) || 1;
+    synth.speak(u);
+  };
+  return h('div', { class: 'field' }, h('span', { class: 'label' }, 'Voice calls'),
+    select,
+    seg([[0.9, 'Slow'], [1, 'Normal'], [1.2, 'Fast'], [1.4, 'Faster']], Number(S.voiceRate) || 1, (v) => { S.voiceRate = v; }),
+    h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: test }, 'Test voice')),
+    h('label', { class: 'toggle' },
+      h('input', { type: 'checkbox', checked: S.voiceBargeIn ? true : null, onchange: (e) => { S.voiceBargeIn = e.target.checked; saveSettings(); } }),
+      h('span', {}, h('strong', {}, 'Interrupt by talking'), h('span', { class: 'hint', style: 'display:block' }, 'Keep listening while Squiggle speaks, so you can cut in. Use headphones: on speakers it can hear itself.'))),
+    h('span', { class: 'hint' }, 'Tap the headset button next to the message box to start a hands-free call. Replies are spoken as they arrive; code is skipped and links are read as their site name.'));
+}
+
 // Settings
 function renderSettingsPanel() {
   const c = openDrawer('Settings', 'settings');
@@ -1080,6 +1206,8 @@ function renderSettingsPanel() {
 
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'Theme'),
       seg([['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']], S.theme || 'auto', (v) => { S.theme = v; applyTheme(); })),
+
+    voice.support(window).synthesis ? voiceSettingsField(S, seg) : '',
 
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'Storage'),
       h('span', {}, cfg ? h('a', { href: `https://github.com/${cfg.owner}/${cfg.name}${cfg.root ? '/tree/' + cfg.branch + '/' + cfg.root : ''}`, target: '_blank', rel: 'noopener' }, `${cfg.owner}/${cfg.name}${cfg.root ? '/' + cfg.root.replace(/\/$/, '') : ''}`) : 'None'),
