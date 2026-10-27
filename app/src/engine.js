@@ -82,6 +82,16 @@ export async function webgpuStatus() {
   }
 }
 
+// A short description of the GPU, for crash reports.
+export async function gpuSummary() {
+  try {
+    const a = await navigator.gpu?.requestAdapter();
+    if (!a) return 'no WebGPU adapter';
+    const i = a.info || {};
+    return [i.vendor, i.architecture].filter(Boolean).join(' ') + (a.features.has('shader-f16') ? ', f16' : ', no f16') + `, max buffer ${Math.round(a.limits.maxBufferSize / 1048576)} MB`;
+  } catch (e) { return 'WebGPU error: ' + (e.message || e); }
+}
+
 // Phones and tablets: tighter per-tab memory limits (iOS Safari kills a tab
 // that goes over), so they get lighter defaults. iPadOS reports as a Mac.
 export function isMobile() {
@@ -293,9 +303,13 @@ function storedFiles(id) {
 // fast: multi-token prediction (Gemma 4's speculative drafter). Noticeably
 // faster replies, but it loads an extra small model, so it costs memory.
 let engineFast = null;
-export async function load(id, contextSize, { fast = true } = {}) {
-  if (engine && loadedModel === id && engineContext === contextSize && engineFast === fast) return;
+// onStage(text) reports each loading step (the UI keeps the last one, so a
+// tab that dies mid-load can say where). cpu: run ONNX models on the CPU.
+let engineCpu = false;
+export async function load(id, contextSize, { fast = true, cpu = false, onStage = () => {} } = {}) {
+  if (engine && loadedModel === id && engineContext === contextSize && engineFast === fast && engineCpu === cpu) return;
   await unload();
+  engineCpu = cpu;
   if (MODELS[id].runtime === 'cloud') {
     engine = (await import('./engine-cloud.js')).createEngine();
     loadedModel = id; engineContext = contextSize; engineFast = fast;
@@ -304,12 +318,14 @@ export async function load(id, contextSize, { fast = true } = {}) {
   if (MODELS[id].runtime === 'onnx') {
     const onnx = await import('./engine-onnx.js');
     const spec = MODELS[id];
-    const useGpu = !spec.needsF16 || await onnx.gpuHasF16();
-    engine = await onnx.createEngine(spec, storedFiles(id), { contextSize, useGpu });
+    const useGpu = !cpu && (!spec.needsF16 || await onnx.gpuHasF16());
+    engine = await onnx.createEngine(spec, storedFiles(id), { contextSize, useGpu, onStage });
     loadedModel = id; engineContext = contextSize; engineFast = fast;
     return;
   }
+  onStage('starting the runtime');
   lib = lib || await import(LITERT);
+  onStage('loading the model onto the GPU');
   const url = MODELS[id].url;
   const offsets = await chunkOffsets(url);
   if (!offsets.length) throw new Error('Model is not downloaded yet.');

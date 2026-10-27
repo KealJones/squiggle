@@ -702,17 +702,22 @@ function showCrashBanner(c) {
     modelPromise = null; ensureModel(); // downloads the lighter model first if needed, then loads
   } }, next === S.model ? 'Use lighter settings' : `Use lighter settings (${nm.label}, ${nm.size})`);
   // Settings may have become lighter since the crash (e.g. phones moved to a phone model).
-  const changed = c.model !== S.model || c.contextSize !== S.contextSize || Boolean(c.fast) !== Boolean(S.fastDecode);
+  const changed = c.model !== S.model || c.contextSize !== S.contextSize || Boolean(c.fast) !== Boolean(S.fastDecode) || Boolean(c.cpu) !== Boolean(S.cpu);
   const again = h('button', { class: changed ? 'btn primary' : 'btn', onclick: () => { setCrashMarker(null); loadModel(); } }, changed ? 'Load model' : 'Try again');
   const settingsText = `${engine.MODELS[S.model].label}, ${S.contextSize / 1024}K context, speed boost ${S.fastDecode ? 'on' : 'off'}`;
+  const onnx = engine.MODELS[S.model].runtime === 'onnx';
+  const tryCpu = onnx && !S.cpu && /GPU|warming/i.test(c.stage || '') ? h('button', { class: 'btn', onclick: () => {
+    S.cpu = true; saveSettings(); setCrashMarker(null); loadModel();
+  } }, 'Try on the CPU (slow)') : '';
   banner(h('div', { class: 'dl' },
-    h('span', {}, `Loading ${m.label} crashed this tab last time. The device probably ran out of memory for it.`),
+    h('span', {}, `Loading ${m.label}${c.cpu ? ' on the CPU' : ''} crashed this tab last time${c.stage ? `, while ${c.stage}` : ''}.`),
+    c.gpu ? h('span', { class: 'muted' }, `GPU: ${c.gpu}`) : '',
     h('span', { class: 'muted' }, changed
       ? `This device now uses lighter settings (${settingsText}), which need much less memory.`
       : lightest()
         ? 'This is already the lightest setup. Close other tabs and apps, then try again; some devices can\'t run the model.'
         : `Lighter settings use ${nm.label} (needs less memory), a 4K context and no speed boost.`),
-    h('div', { class: 'row' }, changed || lightest() ? '' : lighter, again)));
+    h('div', { class: 'row' }, changed || lightest() ? '' : lighter, again, tryCpu)));
 }
 
 function banner(...content) {
@@ -803,11 +808,16 @@ function updateComposerNote() {
 
 async function loadModel() {
   modelState = 'loading';
-  banner(squiggleWait(), h('span', {}, engine.MODELS[agent.settings.model].runtime === 'cloud' ? 'Connecting to the cloud model…' : 'Loading the model onto your GPU…'));
   const S = agent.settings;
-  setCrashMarker({ model: S.model, contextSize: S.contextSize, fast: S.fastDecode, at: Date.now() });
+  const cloud = engine.MODELS[S.model].runtime === 'cloud';
+  const step = h('span', { class: 'muted' });
+  banner(h('div', { class: 'dl' }, h('div', { class: 'dl-head' }, squiggleWait(), h('span', {}, cloud ? 'Connecting to the cloud model…' : `Loading ${engine.MODELS[S.model].label}${S.cpu ? ' on the CPU' : ''}…`)), step));
+  // The marker is rewritten at every step (localStorage writes are synchronous,
+  // so it survives the tab being killed) and says where a crash happened.
+  const marker = { model: S.model, contextSize: S.contextSize, fast: S.fastDecode, cpu: Boolean(S.cpu), at: Date.now(), stage: 'starting', gpu: cloud ? '' : await engine.gpuSummary(), ua: navigator.userAgent };
+  setCrashMarker(marker);
   try {
-    await engine.load(S.model, S.contextSize, { fast: S.fastDecode });
+    await engine.load(S.model, S.contextSize, { fast: S.fastDecode, cpu: Boolean(S.cpu), onStage: (st) => { marker.stage = st; setCrashMarker(marker); step.textContent = st[0].toUpperCase() + st.slice(1) + '…'; } });
     setCrashMarker(null);
     modelState = 'ready';
     banner();
@@ -967,6 +977,10 @@ function renderSettingsPanel() {
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'Context window'),
       seg([[4096, '4K'], [8192, '8K'], [16384, '16K']], S.contextSize, async (v) => { S.contextSize = v; if (engine.engineReady()) await loadModel(); }),
       h('span', { class: 'hint' }, 'Bigger remembers more per turn but uses more memory and is slower to start. Phones are safest at 4K.')),
+
+    engine.MODELS[S.model].runtime !== 'onnx' ? '' : h('div', { class: 'field' }, h('label', { class: 'toggle' },
+      h('input', { type: 'checkbox', checked: S.cpu ? true : null, onchange: async (e) => { S.cpu = e.target.checked; saveSettings(); if (engine.engineReady()) await loadModel(); } }),
+      h('span', {}, h('strong', {}, 'Run on the CPU'), h('span', { class: 'hint', style: 'display:block' }, 'Much slower, but skips the GPU. Useful if loading on the GPU crashes on this device.')))),
 
     engine.MODELS[S.model].runtime !== 'litert' ? '' : h('div', { class: 'field' }, h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: S.fastDecode ? true : null, onchange: async (e) => { S.fastDecode = e.target.checked; saveSettings(); if (engine.engineReady()) await loadModel(); } }),

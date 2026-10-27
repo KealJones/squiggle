@@ -172,8 +172,10 @@ export const thinkText = (text) => { const m = /<think>([\s\S]*?)(?:<\/think>|$)
 
 // ── Engine ────────────────────────────────────────────────────────────────
 // files: { json(path), text(path), bytes(path), reader(path) → read(off, len) }
-export async function createEngine(spec, files, { contextSize = 4096, useGpu = true } = {}) {
+export async function createEngine(spec, files, { contextSize = 4096, useGpu = true, onStage = () => {} } = {}) {
+  onStage('starting the runtime');
   const o = await loadOrt();
+  onStage('reading the tokenizer');
   const tokJson = await files.json('tokenizer.json');
   const tokCfg = await files.json('tokenizer_config.json');
   const tokenizer = new Tokenizer(tokJson, tokCfg);
@@ -189,9 +191,11 @@ export async function createEngine(spec, files, { contextSize = 4096, useGpu = t
   // The weights are only needed while the session is created; keep no reference
   // afterwards so the (up to 1 GB) buffer can be freed.
   const session = await (async () => {
+    onStage('reading the model weights');
     const graph = await files.bytes(spec.graph);
     dbg('graph', graph.length);
     const externalData = spec.data ? [{ path: spec.data.split('/').pop(), data: await files.bytes(spec.data) }] : undefined;
+    onStage(useGpu ? 'creating the GPU session' : 'creating the CPU session');
     return o.InferenceSession.create(graph, {
       executionProviders: [useGpu ? 'webgpu' : 'wasm'],
       externalData,
@@ -296,7 +300,8 @@ export async function createEngine(spec, files, { contextSize = 4096, useGpu = t
     constructor({ preface, sessionConfig }) {
       this.state = new State();
       this.system = preface.messages[0].content;
-      this.history = preface.messages.slice(1);
+      // Squiggle's history uses Gemma's role name "model"; chat templates expect "assistant".
+      this.history = preface.messages.slice(1).map(m => (m.role === 'model' ? { ...m, role: 'assistant' } : m));
       this.tools = (preface.tools || []).map(t => t.function);
       this.thinking = Boolean(preface.extra_context && preface.extra_context.enable_thinking) && native;
       this.max = sessionConfig.maxOutputTokens || 1024;
@@ -391,6 +396,12 @@ export async function createEngine(spec, files, { contextSize = 4096, useGpu = t
       }
     }
   }
+
+  // One token through the model now, so GPU shader compilation (a common
+  // place for mobile browsers to fail) happens while loading, not mid-reply.
+  onStage('warming up');
+  const bos = one(String(tokCfg.bos_token?.content ?? tokCfg.bos_token ?? ''));
+  { const st = new State(); try { await st.forward([bos >= 0 ? bos : 0]); } finally { st.free(); } }
 
   return {
     createConversation: async (cfg) => new Conversation(cfg),

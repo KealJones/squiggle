@@ -23,7 +23,11 @@ export const isMobile = () => /iPhone|Android/.test(navigator.userAgent);
 window.__loads = 0;
 export const downloadInfo = async (id) => (window.__noE4B && id === 'E4B' ? { total: 0, stored: 0, complete: false } : { total: 1, stored: 1, complete: true });
 export const download = async () => {};
-export const load = async (id, ctx, opts) => { window.__loads++; window.__lastLoad = { id, ctx, opts }; ready = true; };
+export const load = async (id, ctx, opts = {}) => {
+  opts.onStage && opts.onStage('creating the GPU session');
+  window.__loads++; window.__lastLoad = { id, ctx, opts: { fast: opts.fast, cpu: opts.cpu } }; ready = true;
+};
+export const gpuSummary = async () => 'fake gpu, f16';
 export const unload = async () => { ready = false; };
 export const foreground = (fn) => lock(fn);
 export const background = (fn) => lock(fn);
