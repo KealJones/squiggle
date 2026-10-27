@@ -1,6 +1,6 @@
 # Squiggle — notes for engineers and coding agents
 
-A browser-only agent: Gemma 4 on WebGPU (LiteRT-LM), state synced through a
+A browser-only agent: local models on WebGPU (Gemma 4 via LiteRT-LM; Gemma 4 E2B Mobile, Gemma 3 and SmolLM via onnxruntime-web), state synced through a
 private GitHub "storage repo", and a Cloudflare Worker that relays GitHub
 requests browsers can't make (device-flow login, git smart-HTTP). The app is
 static: either the Worker serves it (wrangler.toml, relay same-origin at /api)
@@ -12,11 +12,12 @@ wrangler.relay.toml deploys a relay-only Worker that allows the Pages origin).
 ```
 app/                    static app, plain ES modules, no build step
   index.html styles.css sandbox.html sw.js manifest.webmanifest
-  vendor/               bundled libs (isomorphic-git, lightning-fs, marked, DOMPurify) — `npm run vendor`
+  vendor/               bundled libs (isomorphic-git, lightning-fs, marked, DOMPurify, HF tokenizers + jinja) — `npm run vendor`
   src/
     main.js             UI: setup wizard, sessions sidebar + search, chat, threads, panels
     agent.js            turn loop (context → stream → tools → repeat) + background jobs
-    engine.js           model download (resumable, IndexedDB chunks), LiteRT engine, generation
+    engine.js           model registry, download (resumable, IndexedDB chunks), LiteRT engine, generation
+    engine-onnx.js      ONNX models on onnxruntime-web; Gemma 4 E2B Mobile reads embedding rows from storage
     context.js          context assembly: compact (default) / smart (retrieval) / full; report
     search.js           BM25 + blend with optional embeddings (embed.js, MiniLM on CPU)
     tools.js            agent tools; run_js sandbox host
@@ -81,3 +82,16 @@ A thread's context = main messages up to its parent + its own messages
 `npm test`, `node tests/e2e/run.mjs` and `node tests/e2e/run.mjs --split`
 (app and relay on different origins; set `PLAYWRIGHT_BROWSERS_PATH` if needed). The e2e suite swaps `src/engine.js` for `tests/e2e/fake-engine.js`;
 real-model behaviour needs a WebGPU device and is checked by hand.
+
+## ONNX models (engine-onnx.js)
+
+- onnxruntime-web 1.30.0 from jsDelivr; tokenizer + chat template from `vendor/hf.js`.
+- Files are stored as Blobs (16 MB records) so `randomReader` can read single rows.
+- Gemma 4 E2B Mobile (QAT, q2f16): the 1.3 GB `embed_tokens` file is never loaded; `RowLookup`
+  dequantizes rows per token (GatherBlockQuantized: low bits first, zero point 2^(bits-1), fp16
+  scales per 256-value block), matching the ONNX graph. Only the ~1 GB decoder is in memory.
+- Gemma 4 native tools: `<|tool_call>call:name{k:<|"|>v<|"|>}<tool_call|>`, results continue the same
+  model turn as `<|tool_response>response:name{...}<tool_response|>` (KV cache kept). Other models
+  get tools in the system prompt and answer `<tool_call>{json}</tool_call>`; each round re-prefills.
+- Needs `shader-f16` for q4f16/q2f16 on WebGPU; without it the wasm (CPU) backend runs (slow).
+- Debug: `globalThis.SQUIGGLE_DEBUG = 1` logs load steps and raw generated text.
