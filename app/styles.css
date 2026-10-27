@@ -148,6 +148,19 @@ a { color: var(--action); }
 .composer-inner { max-width: 720px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-end; background: var(--sheet); border: 1px solid var(--rule); border-radius: var(--radius-m); padding: 6px 6px 6px 14px; }
 .composer-inner:focus-within { border-color: var(--ink-soft); }
 .composer textarea { flex: 1; border: 0; background: none; resize: none; padding: 7px 0; max-height: 40vh; outline: none; line-height: 1.45; }
+.composer.dragging .composer-inner { border-color: var(--action); border-style: dashed; }
+.attach-chips { max-width: 720px; margin: 0 auto 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+.attach-chips[hidden], .attach-notice[hidden] { display: none; }
+.attach-chips.sent { margin: 6px 0 0; justify-content: flex-end; max-width: 85%; }
+.chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 4px 3px 10px; border: 1px solid var(--rule); border-radius: 999px; background: var(--sheet); font-size: 0.8rem; color: var(--ink); }
+.attach-chips.sent .chip { padding-right: 10px; }
+.chip svg { width: 14px; height: 14px; flex: none; color: var(--ink-soft); }
+.chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 28ch; }
+.chip-size { color: var(--ink-soft); font-size: 0.75rem; white-space: nowrap; }
+.chip-x { background: none; border: 0; padding: 3px; border-radius: 50%; cursor: pointer; color: var(--ink-soft); line-height: 0; }
+.chip-x:hover { background: var(--rule); color: var(--ink); }
+.chip-x svg { width: 12px; height: 12px; }
+.attach-notice { max-width: 720px; margin: 0 auto 6px; font-size: 0.78rem; color: var(--ink-soft); }
 .composer .note { max-width: 720px; margin: 6px auto 0; font-size: 0.78rem; color: var(--ink-soft); }
 
 /* ── Drawer panels ──────────────────────────────────────────────────── */

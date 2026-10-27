@@ -4,6 +4,7 @@
 import * as engine from './engine.js';
 import * as sessions from './sessions.js';
 import * as memory from './memory.js';
+import * as storage from './storage.js';
 import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes } from './context.js';
 export { scrubFakeToolNotes };
 import { toolSpecs, runTool } from './tools.js';
@@ -11,6 +12,7 @@ import { UNTRUSTED_RULES } from './untrusted.js';
 import { embed } from './embed.js';
 import { estTokens, truncate } from './util.js';
 import { parseJsonl } from './merge.js';
+import { attachmentPrompt, saveAttachments, toRecord } from './attachments.js';
 
 export const settings = {
   model: 'E2B',
@@ -40,13 +42,24 @@ function systemPrompt(threadId, session) {
 }
 
 /**
- * Runs one user turn. `ui` callbacks: onStart(msg), onText(text), onThinking(text),
- * onTool(label), onDone(msg), onError(err). Returns the assistant message.
+ * Runs one user turn. `attachments` are records from attachments.readAttachment
+ * (with their extracted text); they're saved to storage and shown to the model
+ * as a note plus the start of each extract. `ui` callbacks: onStart(msg),
+ * onText(text), onThinking(text), onTool(label), onDone(msg), onError(err).
+ * Returns the assistant message.
  */
-export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
-  const userMsg = sessions.addMessage(session, { role: 'user', content: text, thread: threadId });
+export function runTurn({ session, threadId = null, text, attachments = [], ui = {}, signal }) {
+  const shown = text || (attachments.length ? 'Attached ' + attachments.map(a => a.name).join(', ') : '');
+  const userMsg = sessions.addMessage(session, { role: 'user', content: shown, thread: threadId, ...(attachments.length ? { attachments: attachments.map(toRecord) } : {}) });
   ui.onUser && ui.onUser(userMsg);
   return engine.foreground(async () => {
+    // Saved before the model runs, so read_file and grep can open them.
+    if (attachments.length) {
+      await saveAttachments(attachments, {
+        write: (rel, t) => storage.write(rel, t),
+        observe: (o) => sessions.addObservation(session, { ...o, thread: threadId }),
+      }).catch(e => console.warn('attachments', e));
+    }
     const tools = toolSpecs(settings.tools);
     const toolTokens = estTokens(JSON.stringify(tools));
     // History gets about half the window; the rest stays free for this turn's
@@ -54,7 +67,7 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
     const budget = Math.max(1000, Math.min(settings.contextSize - MAX_OUTPUT - toolTokens - 200, Math.floor(settings.contextSize * 0.5) - toolTokens));
     const line = sessions.lineMessages(session, threadId).filter(m => m.id !== userMsg.id);
     const ctx = await assembleContext({
-      line, session, threadId, query: text, budget, mode: settings.contextMode,
+      line, session, threadId, query: shown, budget, mode: settings.contextMode,
       system: systemPrompt(threadId, session),
       recall: (q, k) => memory.recall(q, k), factText: memory.factText,
       embed: settings.contextMode === 'smart' ? embed : null,
@@ -66,15 +79,19 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
     let conv;
     try {
       conv = await engine.conversation({ system: ctx.system, messages: ctx.messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT });
-      let pending = text;
       let prefix = '';
       // Running estimate of what's in the model's context this turn, so tool
       // results are sized to fit and the model is told to wrap up before the
       // context overflows (which would fail the whole reply).
       let wrapUp = false, carried = 0;
-      let used = estTokens(ctx.system) + estTokens(JSON.stringify(ctx.messages)) + toolTokens + estTokens(text);
+      let used = estTokens(ctx.system) + estTokens(JSON.stringify(ctx.messages)) + toolTokens + estTokens(shown);
       const reserve = Math.min(MAX_OUTPUT, 700);
       const roomChars = () => Math.max(0, (settings.contextSize - used - reserve) * 3);
+      // Attachments: a note, then the start of each extract using up to half
+      // the free room (the model reads the rest with read_file / grep).
+      const att = attachmentPrompt(attachments, Math.floor(roomChars() / 2));
+      let pending = att.text ? `${shown}\n\n${att.text}` : shown;
+      used += estTokens(att.text);
       for (let round = 0; ; round++) {
         const r = await engine.respond(conv, pending, {
           signal,
@@ -104,7 +121,7 @@ export function runTurn({ session, threadId = null, text, ui = {}, signal }) {
           sessions.setNote(session, null, 'Progress so far (saved when the context filled up): ' + notes.slice(0, 1500));
           reply.tools.push({ name: 'context', label: 'context was full: continued in a fresh one with notes', ok: true });
           ui.onTool && ui.onTool({ name: 'context', label: 'context was full: continued in a fresh one with notes', ok: true, running: false });
-          pending = `${text}\n\n[Notes you wrote while working on this request; your context was reset to give you room. Continue from them, don't start over:]\n${notes}`;
+          pending = `${shown}${att.note ? '\n\n' + att.note : ''}\n\n[Notes you wrote while working on this request; your context was reset to give you room. Continue from them, don't start over:]\n${notes}`;
           used = estTokens(ctx.system) + estTokens(JSON.stringify(ctx.messages)) + toolTokens + estTokens(pending);
           continue;
         }
