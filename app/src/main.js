@@ -17,6 +17,7 @@ import { bm25 } from './search.js';
 import * as attachments from './attachments.js';
 import { checkFiles, fmtSize } from './attachments.js';
 import * as voice from './voice.js';
+import * as tts from './tts.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const h = (tag, attrs = {}, ...kids) => {
@@ -140,6 +141,7 @@ async function startApp() {
   openSession(sessions.list()[0] || sessions.newSession());
   setup.hidden = true;
   $('#app').hidden = false;
+  checkVoiceCrash();
   storage.sync();
   setInterval(() => { if (document.visibilityState === 'visible') storage.sync(); }, 60000);
   document.addEventListener('visibilitychange', () => {
@@ -762,16 +764,23 @@ function startCall() {
   const sup = voice.support(window);
   if (!sup.ok) { callBar(null, sup.recognition ? 'Voice calls need speech synthesis, which this browser doesn\'t have.' : voice.UNSUPPORTED_MESSAGE); return; }
   if (!current) return;
+  // Phones ask once: the natural voice needs memory next to the chat model.
+  if (voiceEngine() === 'ask') { askVoiceBar(); return; }
   const bar = callBar();
+  const system = voice.systemSpeaker({ synth: window.speechSynthesis, Utterance: window.SpeechSynthesisUtterance, lang: navigator.language || 'en-US', getSettings: () => agent.settings });
+  // The natural voice loads now (inside this tap, so its audio can be unlocked)
+  // and is freed when the call ends. Until it's ready, replies use the system voice.
+  const nv = voiceEngine() === 'natural' ? startNaturalVoice(bar) : null;
   const ctl = voice.createCall({
-    SR: sup.recognition, synth: window.speechSynthesis, Utterance: window.SpeechSynthesisUtterance,
+    SR: sup.recognition, speaker: nv ? nv.speaker : system, fallback: system,
     lang: navigator.language || 'en-US',
     getSettings: () => agent.settings,
     send: (text) => send(text, null),
     onChange: (snap) => bar.update(snap),
     onError: (message, fatal) => { if (!fatal) bar.update({ ...ctl.snapshot(), error: message }); },
+    onFallback: (reason, detail) => naturalVoiceFellBack(reason, detail),
   });
-  call = { ctl, bar };
+  call = { ctl, bar, nv };
   // start() must run inside this tap: iOS only lets speech begin from a gesture.
   ctl.start();
   bar.update(ctl.snapshot());
@@ -781,10 +790,150 @@ function startCall() {
 function endCall() {
   if (!call) return;
   const { ctl, bar } = call;
+  releaseCallVoice();
   call = null;
   ctl.end();
   bar.close();
   keepAwake(false);
+}
+
+// ── Natural voice (tts.js; the model runs in a worker) ─────────────────────
+// 'natural' | 'system', or 'ask' on a phone that hasn't chosen yet.
+function voiceEngine() {
+  const S = agent.settings;
+  if (!tts.neuralSupported(window)) return 'system';
+  if (S.voiceEngine === 'natural' || S.voiceEngine === 'system') return S.voiceEngine;
+  return engine.isMobile() ? 'ask' : 'natural';
+}
+// Kokoro is the best voice; phones default to KittenTTS, which needs a
+// fraction of the memory and keeps up on a phone CPU.
+function voiceModel() {
+  const m = agent.settings.voiceModel;
+  return tts.TTS_MODELS[m] ? m : engine.isMobile() ? 'kitten' : 'kokoro';
+}
+function naturalVoiceId(model) {
+  return tts.validVoice(model, (agent.settings.ttsVoices || {})[model]);
+}
+
+// Crash marker, as for the chat model: written before the voice model loads
+// and while it speaks (localStorage writes are synchronous, so it survives the
+// tab being killed), removed when that's over. Found on the next open, it
+// explains what happened and calls switch to system voices.
+const VOICE_LOADING_KEY = 'squiggle-voice-loading';
+function voiceMarker(v) {
+  try { v ? localStorage.setItem(VOICE_LOADING_KEY, JSON.stringify(v)) : localStorage.removeItem(VOICE_LOADING_KEY); } catch {}
+}
+function loadVoiceMarker() {
+  try { return JSON.parse(localStorage.getItem(VOICE_LOADING_KEY) || 'null'); } catch { return null; }
+}
+
+/** Creates and starts loading the voice model. Must run inside a tap (the
+ *  player unlocks audio). Returns { tts, player, speaker, model }. */
+function createNaturalVoice({ model = voiceModel(), player = null, onStage = () => {}, onProgress = () => {} } = {}) {
+  const voiceId = naturalVoiceId(model);
+  if (!player) { player = tts.createPlayer(); player.unlock(); }
+  const marker = { model, phase: 'load', stage: 'starting', at: Date.now(), ua: navigator.userAgent };
+  voiceMarker(marker);
+  const t = tts.createTTS({
+    model, voice: voiceId,
+    onStage: (st) => { marker.stage = st; voiceMarker(marker); onStage(st); },
+    onProgress,
+    onBusy: (busy) => voiceMarker(busy ? { ...marker, phase: 'speak', stage: 'speaking', at: Date.now() } : null),
+  });
+  const loaded = t.load().then((r) => { voiceMarker(null); return r; }, (e) => { voiceMarker(null); throw e; });
+  const speaker = voice.neuralSpeaker({ tts: t, player, voice: voiceId, getSettings: () => agent.settings });
+  return { tts: t, player, speaker, model, loaded };
+}
+
+function freeNaturalVoice(nv) {
+  if (!nv) return;
+  nv.tts.terminate();
+  nv.player.close();
+  voiceMarker(null);
+}
+function releaseCallVoice() {
+  if (!call) return;
+  freeNaturalVoice(call.nv);
+  call.nv = null;
+}
+
+const pct = (got, total) => (total ? ` (${Math.round(100 * got / total)}%)` : '');
+
+function startNaturalVoice(bar) {
+  const model = voiceModel();
+  const label = tts.TTS_MODELS[model].label;
+  let shown = false;
+  const nv = createNaturalVoice({
+    model,
+    onStage: (st) => { if (/download/.test(st)) return; shown = true; bar.note(`Loading the natural voice (${label}): ${st}…`); },
+    onProgress: (got, total) => { if (got < total) { shown = true; bar.note(`Downloading the natural voice (${label}, ${tts.TTS_MODELS[model].size})${pct(got, total)}. Replies use the system voice until it's ready.`); } },
+  });
+  nv.loaded.then(() => { if (call && call.nv === nv && shown) bar.note(`Natural voice ready (${label}).`, 4000); }, (e) => {
+    if (!call || call.nv !== nv) return;
+    bar.note(`Couldn't load the natural voice: ${e.message}. This call uses the system voice.`);
+  });
+  return nv;
+}
+
+// The natural voice failed or can't keep up. The call already moved to the
+// system voice; a slow Kokoro gets the light model for the next reply.
+function naturalVoiceFellBack(reason, detail) {
+  if (!call) return;
+  const { bar, nv } = call;
+  const model = nv ? nv.model : voiceModel();
+  if (reason === 'slow' && model === 'kokoro' && tts.TTS_MODELS.kitten) {
+    agent.settings.voiceModel = 'kitten'; saveSettings();
+    bar.note(`${tts.TTS_MODELS.kokoro.label} is too slow on this device (${Number(detail).toFixed(1)}× slower than speech), so Squiggle switched to the light natural voice (Settings → Voice calls). Using the system voice while it loads.`);
+    // Reuse the unlocked player: we're not inside a tap any more.
+    nv.tts.terminate();
+    const next = createNaturalVoice({ model: 'kitten', player: nv.player });
+    call.nv = next;
+    next.loaded.then(() => { if (call && call.nv === next) { call.ctl.setSpeaker(next.speaker); bar.note('Light natural voice ready.', 4000); } },
+      (e) => { if (call && call.nv === next) bar.note(`Couldn't load the light natural voice: ${e.message}. This call uses the system voice.`); });
+    return;
+  }
+  bar.note(reason === 'slow'
+    ? `The natural voice can't keep up on this device (${Number(detail).toFixed(1)}× slower than speech), so this call uses the system voice.`
+    : `The natural voice stopped working (${detail && detail.message || detail}), so this call uses the system voice.`);
+  if (nv) { nv.tts.terminate(); voiceMarker(null); }
+}
+
+// First call on a phone: natural or system voice? The answer's tap starts the call.
+function askVoiceBar() {
+  $('.call')?.remove();
+  const m = tts.TTS_MODELS[voiceModel()];
+  const choose = (v) => (e) => { e.stopPropagation(); agent.settings.voiceEngine = v; saveSettings(); el.remove(); startCall(); };
+  const el = h('section', { class: 'call', 'data-state': 'ask', 'aria-label': 'Voice call' },
+    h('div', { class: 'call-inner' },
+      h('div', { class: 'call-head' }, h('span', {}, 'Use the natural voice?')),
+      h('div', { class: 'call-hint' }, `It sounds much more human. It downloads ${m.size.replace('~', 'about ')} once and runs on this phone, using extra memory while a call is on. You can change this in Settings.`),
+      h('div', { class: 'call-actions' },
+        h('button', { class: 'btn', type: 'button', onclick: (e) => { e.stopPropagation(); el.remove(); } }, 'Cancel'),
+        h('button', { class: 'btn', type: 'button', onclick: choose('system') }, 'System voice'),
+        h('button', { class: 'btn primary', type: 'button', onclick: choose('natural') }, 'Natural voice'))));
+  $('.main').insertBefore(el, $('#composer'));
+}
+
+// On open: a tab killed while the natural voice loaded or spoke.
+function checkVoiceCrash() {
+  const c = loadVoiceMarker();
+  if (!c) return;
+  voiceMarker(null);
+  const S = agent.settings;
+  const m = tts.TTS_MODELS[c.model] || tts.TTS_MODELS[voiceModel()];
+  const wasModel = tts.TTS_MODELS[c.model] ? c.model : voiceModel();
+  S.voiceEngine = 'system'; saveSettings();
+  const b = $('#voice-banner');
+  const close = () => { b.hidden = true; b.replaceChildren(); };
+  const lighter = wasModel === 'kokoro' && tts.TTS_MODELS.kitten;
+  b.hidden = false;
+  b.replaceChildren(h('div', { class: 'dl' },
+    h('span', {}, `${c.phase === 'speak' ? `The natural voice (${m.label}) crashed this tab while speaking` : `Loading the natural voice (${m.label}) crashed this tab`} last time${c.stage && c.phase !== 'speak' ? `, while ${c.stage}` : ''}.`),
+    h('span', { class: 'muted' }, 'This device probably ran out of memory with the voice and the chat model together, so calls use system voices now.'),
+    h('div', { class: 'row' },
+      lighter ? h('button', { class: 'btn primary', onclick: () => { Object.assign(S, { voiceEngine: 'natural', voiceModel: 'kitten' }); saveSettings(); close(); } }, `Use the light natural voice (${tts.TTS_MODELS.kitten.size})`) : '',
+      h('button', { class: 'btn', onclick: () => { Object.assign(S, { voiceEngine: 'natural', voiceModel: wasModel }); saveSettings(); close(); } }, 'Try the natural voice again'),
+      h('button', { class: 'btn ghost', onclick: close }, 'Keep system voices'))));
 }
 
 let wakeLock = null;
@@ -805,12 +954,14 @@ function callBar(_unused, message) {
   const said = h('div', { class: 'call-transcript' });
   const hint = h('div', { class: 'call-hint' }, message ? '' : 'Tap anywhere on this bar to interrupt.');
   const err = h('div', { class: 'call-error', role: 'alert' }, message || '');
+  const note = h('div', { class: 'call-hint call-note', 'aria-live': 'polite', hidden: true });
+  let noteTimer = null;
   const repeat = h('button', { class: 'btn', type: 'button', hidden: true, onclick: (e) => { e.stopPropagation(); call && call.ctl.repeat(); } }, 'Repeat');
   const endBtn = h('button', { class: 'btn primary', type: 'button', onclick: (e) => { e.stopPropagation(); message ? el.remove() : endCall(); } }, message ? 'Close' : 'End');
   const el = h('section', { class: 'call', 'data-state': message ? 'error' : 'listening', 'aria-label': 'Voice call', onclick: () => call && call.ctl.bargeIn() },
     h('div', { class: 'call-inner' },
       h('div', { class: 'call-head' }, dot, state, wait),
-      said, hint, err,
+      said, hint, note, err,
       h('div', { class: 'call-actions' }, repeat, endBtn)));
   const main = $('.main');
   main.insertBefore(el, $('#composer'));
@@ -829,14 +980,22 @@ function callBar(_unused, message) {
       hint.hidden = idle;
       if (idle && snap.error) {
         // The call stopped itself (blocked microphone, ...): keep the reason on screen.
-        if (call && call.bar === self) call = null;
+        if (call && call.bar === self) { releaseCallVoice(); call = null; }
+        note.hidden = true;
         keepAwake(false);
         main.classList.remove('in-call'); $('#call').removeAttribute('aria-pressed');
         endBtn.textContent = 'Close'; endBtn.onclick = (e) => { e.stopPropagation(); el.remove(); };
         el.onclick = null;
       }
     },
-    close() { el.remove(); main.classList.remove('in-call'); $('#call').removeAttribute('aria-pressed'); },
+    // Voice status (natural voice loading, fallbacks); clears itself after `ms`.
+    note(text, ms = 0) {
+      clearTimeout(noteTimer);
+      note.textContent = text || '';
+      note.hidden = !text;
+      if (text && ms) noteTimer = setTimeout(() => { if (note.textContent === text) note.hidden = true; }, ms);
+    },
+    close() { clearTimeout(noteTimer); el.remove(); main.classList.remove('in-call'); $('#call').removeAttribute('aria-pressed'); },
   };
   return self;
 }
@@ -1261,9 +1420,11 @@ function renderContextPanel(m) {
   c.append(body);
 }
 
-// Voice for calls: which installed voice speaks, how fast, and whether talking
-// over a reply interrupts it (off by default: speakers make the mic hear itself).
+// Voice for calls: the natural voice (a small neural model on this device) or
+// an installed system voice, how fast, and whether talking over a reply
+// interrupts it (off by default: speakers make the mic hear itself).
 let voicesWatched = false;
+const TEST_LINE = 'Hi, this is how I sound on a call.';
 function voiceSettingsField(S, seg) {
   const synth = window.speechSynthesis;
   if (!voicesWatched) {
@@ -1271,6 +1432,10 @@ function voiceSettingsField(S, seg) {
     synth.addEventListener?.('voiceschanged', () => { if (drawerPanel === 'settings') renderSettingsPanel(); });
   }
   const lang = navigator.language || 'en-US';
+  const neural = tts.neuralSupported(window);
+  const engineNow = voiceEngine();
+  const natural = engineNow === 'natural';
+  const model = voiceModel(), m = tts.TTS_MODELS[model];
   // Best-sounding voices for this language first; robotic ones are left out.
   const prim = lang.toLowerCase().split('-')[0];
   const mine = (v) => String(v.lang || '').toLowerCase().startsWith(prim) ? 1 : 0;
@@ -1278,26 +1443,66 @@ function voiceSettingsField(S, seg) {
     .sort((a, b) => mine(b) - mine(a) || voice.voiceQuality(b) - voice.voiceQuality(a) || a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
   const tier = (v) => { const q = voice.voiceQuality(v); return q >= 9 ? ', premium' : q >= 6 ? ', enhanced' : ''; };
   const auto = voice.pickVoice(voices, lang, '');
-  const select = h('select', { id: 'voice-select', 'aria-label': 'Voice', onchange: (e) => { S.voiceURI = e.target.value; saveSettings(); } },
-    h('option', { value: '' }, auto ? `Automatic (${auto.name})` : 'Automatic'),
-    voices.map(v => h('option', { value: v.voiceURI, selected: v.voiceURI === S.voiceURI ? true : null }, `${v.name} (${v.lang}${tier(v)})`)));
-  const test = () => {
+  const select = natural
+    ? h('select', { id: 'voice-select', 'aria-label': 'Voice', onchange: (e) => { S.ttsVoices = { ...(S.ttsVoices || {}), [model]: e.target.value }; saveSettings(); } },
+        Object.entries(m.voices).map(([id, name]) => h('option', { value: id, selected: id === naturalVoiceId(model) ? true : null }, name)))
+    : h('select', { id: 'voice-select', 'aria-label': 'Voice', onchange: (e) => { S.voiceURI = e.target.value; saveSettings(); } },
+        h('option', { value: '' }, auto ? `Automatic (${auto.name})` : 'Automatic'),
+        voices.map(v => h('option', { value: v.voiceURI, selected: v.voiceURI === S.voiceURI ? true : null }, `${v.name} (${v.lang}${tier(v)})`)));
+  const status = h('span', { class: 'voice-status', 'aria-live': 'polite' });
+  const testSystem = () => {
     synth.cancel();
-    const u = new SpeechSynthesisUtterance('Hi, this is how I sound on a call.');
+    const u = new SpeechSynthesisUtterance(TEST_LINE);
     const v = voice.pickVoice(synth.getVoices(), lang, S.voiceURI);
     if (v) { u.voice = v; u.lang = v.lang; }
     u.rate = Number(S.voiceRate) || 1;
     synth.speak(u);
   };
+  // Loads the model just for this (inside the tap, so audio unlocks), says the
+  // line, and frees it again. During a call, the call's voice is used.
+  const testNatural = async (e) => {
+    const btn = e.currentTarget;
+    if (call && call.nv) {
+      if (call.nv.tts.state !== 'ready') { status.textContent = 'The natural voice is still loading for the call.'; return; }
+      status.textContent = 'End the call to test another voice; the call uses the voice it started with.';
+      return;
+    }
+    btn.disabled = true;
+    const nv = createNaturalVoice({
+      model,
+      onStage: (st) => { status.textContent = `${st[0].toUpperCase()}${st.slice(1)}…`; },
+      onProgress: (got, total) => { status.textContent = `Downloading ${m.label} (${m.size})${pct(got, total)}…`; },
+    });
+    try {
+      const r = await nv.loaded;
+      status.textContent = r.cached ? 'Speaking…' : `Loaded in ${(r.ms / 1000).toFixed(1)} s. Speaking…`;
+      const a = await nv.tts.synth(TEST_LINE, { speed: Number(S.voiceRate) || 1 });
+      await nv.player.play(a.samples, a.sampleRate);
+      status.textContent = `${m.label} took ${(a.ms / 1000).toFixed(1)} s for ${(a.samples.length / a.sampleRate).toFixed(1)} s of speech${a.ms > 1000 * a.samples.length / a.sampleRate ? ': slower than speech on this device, so calls may pause between sentences' : ''}.`;
+    } catch (err) {
+      status.textContent = `Couldn't play the natural voice: ${err.message}.`;
+    } finally {
+      freeNaturalVoice(nv);
+      btn.disabled = false;
+    }
+  };
   return h('div', { class: 'field' }, h('span', { class: 'label' }, 'Voice calls'),
+    neural ? seg([['natural', 'Natural'], ['system', 'System voices']], natural ? 'natural' : 'system', (v) => { S.voiceEngine = v; }) : '',
+    neural ? h('span', { class: 'hint' }, natural
+      ? `A neural voice that runs on this device. It downloads once (${m.size}) and loads only during calls.`
+      : engineNow === 'ask' ? 'Your first call asks whether to use the natural voice.' : 'Your browser\'s built-in voices.') : '',
+    natural ? seg([['kokoro', `Best (${tts.TTS_MODELS.kokoro.size})`], ['kitten', `Light (${tts.TTS_MODELS.kitten.size})`]], model, (v) => { S.voiceModel = v; }) : '',
+    natural ? h('span', { class: 'hint' }, model === 'kokoro'
+      ? 'Kokoro: the most natural. Needs a fast computer to keep up, and about 400 MB of memory during calls.'
+      : 'KittenTTS: lighter and faster, about 250 MB of memory during calls. The safer choice on phones.') : '',
     select,
     seg([[0.9, 'Slow'], [1, 'Normal'], [1.2, 'Fast'], [1.4, 'Faster']], Number(S.voiceRate) || 1, (v) => { S.voiceRate = v; }),
-    h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: test }, 'Test voice')),
+    h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: natural ? testNatural : testSystem }, 'Test voice'), status),
     h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: S.voiceBargeIn ? true : null, onchange: (e) => { S.voiceBargeIn = e.target.checked; saveSettings(); } }),
       h('span', {}, h('strong', {}, 'Interrupt by talking'), h('span', { class: 'hint', style: 'display:block' }, 'Keep listening while Squiggle speaks, so you can cut in. Use headphones: on speakers it can hear itself.'))),
     h('span', { class: 'hint' }, 'Tap the headset button next to the message box to start a hands-free call. Replies are spoken as they arrive; code is skipped and links are read as their site name.'),
-    voices.some(v => mine(v) && voice.voiceQuality(v) >= 6) ? '' : h('span', { class: 'hint' }, 'For a much more natural voice, download a "Premium" or "Enhanced" voice in your device\'s settings (iPhone: Settings → Accessibility → Spoken Content → Voices), then pick it here.'));
+    natural || voices.some(v => mine(v) && voice.voiceQuality(v) >= 6) ? '' : h('span', { class: 'hint' }, 'For a much more natural voice, choose Natural above, or download a "Premium" or "Enhanced" voice in your device\'s settings (iPhone: Settings → Accessibility → Spoken Content → Voices), then pick it here.'));
 }
 
 // Settings
