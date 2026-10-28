@@ -15,11 +15,15 @@ app/                    static app, plain ES modules, no build step
   vendor/               bundled libs (isomorphic-git, lightning-fs, marked, DOMPurify) — `npm run vendor`
   src/
     main.js             UI: setup wizard, sessions sidebar + search, chat, threads, panels
-    agent.js            turn loop (context → stream → tools → repeat) + background jobs
+    agent.js            turn loop (docs/harness.md): chat phase → plan → one fresh prompt per step → final reply; need/find; recipes learned after
+    tasks.js            step-mode task state, step/final prompts (budgeted), resume rules
+    recipes.js          memory/recipes.jsonl: how finished tasks were solved, matched to new requests, forgotten after 90 days unused
+    find.js             `find`: one search over tools, recipes, memory, past chats and this task
+    refs.js             reference resolution ("that", "the repo", links) → hints in the prompt
     engine.js           model registry, download (resumable, IndexedDB chunks), LiteRT engine, generation
     engine-cloud.js     cloud model through the relay (same conversation interface)
-    engine-wllama.js    Gemma 3 270M on llama.cpp WASM (phones): prompt-based tools + find_tools
-    context.js          context assembly: compact (default) / smart (retrieval) / full; report
+    engine-wllama.js    Gemma 3 270M on llama.cpp WASM (phones): prompt-based tools, <think>, anti-loop
+    context.js          context assembly: smart (default; retrieval incl. other chats) / compact / full; report
     search.js           BM25 + blend with optional embeddings (embed.js, MiniLM on CPU)
     tools.js            agent tools; run_js sandbox host
     guard.js            hard limits: push policy, workflow-file check, workspace path resolution
@@ -84,6 +88,11 @@ A thread's context = main messages up to its parent + its own messages
 - Tool results are sent as `{ role: 'tool', content: [{ name, response }] }`.
 - Don't replay thinking from earlier turns into history.
 
+## Harness v2 (docs/harness.md)
+
+The design doc is the contract for agent.js/tasks.js and for the small-model fine-tune; change
+both together. Task state lives on the session (`session.tasks`, merged by id like notes).
+
 ## Verifying changes
 
 `npm test`, `node tests/e2e/run.mjs` and `node tests/e2e/run.mjs --split`
@@ -98,8 +107,9 @@ Gemma 3 270M (`G3`): unsloth's Q4_0 GGUF (242 MB) on wllama 3.8.1, CPU only (`n_
 in `engine-wllama.js`; wllama caches the file itself. Also the fallback on computers without WebGPU.
 (ONNX on WASM failed too: the 4-bit export packs embeddings with GatherBlockQuantized, which the
 WASM build lacks, and the older full-precision export got the tab killed.) Gemma 3 has no tool
-format, so tools are prompt-based ```tool_call JSON blocks, and only tool names go in the prompt:
-the model looks tools up with `find_tools`, which the engine answers itself. The cloud model stays
+format, so tools are prompt-based ```tool_call JSON blocks (docs/harness.md, "Small-model format";
+the fine-tune in tp-parse trains on that exact text). No tool names go in prose: the model looks
+tools up with `find` (answered by the agent) and sees details only for tools it found. The cloud model stays
 available on phones. `cleanupStorage` frees downloads of models that aren't offered or don't fit.
 Loads and replies write a crash marker with the current step, shown on the next open.
 

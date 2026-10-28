@@ -8,7 +8,7 @@
 //     status: 'active' | 'done' | 'stopped',
 //     steps: [{ id, text, status: 'todo' | 'active' | 'done' | 'blocked', result?, need?, calls }],
 //     recipe?, waiting?, answers?: [{ q, a }], log: [{ step, name, args, ok, label, text }], tools: [name] }
-import { uid } from './util.js';
+import { uid, estTokens } from './util.js';
 
 const truncate = (s, n) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n - 1).replace(/\s+\S*$/, '') + '…' : s; };
 
@@ -16,7 +16,11 @@ export const STEP_SOFT_CAP = 12;   // tool calls in one step before the model is
 export const STEP_HARD_CAP = 18;   // after this the step is closed with what it has
 export const CHECK_IN_EVERY = 60;  // tool calls per turn between "Keep going?" check-ins
 const MAX_STEPS = 12;
-const MAX_LOG = 40;
+const MAX_LOG = 150;        // calls kept per task (their arguments feed recipes)
+const MAX_LOG_TEXT = 40;    // …of which the newest keep their output text
+const FULL_RESULTS = 2;     // done steps whose results the step prompt shows in full
+const MAX_REVISIONS = 3;    // plan revisions per task; after that the plan stands
+export { MAX_REVISIONS };
 
 const S = (props, required = []) => ({ type: 'object', properties: props, required });
 const str = (description) => ({ type: 'string', description });
@@ -105,20 +109,47 @@ export function answerNeed(task, answer, now = Date.now()) {
   return s;
 }
 
-export function logCall(task, step, { name, args, ok, label, text }) {
+export function logCall(task, step, { name, args, ok, label, text }, now = Date.now()) {
   task.log.push({ step: step ? step.id : null, name, args: args && typeof args === 'object' ? args : {}, ok: ok !== false, label: label || name, text: truncate(String(text || ''), 1500) });
   if (task.log.length > MAX_LOG) task.log.splice(0, task.log.length - MAX_LOG);
+  // Older entries keep their arguments (recipes use them) but drop the output text.
+  for (let i = 0; i < task.log.length - MAX_LOG_TEXT; i++) if (task.log[i].text) task.log[i].text = '';
   if (step) step.calls = (step.calls || 0) + 1;
+  touch(task, now);   // so the newer log wins when devices merge
+}
+
+// Is this the plan we already have (same remaining steps)? Then it's not a revision.
+export function samePlan(task, steps) {
+  const want = cleanSteps(steps);
+  const left = task.steps.filter(s => s.status !== 'done').map(s => s.text);
+  const fresh = want.filter(t => !task.steps.some(s => s.status === 'done' && same(s.text, t)));
+  return fresh.length === left.length && fresh.every((t, i) => same(t, left[i]));
+}
+
+// Finished or stopped tasks older than `days` keep their plan but drop tool
+// output, so session files don't grow without end.
+export function compactOld(session, now = Date.now(), days = 3) {
+  let changed = false;
+  for (const t of Object.values(session.tasks || {})) {
+    if (t.status === 'active' || (t.updated || 0) > now - days * 86400000) continue;
+    for (const l of t.log || []) if (l.text) { l.text = ''; changed = true; }
+  }
+  return changed;
 }
 
 export function touch(task, now = Date.now()) { task.updated = now; task.mts = now; }
 
-// "1. [done] Find the file → app/src/main.js line 40"
-export function renderPlan(task, { results = true } = {}) {
+// "1. [done] Find the file → app/src/main.js line 40". Only the latest `full`
+// done steps show their whole result; older ones are cut to `short` characters
+// (find can still fetch them).
+export function renderPlan(task, { results = true, full = Infinity, short = 120 } = {}) {
   const now = current(task);
+  const done = task.steps.filter(s => s.status === 'done');
+  const keep = new Set(done.slice(Math.max(0, done.length - full)));
   return task.steps.map((s, i) => {
     const tag = s.status === 'done' ? 'done' : s === now ? (s.status === 'blocked' ? 'blocked' : 'now') : 'todo';
-    const res = results && s.status === 'done' && s.result ? ` → ${s.result.replace(/\s+/g, ' ')}` : '';
+    const r = s.result ? s.result.replace(/\s+/g, ' ') : '';
+    const res = results && s.status === 'done' && r ? ` → ${keep.has(s) ? r : truncate(r, short)}` : '';
     const need = s.status === 'blocked' && s.need ? ` (needs: ${s.need})` : '';
     return `${i + 1}. [${tag}] ${s.text}${res}${need}`;
   }).join('\n');
@@ -134,38 +165,56 @@ export function taskItems(task) {
   return items;
 }
 
-// System text for one step (docs/harness.md, "Step prompt"). Sections that
-// are empty are left out. `sections` = [{ title, text }] in order.
-export function stepSystem(base, task, sections = []) {
-  const out = [base, `## Goal\n${task.goal}`, `## Plan\n${renderPlan(task)}`];
-  if (task.answers && task.answers.length) out.push('## The user answered your questions\n' + task.answers.map(a => `- ${a.q ? a.q + ': ' : ''}${a.a}`).join('\n'));
-  for (const s of sections) if (s && s.text && String(s.text).trim()) out.push(`## ${s.title}\n${String(s.text).trim()}`);
-  return out.join('\n\n');
-}
+const answersText = (task, n = 3) => (task.answers || []).slice(-n).map(a => `- ${a.q ? truncate(a.q, 160) + ': ' : ''}${truncate(a.a, 500)}`).join('\n');
 
+// System text for one step (docs/harness.md, "Step prompt"). `sections` =
+// [{ title, text }] in priority order; empty ones are left out, and when the
+// prompt would pass `maxTokens` the lowest-priority sections go first, then
+// older step results get shorter. Returns { text, shown: [titles] }.
+export function stepPrompt(base, task, sections = [], { maxTokens = Infinity } = {}) {
+  const live = sections.filter(s => s && s.text && String(s.text).trim());
+  const build = (secs, short) => {
+    const out = [base, `## Goal\n${task.goal}`, `## Plan\n${renderPlan(task, { full: FULL_RESULTS, short })}`];
+    if (task.answers && task.answers.length) out.push('## The user answered your questions\n' + answersText(task));
+    for (const s of secs) out.push(`## ${s.title}\n${String(s.text).trim()}`);
+    return out.join('\n\n');
+  };
+  let secs = live.slice();
+  let text = build(secs, 120);
+  while (estTokens(text) > maxTokens && secs.length) { secs.pop(); text = build(secs, 120); }
+  if (estTokens(text) > maxTokens) text = build(secs, 40);
+  return { text, shown: secs.map(s => s.title) };
+}
+export const stepSystem = (base, task, sections = [], opts) => stepPrompt(base, task, sections, opts).text;
+
+const MAX_REQUEST = 700;
 export function stepUser(task) {
   const s = current(task);
   const n = stepIndex(task, s) + 1;
-  return `${task.request || task.goal}\n\nWork on step ${n} now: ${s.text}\nWhen the step is finished, call done with what you found.`;
+  return `${truncate(task.request || task.goal, MAX_REQUEST)}\n\nWork on step ${n} now: ${s.text}\nWhen the step is finished, call done with what you found.`;
 }
 
-export function finalSystem(base, task) {
-  return `${base}\n\n## Goal\n${task.goal}\n\n## What each step found\n${renderPlan(task)}${task.answers && task.answers.length ? '\n\n## The user answered\n' + task.answers.map(a => `- ${a.a}`).join('\n') : ''}`;
+export function finalSystem(base, task, { maxTokens = Infinity } = {}) {
+  const build = (short) => `${base}\n\n## Goal\n${task.goal}\n\n## What each step found\n${renderPlan(task, { full: 4, short })}${task.answers && task.answers.length ? '\n\n## The user answered\n' + answersText(task) : ''}`;
+  let text = build(300);
+  if (estTokens(text) > maxTokens) text = build(120);
+  if (estTokens(text) > maxTokens) text = build(40);
+  return text;
 }
 
 export function finalUser(task) {
-  return `${task.request || task.goal}\n\nEvery step is done. Write the reply to this request now, using what the steps found. Don't call tools.`;
+  return `${truncate(task.request || task.goal, MAX_REQUEST)}\n\nEvery step is done. Write the reply to this request now, using what the steps found. Don't call tools.`;
 }
 
-// The latest task in this conversation line that can pick up again from the
-// new message: one waiting on an answer, or a stopped one when the user says
-// to go on.
+// The task that can pick up again from the new message: only the one the
+// latest reply in this conversation line belongs to (`lastTaskId`), when it is
+// waiting on an answer, or stopped and the user says to go on. A stopped task
+// whose steps are all done resumes straight to its final reply.
 const GO_ON = /^\s*(?:ok(?:ay)?[,.!\s]*)?(?:continue|keep going|go on|go ahead|resume|carry on|yes,? (?:continue|keep going))\b/i;
-export function resumable(session, threadId, text) {
-  const tasks = Object.values(session.tasks || {}).filter(t => (t.thread || null) === (threadId || null) && t.status !== 'done');
-  if (!tasks.length) return null;
-  const t = tasks.sort((a, b) => b.updated - a.updated)[0];
+export function resumable(session, threadId, text, lastTaskId) {
+  const t = lastTaskId && session.tasks && session.tasks[lastTaskId];
+  if (!t || (t.thread || null) !== (threadId || null) || t.status === 'done') return null;
   if (t.waiting) return { task: t, how: 'answer' };
-  if (GO_ON.test(String(text || '')) && current(t)) return { task: t, how: 'continue' };
+  if (GO_ON.test(String(text || ''))) return { task: t, how: 'continue' };
   return null;
 }

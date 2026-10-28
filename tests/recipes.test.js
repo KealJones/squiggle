@@ -206,6 +206,17 @@ test('reload only reloads when recipes.jsonl changed', async () => {
   assert.equal(R.list().length, 0);
 });
 
+test('a recipe learned just before a sync survives the reload', async () => {
+  await R.load();
+  store.files[FILE] = JSON.stringify({ id: 'r9', title: 'From another device', when: 'w', steps: ['x'], mts: 1 }) + '\n';
+  await new Promise(r => setTimeout(r, 5));
+  const mine = R.save(killPort());          // not flushed yet (save debounces)
+  await R.reload(['memory/recipes.jsonl']);
+  assert.deepEqual(R.list().map(r => r.id).sort(), [mine.id, 'r9'].sort());
+  await R.flush();
+  assert.match(store.files[FILE], new RegExp(mine.id));
+});
+
 test('change events fire on save, touch and remove', () => {
   let n = 0;
   R.events.on('change', () => n++);

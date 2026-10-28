@@ -24,6 +24,7 @@ const OBS_MIN_SCORE = 0.9;
 const MIN_SCORE = 0.18;
 const CHAT_MIN_SCORE = 0.5;   // other chats only come back on a strong match
 const MAX_OTHER_SESSIONS = 40;
+const MAX_OTHER_MESSAGES = 30;
 const CHUNK_TOKENS = 700;
 
 const day = (ts) => new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -216,11 +217,20 @@ export async function assembleContext(o) {
     // Other chats: their messages, searched like this one's but with a higher bar.
     const others = (o.others || []).filter(x => x && x.id !== session.id && !x.deleted)
       .sort((a, b) => (b.updated || 0) - (a.updated || 0)).slice(0, MAX_OTHER_SESSIONS);
+    // Keyword search picks the best few first, so embeddings (when on) only
+    // run over a handful of other-chat messages, not every message.
+    const chatDocs = [];
     for (const x of others) {
       for (const m of x.messages || []) {
         if (!m.content || (m.role !== 'user' && m.role !== 'assistant')) continue;
-        const text = truncate(messageText(m), 1500);
-        cands.push({ id: `c:${x.id}:${m.id}`, kind: 'chat', ts: m.ts, text, render: (y) => `(from the chat "${truncate(x.title || '', 50)}", ${day(m.ts)}, ${m.role === 'user' ? 'user said' : 'you said'}) ${y}`, label: `${x.title || 'Chat'}: ${snippet(m.content)}`, ref: m.id });
+        chatDocs.push({ id: `c:${x.id}:${m.id}`, text: truncate(messageText(m), 1500), x, m });
+      }
+    }
+    if (chatDocs.length) {
+      const pre = bm25(chatDocs)(query + (o.focus ? '\n' + o.focus : ''));
+      const top = chatDocs.filter(d => pre.has(d.id)).sort((a, b) => pre.get(b.id) - pre.get(a.id)).slice(0, MAX_OTHER_MESSAGES);
+      for (const { id, text, x, m } of top) {
+        cands.push({ id, kind: 'chat', ts: m.ts, text, render: (y) => `(from the chat "${truncate(x.title || '', 50)}", ${day(m.ts)}, ${m.role === 'user' ? 'user said' : 'you said'}) ${y}`, label: `${x.title || 'Chat'}: ${snippet(m.content)}`, ref: m.id });
       }
     }
     if (cands.length) {

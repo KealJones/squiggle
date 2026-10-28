@@ -42,6 +42,8 @@ async function device(label, viewport) {
   page.on('pageerror', e => page.errors.push(String(e)));
   page.on('console', m => { if (m.type() === 'error') page.errors.push(m.text()); });
   await page.goto(appUrl + '/');
+  // Let boot finish (it shows sign-in) so it can't race the storage setup below.
+  await page.waitForSelector('#setup:not([hidden]) button');
   await page.evaluate(async () => {
     const util = await import('/src/util.js');
     await util.kv.set('auth', { access_token: 'ghu_test', refresh_token: null, expires_at: null });
@@ -693,8 +695,12 @@ await check('step mode through the UI: plan, live checklist, find, done, final r
   assert.match(r.thinking, /Step 2: Stop it\nStopped node/);
 
   // The finished plan became a recipe; a similar request gets it in the prompt.
-  await D.page.waitForFunction(async () => (await import('/src/recipes.js')).list().length === 1, null, { timeout: 8000 });
-  const recipe = await D.page.evaluate(async () => (await import('/src/recipes.js')).list()[0]);
+  const recipe = await D.page.evaluate(async () => {
+    const recipes = await import('/src/recipes.js');
+    for (let i = 0; i < 80 && !recipes.list().length; i++) await new Promise(r => setTimeout(r, 100));
+    return recipes.list()[0];
+  });
+  assert.ok(recipe, 'a recipe was saved');
   assert.deepEqual(recipe.steps, ['Find what is listening on 8080', 'Stop it']);
   await D.page.fill('#input', 'kill whatever is listening on port 8080');
   await D.page.press('#input', 'Enter');
@@ -706,11 +712,11 @@ await check('step mode through the UI: plan, live checklist, find, done, final r
   await D.page.click('#new-chat');
   await D.page.fill('#input', 'NEEDTEST set things up');
   await D.page.press('#input', 'Enter');
-  await D.page.waitForFunction(() => /Which repo should I use\?/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 15000 });
+  await D.page.waitForFunction(() => /What should the new project be called\?/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 15000 });
   assert.match(await D.page.textContent('#messages .plan.chip summary'), /0\/1 steps/);
-  await D.page.fill('#input', 'the app repo');
+  await D.page.fill('#input', 'call it Wobble');
   await D.page.press('#input', 'Enter');
-  await D.page.waitForFunction(() => /Used the app repo, as you said\./.test(document.querySelector('#messages-inner').textContent), null, { timeout: 15000 });
+  await D.page.waitForFunction(() => /Set up Wobble, as you said\./.test(document.querySelector('#messages-inner').textContent), null, { timeout: 15000 });
   const n = await D.page.evaluate(async () => {
     const sessions = await import('/src/sessions.js');
     const s = sessions.list().find(x => x.messages.some(m => /NEEDTEST/.test(m.content)));
@@ -718,9 +724,9 @@ await check('step mode through the UI: plan, live checklist, find, done, final r
     return { status: t.status, answers: t.answers, result: t.steps[0].result, sys: window.__engineLog.filter(x => x.type === 'conversation' && /## Plan/.test(x.system)).pop().system };
   });
   assert.equal(n.status, 'done');
-  assert.deepEqual(n.answers, [{ q: 'Which repo should I use?', a: 'the app repo' }]);
-  assert.equal(n.result, 'Use the app repo');
-  assert.match(n.sys, /## The user answered your questions\n- Which repo should I use\?: the app repo/);
+  assert.deepEqual(n.answers, [{ q: 'What should the new project be called?', a: 'call it Wobble' }]);
+  assert.equal(n.result, 'Call it Wobble');
+  assert.match(n.sys, /## The user answered your questions\n- What should the new project be called\?: call it Wobble/);
   if (shotsDir) await D.page.screenshot({ path: `${shotsDir}/steps.png` });
   const errs = D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e));
   assert.deepEqual(errs, []);

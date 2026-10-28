@@ -50,10 +50,10 @@ const say = (t, onText, thinking = '') => { onText && onText(t); return { text: 
 function stepScript(conv, input, onText) {
   const sys = (conv.cfg && conv.cfg.system) || '';
   if (typeof input === 'string') {
-    if (/Every step is done/.test(input)) return say(/NEEDTEST/.test(input) ? 'Used the app repo, as you said.' : 'Port 8080 had node (pid 4242); it is free now.', onText);
+    if (/Every step is done/.test(input)) return say(/NEEDTEST/.test(input) ? 'Set up Wobble, as you said.' : 'Port 8080 had node (pid 4242); it is free now.', onText);
     if (/PLANTEST|NEEDTEST/.test(input) && /Work on step 1 now/.test(input)) {
-      if (/NEEDTEST/.test(input)) return /The user answered/.test(sys) ? call('done', { result: 'Use the app repo' }) : call('need', { what: 'Which repo should I use?' });
-      return { ...call('find', { query: 'what is listening on port 8080' }), thinking: 'Look it up first.' };
+      if (/NEEDTEST/.test(input)) return /The user answered/.test(sys) ? call('done', { result: 'Call it Wobble' }) : call('need', { what: 'What should the new project be called?' });
+      return { ...call('find', { query: 'search the web for what uses port 8080' }), thinking: 'Look it up first.' };
     }
     if (/PLANTEST/.test(input) && /Work on step 2 now/.test(input)) return say('Stopped node (pid 4242).', onText);
     if (/^PLANTEST/.test(input)) return call('plan', { goal: 'Free port 8080', steps: ['Find what is listening on 8080', 'Stop it'] });

@@ -64,15 +64,34 @@ function normalize(r) {
   };
 }
 
+let savedAt = 0;   // when memory and the file last matched
+
 export async function load() {
   const s = await getStore();
   recipes = parseJsonl(await s.read(FILE)).map(normalize).filter(Boolean);
+  savedAt = Date.now();
   events.emit('change');
 }
 
-// Called after a sync brought a new recipes file in.
+// Called after a sync brought a new recipes file in. Merged with what's in
+// memory (newest version of each recipe wins), so a recipe learned just
+// before the sync, still waiting to be saved, isn't lost.
 export async function reload(paths) {
-  if (paths.includes('*') || paths.includes(FILE)) await load();
+  if (!(paths.includes('*') || paths.includes(FILE))) return;
+  const mine = recipes;
+  const s = await getStore();
+  const theirs = parseJsonl(await s.read(FILE)).map(normalize).filter(Boolean);
+  const stamp = (r) => r.mts || r.ts || r.lastUsed || r.created || 0;
+  const byId = new Map(theirs.map(r => [r.id, r]));
+  let unsaved = false;
+  for (const r of mine) {
+    if (stamp(r) <= savedAt) continue;          // already written; the file is the truth
+    const t = byId.get(r.id);
+    if (!t || stamp(r) > stamp(t)) { byId.set(r.id, r); unsaved = true; }
+  }
+  recipes = [...byId.values()];
+  events.emit('change');
+  if (unsaved) schedule();
 }
 
 function schedule() {
@@ -87,7 +106,9 @@ export async function flush() {
   const cutoff = Date.now() - TOMBSTONE_TTL;
   recipes = recipes.filter(r => !(r.deleted && (r.mts || 0) < cutoff));
   const s = await getStore();
+  const at = Date.now();
   await s.write(FILE, toJsonl(recipes));
+  savedAt = at;
   if (s.sync) s.sync();
 }
 
@@ -478,4 +499,4 @@ export async function match(query, k = 3) {
 }
 
 // For tests: forget everything held in memory.
-export function _reset() { recipes = []; clearTimeout(saveTimer); embedder = null; store = null; }
+export function _reset() { recipes = []; clearTimeout(saveTimer); embedder = null; store = null; savedAt = 0; }

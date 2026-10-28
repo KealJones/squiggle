@@ -16,7 +16,7 @@ export { scrubFakeToolNotes };
 import { toolSpecs, runTool } from './tools.js';
 import { UNTRUSTED_RULES, wrapUntrusted } from './untrusted.js';
 import { embed } from './embed.js';
-import { bm25 } from './search.js';
+import { bm25, tokenize } from './search.js';
 import { estTokens, truncate } from './util.js';
 import { parseJsonl } from './merge.js';
 import { attachmentPrompt, saveAttachments, toRecord } from './attachments.js';
@@ -104,10 +104,15 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
     }
     const turn = new Turn({ session, threadId, shown, attachments, ui, signal, userMsg });
     ui.onStart && ui.onStart(turn.reply);
+    tasks.compactOld(session);
     try {
-      const resume = tasks.resumable(session, threadId, shown);
+      const lastReply = [...sessions.lineMessages(session, threadId)].reverse().find(m => m.role === 'assistant');
+      const resume = tasks.resumable(session, threadId, shown, lastReply && lastReply.task);
       if (resume) {
         const task = resume.task;
+        // Files sent with the answer: the model sees their paths (it reads them with read_file).
+        const note = attachments.length ? attachmentPrompt(attachments, 0).note : '';
+        if (note) task.attachNote = [task.attachNote, note].filter(Boolean).join('\n');
         if (resume.how === 'answer') tasks.answerNeed(task, shown);
         else { task.status = 'active'; tasks.touch(task); }
         sessions.saveTask(session, task);
@@ -125,6 +130,13 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
       ui.onError && ui.onError(e);
     } finally {
       await turn.close();
+      // Stopped mid-task: mark it so "continue" can pick it up (and the checklist doesn't show it as running).
+      const t = turn.task;
+      if (t && t.status === 'active' && !t.waiting && (turn.aborted || turn.paused)) {
+        t.status = 'stopped';
+        for (const st of t.steps) if (st.status === 'active') st.status = 'todo';
+        tasks.touch(t); sessions.saveTask(session, t); ui.onPlan && ui.onPlan(t);
+      }
     }
     const reply = turn.reply;
     reply.content = scrubFakeToolNotes(turn.prefix).trim();
@@ -151,6 +163,9 @@ class Turn {
     this.task = null;
     this.recipe = null;      // a strong recipe match offered in the prompt
     this.finishedNow = false;
+    this.paused = false;     // the person chose "Stop here" at a check-in
+    this.nextCheckIn = tasks.CHECK_IN_EVERY;
+    this.attNote = '';       // paths of files sent with this message
   }
 
   get aborted() { return Boolean(this.signal && this.signal.aborted); }
@@ -181,7 +196,8 @@ class Turn {
     const extra = [];
     // Resolved references ("that", "the repo", bare links): a hint, never a rewrite.
     try {
-      const toolCalls = Object.values(session.tasks || {}).flatMap(t => (t.log || []).map(l => ({ name: l.name, args: l.args, ok: l.ok })));
+      const recent = Object.values(session.tasks || {}).sort((a, b) => b.updated - a.updated).slice(0, 5);
+      const toolCalls = recent.flatMap(t => (t.log || []).slice(-30).map(l => ({ name: l.name, args: l.args, ok: l.ok })));
       const ents = buildEntities({ messages: line.slice(-40).map(m => ({ role: m.role, content: m.content, ts: m.ts })), facts: memory.all(), toolCalls });
       const refs = renderRefs(resolveRefs(shown, ents, { messageCount: line.length }));
       if (refs) extra.push({ kind: 'refs', title: 'Resolved references (hints; the user\'s words win)', text: refs, label: 'Resolved references' });
@@ -224,6 +240,7 @@ class Turn {
     // the free room (the model reads the rest with read_file / grep).
     const att = attachmentPrompt(this.attachments, Math.floor(room() / 2));
     let pending = att.text ? `${this.shown}\n\n${att.text}` : this.shown;
+    this.attNote = att.note || '';
     used += estTokens(att.text);
     let chatCalls = 0, full = false;
     for (;;) {
@@ -234,7 +251,7 @@ class Turn {
       // A plan switches to step mode (anything else in the same reply waits for its step).
       const planCall = r.toolCalls.find(c => c.function && c.function.name === 'plan');
       if (planCall) return this.startPlan(planCall.function.arguments);
-      if (full) { this.prefix += '\n\n_(Stopped: the context filled up. Say "continue" to keep going.)_'; return null; }
+      if (full) { this.prefix += '\n\n_(Stopped: the context filled up. Ask again and I\'ll make a plan for what\'s left.)_'; return null; }
       const results = [];
       for (const call of r.toolCalls) {
         if (room() < 2500) {
@@ -258,6 +275,7 @@ class Turn {
 
   startPlan(args = {}) {
     const task = tasks.newTask({ msg: this.userMsg.id, thread: this.threadId, request: this.shown, goal: args.goal, steps: args.steps, recipe: this.recipe ? this.recipe.id : null });
+    if (this.attNote) task.attachNote = this.attNote;
     if (this.recipe) { try { recipes.touch(this.recipe.id); } catch {} }
     this.task = task;
     sessions.saveTask(this.session, task);
@@ -279,15 +297,18 @@ class Turn {
       const outcome = await this.runStep(task, step);
       sessions.saveTask(this.session, task);
       this.ui.onPlan && this.ui.onPlan(task);
-      if (outcome === 'ask' || outcome === 'stop') return;
+      if (outcome === 'ask' || outcome === 'stop') break;
     }
-    if (this.aborted) { task.status = 'stopped'; tasks.touch(task); sessions.saveTask(this.session, task); this.ui.onPlan && this.ui.onPlan(task); return; }
+    // Stopped (Stop button or "Stop here"): runTurn marks the task stopped.
+    if (this.aborted || this.paused || task.waiting) return;
     if (tasks.isFinished(task)) await this.final(task);
   }
 
   async stepSections(task, step) {
     const focus = `${task.goal}\n${step.text}`;
+    // In priority order: when the prompt is too long, the last ones go first.
     const sections = [];
+    if (task.attachNote) sections.push({ title: 'Files the user attached', text: task.attachNote });
     if (task.recipe) {
       const r = recipes.get(task.recipe);
       if (r) sections.push({ title: 'Recipe from a similar task', text: recipeText(r) });
@@ -311,32 +332,47 @@ class Turn {
 
   async runStep(task, step) {
     const tools = phaseTools(true);
-    const system = tasks.stepSystem(systemPrompt(this.threadId, this.session), task, await this.stepSections(task, step));
-    this.reply.context = { mode: 'step', budget: settings.contextSize, used: estTokens(system), items: [{ kind: 'plan', label: `Step ${tasks.stepIndex(task, step) + 1}: ${truncate(step.text, 80)}`, tokens: estTokens(system) }] };
-    this.conv = await engine.conversation({ system, messages: [], tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: task.tools || [] });
     const toolTokens = lite() ? 300 : estTokens(JSON.stringify(tools));
+    // The step prompt gets under half the window; the rest is for the step's
+    // own tool calls and output (a phone has 4096 tokens in all).
+    const maxTokens = Math.max(600, Math.floor(settings.contextSize * 0.45) - toolTokens);
+    const sections = await this.stepSections(task, step);
+    const prompt = tasks.stepPrompt(systemPrompt(this.threadId, this.session), task, sections, { maxTokens });
+    const system = prompt.text;
+    const n = tasks.stepIndex(task, step) + 1;
+    this.reply.context = { mode: 'step', budget: settings.contextSize, used: estTokens(system),
+      items: [{ kind: 'plan', label: `Step ${n}: ${truncate(step.text, 80)} (goal, plan and results)`, tokens: estTokens(tasks.stepSystem('', task)) },
+        ...sections.filter(x => prompt.shown.includes(x.title)).map(x => ({ kind: 'section', label: x.title, tokens: estTokens(x.text) }))] };
+    this.conv = await engine.conversation({ system, messages: [], tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: task.tools || [] });
     let pending = tasks.stepUser(task);
     let used = estTokens(system) + estTokens(pending) + toolTokens;
     const room = () => Math.max(0, (settings.contextSize - used - Math.min(MAX_OUTPUT, 700)) * 3);
-    const label = `Step ${tasks.stepIndex(task, step) + 1}: ${step.text}`;
-    let said = '';
+    const label = `Step ${n}: ${step.text}`;
+    let said = '', blank = 0, idle = 0, warnedFull = false;
     try {
       for (;;) {
         const r = await this.respond(pending, { show: false });
         used += estTokens((r.text || '') + (r.thinking || '') + JSON.stringify(r.toolCalls || []));
-        if (r.text && r.text.trim()) { said = r.text.trim(); this.addThinking(`${label}\n${said}`); }
+        const looped = LOOPED.test(r.text || '');
+        const text = (r.text || '').replace(LOOPED, '').trim();
+        if (text) { said = text; this.addThinking(`${label}\n${text}`); }
         if (this.aborted) return 'stop';
         if (!r.toolCalls.length) {
           // Answered without calling done: what it said is the step's result.
-          tasks.finishStep(task, said || '(nothing)');
-          return 'next';
+          if (text && !looped) { tasks.finishStep(task, text); return 'next'; }
+          // Only thinking, nothing at all, or a loop: nudge it, then ask the person.
+          if (++blank <= 2) {
+            pending = looped ? 'You were repeating yourself. Say in one or two lines what you found, then call done, or call a tool.' : 'Finish your thought, then call a tool, or call done with what you found.';
+            continue;
+          }
+          return this.ask(`I got stuck on step ${n} ("${truncate(step.text, 80)}"). How should I go on?`, task);
         }
+        blank = 0;
         const results = [];
         let ended = null;
         for (const call of r.toolCalls) {
           const name = call.function && call.function.name;
           const args = (call.function && call.function.arguments) || {};
-          if (ended) break;
           if (name === 'done') {
             tasks.finishStep(task, args.result || said);
             this.toolEvent({ name: 'done', label: `done: ${truncate(step.text, 60)}`, ok: true });
@@ -344,6 +380,17 @@ class Turn {
             break;
           }
           if (name === 'plan') {
+            this.calls++;
+            const stale = tasks.samePlan(task, args.steps) || (task.revisions || 0) >= tasks.MAX_REVISIONS;
+            if (stale) {
+              // Re-planning instead of working: after a few of these, ask the person.
+              if (++idle >= 3) return this.ask(`I got stuck on step ${n} ("${truncate(step.text, 80)}"). How should I go on?`, task);
+              results.push(toolResult(call, tasks.samePlan(task, args.steps)
+                ? { ok: true, note: `That is the current plan. Work on step ${n} now: ${step.text}` }
+                : { error: `The plan has been revised ${task.revisions} times; it stands now. Work on step ${n}: ${step.text}, or call need if something is missing.` }));
+              continue;
+            }
+            task.revisions = (task.revisions || 0) + 1;
             tasks.setPlan(task, args.goal, args.steps);
             this.toolEvent({ name: 'plan', label: `revised the plan (${task.steps.length} steps)`, ok: true });
             this.ui.onPlan && this.ui.onPlan(task);
@@ -356,8 +403,10 @@ class Turn {
             break;
           }
           if (room() < 2500) {
+            // Out of room: warn once, then close the step with what it has.
+            if (warnedFull) { tasks.finishStep(task, said || '(the step ran out of room before finishing)'); ended = 'next'; break; }
+            warnedFull = true;
             results.push(toolResult(call, { error: 'Not run: your context for this step is almost full. Call done now with what you found (the next step starts fresh).' }));
-            step.calls = Math.max(step.calls, tasks.STEP_HARD_CAP - 1);
             continue;
           }
           const out = await this.exec(call, { room: Math.floor(room() / r.toolCalls.length), task, step });
@@ -367,8 +416,8 @@ class Turn {
           used += estTokens(JSON.stringify(response)) + 10;
           results.push(toolResult(call, response));
         }
-        if (ended) return ended;
         if (!await this.checkIn()) return 'stop';
+        if (ended) return ended;
         pending = results;
       }
     } finally {
@@ -376,13 +425,24 @@ class Turn {
     }
   }
 
+  // Ends the turn on a question; the person's next message is the answer.
+  ask(question, task) {
+    this.prefix += `${this.prefix && !/\n\n$/.test(this.prefix) ? '\n\n' : ''}${question}`;
+    if (task) { tasks.blockStep(task, question); task.waiting = true; sessions.saveTask(this.session, task); this.ui.onPlan && this.ui.onPlan(task); }
+    this.ui.onText && this.ui.onText(this.prefix);
+    return 'ask';
+  }
+
   // Every CHECK_IN_EVERY tool calls the person is asked whether to keep going.
   async checkIn() {
     if (this.aborted) return false;
-    if (!this.calls || this.calls % tasks.CHECK_IN_EVERY !== 0) return true;
+    if (this.calls < this.nextCheckIn) return true;
+    while (this.nextCheckIn <= this.calls) this.nextCheckIn += tasks.CHECK_IN_EVERY;
     const go = await askCheckIn(this.task, this.ui, this.signal, this.calls);
-    if (!go && this.task) { this.task.status = 'stopped'; tasks.touch(this.task); sessions.saveTask(this.session, this.task); this.ui.onPlan && this.ui.onPlan(this.task); }
-    if (!go) this.prefix += `${this.prefix ? '\n\n' : ''}_(Paused after ${this.calls} tool calls. Say "continue" to pick up where it left off.)_`;
+    if (!go) {
+      this.paused = true;
+      this.prefix += `${this.prefix ? '\n\n' : ''}_(Paused after ${this.calls} tool calls.${this.task ? ' Say "continue" to pick up where it left off.' : ''})_`;
+    }
     return go;
   }
 
@@ -393,7 +453,8 @@ class Turn {
     sessions.saveTask(this.session, task);
     this.finishedNow = true;
     this.ui.onPlan && this.ui.onPlan(task);
-    this.conv = await engine.conversation({ system: tasks.finalSystem(systemPrompt(this.threadId, this.session), task), messages: [], tools: [], maxOutputTokens: MAX_OUTPUT });
+    const maxTokens = Math.max(600, settings.contextSize - Math.min(MAX_OUTPUT, 1024) - 300);
+    this.conv = await engine.conversation({ system: tasks.finalSystem(systemPrompt(this.threadId, this.session), task, { maxTokens }), messages: [], tools: [], maxOutputTokens: MAX_OUTPUT });
     if (this.prefix && !/\n\n$/.test(this.prefix)) this.prefix += '\n\n';
     const r = await this.respond(tasks.finalUser(task));
     this.prefix += r.text || '';
@@ -414,16 +475,14 @@ class Turn {
     this.ui.onTool && this.ui.onTool({ name, running: true });
     if (name === 'find' || name === 'need') {
       const query = String(args.query || args.what || args.q || '').trim();
-      const { text, tools, empty } = await this.find(query, task);
+      const { text, tools, empty, answers } = await this.find(query, task);
       if (task && tools.length) task.tools = [...new Set([...(task.tools || []), ...tools])];
       if (task) tasks.logCall(task, step, { name, args, ok: true, label: `${name} "${truncate(query, 60)}"`, text });
-      if (name === 'need' && empty) {
-        // Nothing to go on: ask the person. Their reply comes back as the answer.
+      if (name === 'need' && !answers) {
+        // Nothing outside this task answers it: ask the person. Their reply comes back as the answer.
         this.toolEvent({ name, label: `asked you: ${truncate(query, 60)}`, ok: true });
         const q = query || 'What should I do next?';
-        this.prefix += `${this.prefix && !/\n\n$/.test(this.prefix) ? '\n\n' : ''}${/\?\s*$/.test(q) ? q : `I need to know: ${q}`}`;
-        if (task) { tasks.blockStep(task, q); task.waiting = true; sessions.saveTask(this.session, task); }
-        this.ui.onText && this.ui.onText(this.prefix);
+        this.ask(/\?\s*$/.test(q) ? q : `I need to know: ${q}`, task);
         return { ask: true };
       }
       this.toolEvent({ name, label: `${name === 'need' ? 'looked for what was missing' : 'searched'}: "${truncate(query, 60)}"${empty ? ' (nothing)' : ''}`, ok: true });
@@ -447,27 +506,34 @@ class Turn {
       tools: toolSpecs(settings.tools),
       recipes,
       recall: (q, k) => memory.recall(q, k),
-      searchHistory: async (q, k) => searchChats(q, k),
+      searchHistory: async (q, k) => searchChats(q, k, this.userMsg.id),
       taskItems: tasks.taskItems(task),
     }, { k: 3 });
     const outside = r.task.filter(t => t.source === 'tool output');
     const inside = { ...r, task: r.task.filter(t => t.source !== 'tool output') };
     const empty = !['tools', 'recipes', 'facts', 'chats', 'task'].some(k => r[k] && r[k].length);
+    // Does anything answer a `need`? Memory, a recipe, or another chat that
+    // shares at least two words with the question. Tools, this task's own
+    // results and this chat don't: the model already had those.
+    const words = new Set(tokenize(query)).size;
+    const answers = r.facts.length > 0 || r.recipes.length > 0
+      || r.chats.some(c => c.session !== this.session.id && (c.hits || 0) >= Math.min(2, words));
     let text = renderFind(inside);
     if (outside.length) {
       const block = wrapUntrusted('earlier tool output', outside.map(t => t.text.replace(STRIP_UNTRUSTED, '')).join('\n\n'));
       text = (text === renderFind({}) ? '' : text + '\n\n') + 'Earlier tool output in this task:\n' + block;
     }
-    return { text, tools: r.tools.map(t => t.name), empty };
+    return { text, tools: r.tools.map(t => t.name), empty, answers };
   }
 }
 
+const LOOPED = /\n*_\(stopped: the model was repeating itself\)_/;
 const toolResult = (call, response) => ({ role: 'tool', content: [{ name: (call.function && call.function.name) || 'unknown', response }] });
 
 // Past chats for `find`: every session's messages, ranked by BM25.
-function searchChats(query, k) {
+function searchChats(query, k, skip = null) {
   const docs = [];
-  for (const s of sessions.list()) for (const m of s.messages) if (m.content && (m.role === 'user' || m.role === 'assistant')) docs.push({ id: `${s.id}|${m.id}`, text: m.content, s, m });
+  for (const s of sessions.list()) for (const m of s.messages) if (m.content && m.id !== skip && (m.role === 'user' || m.role === 'assistant')) docs.push({ id: `${s.id}|${m.id}`, text: m.content, s, m });
   if (!docs.length) return [];
   const scores = bm25(docs)(query);
   return docs.filter(d => scores.has(d.id)).sort((a, b) => scores.get(b.id) - scores.get(a.id)).slice(0, k)
@@ -503,7 +569,8 @@ function askApproval(req, ui, signal) {
 function afterTurn(session, threadId, finishedTask = null) {
   // Small delay so the person can type again before the GPU gets busy.
   setTimeout(async () => {
-    if (finishedTask) await learnRecipe(session, finishedTask).catch(e => console.warn('recipe', e));
+    if (finishedTask) await engine.background(() => learnRecipe(session, finishedTask)).catch(e => console.warn('recipe', e));
+    else await engine.background(() => refineDrafts()).catch(e => console.warn('recipe', e));
     await engine.background(() => rollingSummary(session, threadId)).catch(e => console.warn('summary', e));
     if (threadId) await engine.background(() => threadOutcome(session, threadId)).catch(e => console.warn('thread', e));
     if (settings.learn) await engine.background(() => learnFacts(session, threadId)).catch(e => console.warn('learn', e));
@@ -577,26 +644,38 @@ async function learnFacts(session, threadId) {
 
 // Save how a finished task was solved, so the next similar request is fast
 // (docs/harness.md, "Recipes"). Built from the task deterministically; a big
-// model then generalises the wording (the small model can't do that well).
+// model then generalises the wording. The small model can't do that well, so
+// its recipes are saved as drafts and refined by the next big-model session.
 export async function learnRecipe(session, task) {
   if (!task || task.status !== 'done') return null;
   const draft = recipes.fromTask(task, task.log, { request: task.request, sessionId: session.id });
   if (!draft.steps.length) return null;
-  let recipe = draft;
-  if (!lite()) {
-    const out = await engine.background(() => engine.complete(
-      'You turn a finished task into a reusable recipe. Reply with one JSON object only.',
-      `Request: ${truncate(task.request, 600)}\n\nDraft recipe:\n${JSON.stringify({ title: draft.title, when: draft.when, steps: draft.steps, specifics: draft.specifics })}\n\n` +
-      'Rewrite it so it fits similar requests: {"title": short imperative title, "when": what requests it fits, with example phrasings, "steps": the steps that worked, generalised}. Keep <placeholders> as they are. Reply with only the JSON.',
-      { maxOutputTokens: 500 })).catch(() => null);
-    try {
-      const j = out && JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1));
-      if (j && typeof j.title === 'string' && Array.isArray(j.steps) && j.steps.length) {
-        recipe = { ...draft, title: j.title.slice(0, 120), when: String(j.when || draft.when).slice(0, 400), steps: j.steps.map(String).slice(0, 10) };
-      }
-    } catch { /* keep the draft */ }
-  }
+  const recipe = lite() ? { ...draft, draft: true } : await refineRecipe(draft, task.request);
   const saved = recipes.save(recipe);
   if (saved && !task.recipe) { task.recipe = saved.id; tasks.touch(task); sessions.saveTask(session, task); }
   return saved;
+}
+
+async function refineRecipe(draft, request) {
+  const out = await engine.complete(
+    'You turn a finished task into a reusable recipe. Reply with one JSON object only.',
+    `Request: ${truncate(request || draft.when, 600)}\n\nDraft recipe:\n${JSON.stringify({ title: draft.title, when: draft.when, steps: draft.steps, specifics: draft.specifics })}\n\n` +
+    'Rewrite it so it fits similar requests: {"title": short imperative title, "when": what requests it fits, with example phrasings, "steps": the steps that worked, generalised}. Keep <placeholders> as they are. Reply with only the JSON.',
+    { maxOutputTokens: 500 }).catch(() => null);
+  try {
+    const j = out && JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1));
+    if (j && typeof j.title === 'string' && Array.isArray(j.steps) && j.steps.length) {
+      return { ...draft, title: j.title.slice(0, 120), when: String(j.when || draft.when).slice(0, 400), steps: j.steps.map(String).slice(0, 10), draft: false };
+    }
+  } catch { /* keep the draft */ }
+  return { ...draft, draft: false };
+}
+
+// A big model refines one draft recipe (from the small model) per turn.
+async function refineDrafts() {
+  if (lite()) return;
+  const d = recipes.list().find(r => r.draft);
+  if (!d) return;
+  const better = await refineRecipe(d, (d.examples || [])[0]);
+  recipes.update(d.id, { title: better.title, when: better.when, steps: better.steps, draft: false });
 }
