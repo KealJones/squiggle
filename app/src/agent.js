@@ -70,6 +70,15 @@ function systemPrompt(threadId, session) {
 }
 
 // Tools for a phase: the enabled agent tools plus the harness's own.
+// Tools a small model starts with already "looked up", so it doesn't spend a model
+// call on find first: nearly every phone request needs the web. Only ones enabled.
+const PRELOADED = ['web_search', 'fetch_url'];
+function preloaded(tools) {
+  if (!lite() || plain()) return [];
+  const names = new Set(tools.map(t => t.name));
+  return PRELOADED.filter(n => names.has(n));
+}
+
 function phaseTools(step) {
   if (plain()) return [];
   const base = toolSpecs(settings.tools).filter(t => !(step && t.name === 'note'));
@@ -225,7 +234,9 @@ class Turn {
       // Small models get recent messages and the harness's own sections only:
       // they look up memory and past chats with find, and a 4K window can't spare
       // the room (injected facts and other chats also confused them).
-      others: settings.contextMode === 'smart' && !lite() ? sessions.list() : [],
+      // No other chats for any model: matching on shared words pulled in every chat
+      // where the user said "hi". The model searches them (find, search_history) when it needs to.
+      others: [],
       recall: lite() ? null : (q, k) => memory.recall(q, k), factText: memory.factText,
       actions: !lite(),   // "Tool calls you made" read to small models as things the user said
       embed: settings.contextMode === 'smart' && settings.semantic ? embed : null,
@@ -245,7 +256,7 @@ class Turn {
     this.reply.context = ctx.report;
     // Plain chat: only the recent messages; extra sections would be read as instructions.
     if (plain()) ctx.system = '';
-    this.conv = await engine.conversation({ system: ctx.system, messages: ctx.messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT });
+    this.conv = await engine.conversation({ system: ctx.system, messages: ctx.messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: preloaded(tools) });
     let used = estTokens(ctx.system) + estTokens(JSON.stringify(ctx.messages)) + toolTokens + estTokens(this.shown);
     const room = () => Math.max(0, (settings.contextSize - used - Math.min(MAX_OUTPUT, 700)) * 3);
     // Attachments: a note, then the start of each extract using up to half
@@ -355,7 +366,7 @@ class Turn {
     this.reply.context = { mode: 'step', budget: settings.contextSize, used: estTokens(system),
       items: [{ kind: 'plan', label: `Step ${n}: ${truncate(step.text, 80)} (goal, plan and results)`, tokens: estTokens(tasks.stepSystem('', task)) },
         ...sections.filter(x => prompt.shown.includes(x.title)).map(x => ({ kind: 'section', label: x.title, tokens: estTokens(x.text) }))] };
-    this.conv = await engine.conversation({ system, messages: [], tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: task.tools || [] });
+    this.conv = await engine.conversation({ system, messages: [], tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: [...new Set([...preloaded(tools), ...(task.tools || [])])] });
     let pending = tasks.stepUser(task);
     let used = estTokens(system) + estTokens(pending) + toolTokens;
     const room = () => Math.max(0, (settings.contextSize - used - Math.min(MAX_OUTPUT, 700)) * 3);
