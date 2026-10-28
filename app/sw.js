@@ -2,13 +2,11 @@
 // so Squiggle opens without a connection once it has loaded before. The model
 // lives in IndexedDB (not here), and /api/* is never cached.
 const CACHE = 'squiggle-app-v1';
-// The natural voice's model files (tts-worker.js); kept across updates.
-const KEEP = new Set([CACHE, 'squiggle-tts-v1']);
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
-    for (const name of await caches.keys()) if (!KEEP.has(name)) await caches.delete(name);
+    for (const name of await caches.keys()) if (name !== CACHE) await caches.delete(name);
     await self.clients.claim();
   })());
 });
