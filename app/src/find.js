@@ -48,6 +48,9 @@ const firstSentence = (s, n = 140) => {
 // Intent phrases people use that the tool descriptions don't. [regex on the
 // lower-cased query, { tool name or 'prefix*': extra score }]. Deliberately
 // short and obvious; anything cleverer belongs in the descriptions.
+// The query is about an earlier conversation.
+export const PAST_CHAT = /\b(last time|earlier|yesterday|we (talked|discussed|did)|previous (chat|conversation)|past (chat|conversation)s?|other chat|old chat|you said|i (said|told you|mentioned))\b/;
+
 const INTENTS = [
   [/\b(google|duckduckgo|ddg|web ?search|look ?(it |this |that )?up|lookup|search (for )?(it )?(on )?(the )?(web|internet|online|net)|on the (web|internet|net)|online)\b/, { web_search: 6 }],
   [/\b(news|latest|weather|current price|who won|score of)\b/, { web_search: 3 }],
@@ -61,7 +64,7 @@ const INTENTS = [
   [/\b(remember|memori[sz]e|keep in mind|don'?t forget|dont forget|from now on|always|never)\b|\bsave (this|that|it)\b(?!.*\b(file|to|in|as)\b)/, { remember: 4 }],
   [/\b(what do you (know|remember)|do you (know|remember)|recall|my preferences?|about me)\b/, { recall: 4 }],
   [/\b(forget|unlearn|that'?s wrong|thats wrong|outdated|not true anymore)\b/, { forget: 4 }],
-  [/\b(last time|earlier|yesterday|we (talked|discussed|did)|previous (chat|conversation)|past (chat|conversation)s?|other chat|old chat|you said|i (said|told you|mentioned))\b/, { search_history: 4 }],
+  [PAST_CHAT, { search_history: 4 }],
   [/\b(jot|write down|notepad|scratch ?pad|todo list|take a note|note (to self|this))\b/, { note: 4 }],
   [/\b(clone|fork|download the repo|pull down the repo|check ?out the repo|pull (it |that |this |them )?down|grab (the |that |this )?(github|repo))\b/, { git_clone: 6 }],
   [/\bcommit\b/, { git_commit: 4 }],

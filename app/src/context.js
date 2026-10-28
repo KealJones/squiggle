@@ -80,6 +80,7 @@ export function chunk(text, maxTokens = CHUNK_TOKENS) {
  * @param {string}   [o.focus]     the active goal and step, added to the retrieval query
  * @param {object[]} [o.extra]     sections from the harness, shown first: [{ kind, title, text, label }]
  * @param {object[]} [o.others]    other sessions to search (smart mode)
+ * @param {boolean} [o.actions]    false leaves out the recap of earlier tool calls (small models)
  */
 export async function assembleContext(o) {
   const { line, session, threadId = null, query, budget, mode = 'smart', system } = o;
@@ -127,7 +128,7 @@ export async function assembleContext(o) {
   // What the agent actually did with tools in the replayed turns.
   const actions = recent.filter(m => m.role === 'assistant' && m.tools && m.tools.length)
     .flatMap(m => m.tools.filter(t => t.ok !== false).map(t => t.label || t.name));
-  if (actions.length) {
+  if (actions.length && o.actions !== false) {
     const body = `## Tool calls you made in the conversation above\n${actions.slice(-12).map(a => `- ${truncate(a, 160)}`).join('\n')}\n(These already happened. To do anything new, call the tool again; never just say it was done.)`;
     sections.push(body);
     used += estTokens(body);
