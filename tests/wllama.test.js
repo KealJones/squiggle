@@ -213,3 +213,14 @@ test('a loop is stopped, the model is told where it got stuck, and its second tr
   assert.ok(!conv.messages.some(m => /Squiggle: your last reply/.test(m.content)), 'the note leaves history');
   assert.equal(conv.messages[conv.messages.length - 1].content, 'There is no set number of birds in a flock.');
 });
+
+test('replaceResult swaps a tool result already in history for a short note', async () => {
+  const conv = new Conversation(fakeW(['ok', 'done']), cfg());
+  await run(conv, 'look it up');
+  const msg = { role: 'tool', content: [{ name: 'web_search', response: { results: 'x'.repeat(500) } }] };
+  await run(conv, [msg]);
+  assert.equal(conv.replaceResult(msg, { left_out: 'not useful' }), true);
+  const swapped = conv.messages.find(m => m.role === 'tool');
+  assert.deepEqual(swapped.content, [{ name: 'web_search', response: { left_out: 'not useful' } }]);
+  assert.equal(conv.replaceResult({ role: 'tool', content: [] }, {}), false, 'unknown messages are left alone');
+});

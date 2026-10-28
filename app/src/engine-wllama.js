@@ -209,6 +209,14 @@ export class Conversation {
     this.ctrl = null;
   }
   cancel() { try { this.ctrl && this.ctrl.abort(); } catch {} }
+  // Swaps a tool result already in history (the object sendMessageStreaming got)
+  // for a shorter one. Returns true when it was found.
+  replaceResult(msg, response) {
+    const i = this.messages.indexOf(msg);
+    if (i < 0 || !Array.isArray(msg.content)) return false;
+    this.messages[i] = { ...msg, content: msg.content.map(p => ({ ...p, response })) };
+    return true;
+  }
   async delete() {}
 
   // One model reply. Yields { thinking } and { content } pieces as they come

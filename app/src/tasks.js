@@ -218,3 +218,10 @@ export function resumable(session, threadId, text, lastTaskId) {
   if (GO_ON.test(String(text || ''))) return { task: t, how: 'continue' };
   return null;
 }
+
+// The model's own verdict on the last result, from the Check line of its thinking.
+const JUNK = /\b(no (useful |relevant )?(results?|info(rmation)?|answer)|nothing (useful|relevant|about)|not (useful|relevant|helpful)|unrelated|irrelevant|off[- ]topic|(did ?n[o']t|does ?n[o']t|do ?n[o']t|none of (them|these|the results)) (find|mention|answer|say|give|contain|name|list|include|match))\b/i;
+export function junkCheck(thinking) {
+  const line = String(thinking || '').split('\n').find(l => /^\s*check\s*:/i.test(l));
+  return Boolean(line && JUNK.test(line));
+}
