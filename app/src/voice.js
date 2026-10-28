@@ -547,3 +547,28 @@ export function createCall({
     get voice() { return primaryFailed ? (fallback || primary).kind : primary.kind; },
   };
 }
+
+/** Reads one message aloud with a speaker (system or natural): markdown →
+ *  sentences, each prepared one ahead so the natural voice has no gaps.
+ *  onEnd(err, stopped) fires once: when the last sentence ends, on an error,
+ *  or after stop(). Call it inside the tap (prime() unlocks audio on iOS). */
+export function readAloud({ speaker, text, onEnd = () => {} }) {
+  const chunks = splitSentences(speakable(text));
+  let i = 0, ended = false, next = null;
+  const finish = (err, stopped = false) => { if (ended) return; ended = true; onEnd(err || null, stopped); };
+  const step = () => {
+    if (ended) return;
+    if (i >= chunks.length) { finish(null); return; }
+    const item = next || speaker.prepare(chunks[i]);
+    next = i + 1 < chunks.length ? speaker.prepare(chunks[i + 1]) : null;
+    i++;
+    speaker.play(item, (err) => { if (ended) return; if (err) finish(err); else step(); });
+  };
+  try { speaker.prime && speaker.prime(); } catch {}
+  step();
+  return {
+    stop() { if (ended) return; finish(null, true); try { speaker.cancel(); } catch {} },
+    get done() { return ended; },
+    get total() { return chunks.length; },
+  };
+}

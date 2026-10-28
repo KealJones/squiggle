@@ -668,6 +668,46 @@ const saidInCall = async (page, text, n) => {
   if (n) await page.waitForFunction((k) => window.__audio.plays.length + window.__voice.spoken.length >= k, n, { timeout: 10000 });
 };
 
+await check('read aloud: the speaker button reads a reply with the natural voice (stop toggles it), the system voice when chosen; a call frees it', async () => {
+  const D = await voiceDevice('read', fakeTtsWorker({ loadMs: 150 }));
+  const { page } = D;
+  await page.click('#new-chat');
+  await page.fill('#input', 'markdown reply please');
+  await page.press('#input', 'Enter');
+  await page.waitForSelector('.msg-actions .read-aloud');
+  assert.equal(await page.$$eval('.read-aloud', b => b.length), 1, 'only under the reply');
+  await page.click('.read-aloud');
+  await page.waitForFunction(() => document.querySelector('.read-aloud').getAttribute('aria-pressed') === 'true');
+  if (shotsDir) await page.locator('.msg.assistant, .message.assistant, #messages-inner > *:last-child').last().screenshot({ path: `${shotsDir}/read-aloud.png` }).catch(() => page.screenshot({ path: `${shotsDir}/read-aloud.png` }));
+  await page.waitForFunction(() => document.querySelector('.read-aloud').getAttribute('aria-pressed') === 'false', null, { timeout: 10000 });
+  assert.ok(await page.evaluate(() => window.__audio.plays[0].speaksBefore >= 2), 'the next sentence is synthesized while the first plays');
+  const said = (await playedTexts(page)).join(' ');
+  assert.match(said, /Bold answer with a link\..*Second sentence is here\..*Code omitted\..*All done now\./);
+  assert.doesNotMatch(said, /code\(\)|\*\*|https/);
+  assert.deepEqual(await page.evaluate(() => window.__voice.spoken), [], 'natural voice, not system speech');
+  // Tapping again while it reads stops it.
+  const before = await page.evaluate(() => window.__audio.plays.length);
+  await page.click('.read-aloud');
+  await page.waitForFunction((n) => window.__audio.plays.length > n, before);
+  await page.click('.read-aloud');
+  await page.waitForFunction(() => document.querySelector('.read-aloud').getAttribute('aria-pressed') === 'false');
+  const st = await page.evaluate(() => ({ stops: window.__audio.stops, cancel: window.__tts.some(x => x.ev === 'cancel'), loads: window.__tts.filter(x => x.ev === 'load').length }));
+  assert.ok(st.stops >= 1 && st.cancel, JSON.stringify(st));
+  assert.equal(st.loads, 1, 'the voice is kept between readings');
+  // A call frees the reader's voice (the call loads its own).
+  await page.click('#call');
+  await page.waitForSelector('.call');
+  assert.equal(await page.evaluate(() => window.__workers[0].terminated), true);
+  await page.click('.call-actions .primary');
+  await page.waitForFunction(() => !document.querySelector('.call'), null, { timeout: 5000 });
+  // System voice when that's the choice.
+  await page.evaluate(async () => { (await import('/src/agent.js')).settings.voiceEngine = 'system'; });
+  await page.click('.read-aloud');
+  await page.waitForFunction(() => window.__voice.spoken.length >= 1, null, { timeout: 10000 });
+  assert.match(await page.evaluate(() => window.__voice.spoken.map(x => x.text).join(' ')), /Bold answer/);
+  assert.deepEqual(page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+});
+
 await check('natural voice (computer default): loads on the call tap, speaks replies through Web Audio with the next sentence synthesized ahead; barge-in, End frees it', async () => {
   const D = await voiceDevice('natural', fakeTtsWorker({ loadMs: 150 }));
   const { page } = D;

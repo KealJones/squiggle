@@ -550,6 +550,13 @@ function messageEl(m, { inThread, streaming, session }) {
       rerender();
     }, m.pinned));
     actions.append(iconButton('i-copy', 'Copy', () => navigator.clipboard?.writeText(m.content || '')));
+    if (m.role === 'assistant' && m.content && voice.support(window).synthesis) {
+      const on = Boolean(reader && reader.id === m.id);
+      const b = iconButton(on ? 'i-stop' : 'i-speaker', on ? 'Stop reading' : 'Read aloud', () => toggleReadAloud(m), on);
+      b.classList.add('read-aloud');
+      b.dataset.msg = m.id;
+      actions.append(b);
+    }
     if (m.role === 'assistant' && m.context) actions.append(iconButton('i-eye', 'What the model saw', () => openPanel('context', m)));
     col.append(actions);
     if (!inThread) {
@@ -753,6 +760,75 @@ async function readFiles(files, session) {
   return out;
 }
 
+// ── Read aloud ─────────────────────────────────────────────────────────────
+// The speaker button under a reply reads it with the voice calls use: the
+// natural voice when it's chosen (loaded on the tap, kept a minute for the next
+// one, then freed), otherwise the system voice. One reading at a time; a call
+// stops it.
+let reader = null;          // { id, ctl }
+let readerVoice = null;     // { nv, timer } natural voice kept between readings
+const READER_KEEP_MS = 60000;
+
+function setReadButtons() {
+  for (const b of document.querySelectorAll('.read-aloud')) {
+    const on = Boolean(reader && reader.id === b.dataset.msg);
+    b.replaceChildren(icon(on ? 'i-stop' : 'i-speaker'));
+    b.setAttribute('aria-label', on ? 'Stop reading' : 'Read aloud');
+    b.title = on ? 'Stop reading' : 'Read aloud';
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
+}
+
+function stopReading() {
+  if (!reader) return;
+  const r = reader;
+  reader = null;
+  r.ctl && r.ctl.stop();
+  setReadButtons();
+}
+
+function freeReaderVoice() {
+  if (!readerVoice) return;
+  clearTimeout(readerVoice.timer);
+  freeNaturalVoice(readerVoice.nv);
+  readerVoice = null;
+}
+
+function toggleReadAloud(m) {
+  const wasThis = reader && reader.id === m.id;
+  stopReading();
+  if (wasThis || call) return;
+  const system = voice.systemSpeaker({ synth: window.speechSynthesis, Utterance: window.SpeechSynthesisUtterance, lang: navigator.language || 'en-US', getSettings: () => agent.settings });
+  const mine = { id: m.id, ctl: null };
+  reader = mine;
+  setReadButtons();
+  const start = (speaker, fallback) => {
+    if (reader !== mine) return;
+    mine.ctl = voice.readAloud({
+      speaker, text: agent.scrubFakeToolNotes(m.content),
+      onEnd: (err, stopped) => {
+        if (err && fallback && reader === mine) { toast(`The natural voice stopped (${err.message}); reading with the system voice.`); start(fallback, null); return; }
+        if (reader === mine) { reader = null; setReadButtons(); }
+        if (readerVoice) { clearTimeout(readerVoice.timer); readerVoice.timer = setTimeout(freeReaderVoice, READER_KEEP_MS); }
+      },
+    });
+  };
+  system.prime();   // inside the tap: iOS only starts speech from a gesture
+  if (voiceEngine() !== 'natural') { start(system, null); return; }
+  if (readerVoice && readerVoice.nv.model !== voiceModel()) freeReaderVoice();
+  if (!readerVoice) readerVoice = { nv: createNaturalVoice(), timer: null };   // unlocks audio in this tap
+  clearTimeout(readerVoice.timer);
+  const nv = readerVoice.nv;
+  nv.speaker.prime();
+  const slow = setTimeout(() => { if (reader === mine && !mine.ctl) toast(`Loading the natural voice (${tts.TTS_MODELS[nv.model].label}, ${tts.TTS_MODELS[nv.model].size} the first time)…`, 8000); }, 800);
+  nv.loaded.then(() => clearTimeout(slow), () => clearTimeout(slow));
+  nv.loaded.then(() => start(nv.speaker, system), (e) => {
+    if (readerVoice && readerVoice.nv === nv) freeReaderVoice();
+    if (reader === mine) toast(`Couldn't load the natural voice (${e.message}); reading with the system voice.`);
+    start(system, null);
+  });
+}
+
 // ── Voice call ─────────────────────────────────────────────────────────────
 // Hands-free: speech in through the Web Speech API, replies spoken sentence by
 // sentence. Utterances go through send() like typed messages. voice.js owns the
@@ -766,6 +842,8 @@ function startCall() {
   if (!current) return;
   // Phones ask once: the natural voice needs memory next to the chat model.
   if (voiceEngine() === 'ask') { askVoiceBar(); return; }
+  stopReading();
+  freeReaderVoice();
   const bar = callBar();
   const system = voice.systemSpeaker({ synth: window.speechSynthesis, Utterance: window.SpeechSynthesisUtterance, lang: navigator.language || 'en-US', getSettings: () => agent.settings });
   // The natural voice loads now (inside this tap, so its audio can be unlocked)
@@ -1119,6 +1197,17 @@ function showCrashBanner(c) {
         ? 'This is already the lightest setup. Close other tabs and apps, then try again; some devices can\'t run the model.'
         : `Lighter settings use ${nm.label} (needs less memory), a 4K context and no speed boost.`),
     h('div', { class: 'row' }, changed || lightest() ? '' : lighter, again)));
+}
+
+// A short note at the bottom of the screen that goes away on its own.
+let toastTimer = null;
+function toast(text, ms = 5000) {
+  let t = document.querySelector('.toast');
+  if (!t) { t = h('div', { class: 'toast', role: 'status', 'aria-live': 'polite' }); document.body.append(t); }
+  t.textContent = text;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, ms);
 }
 
 function banner(...content) {
