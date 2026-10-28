@@ -19,7 +19,9 @@ const { appUrl, relayUrl, workerEnv, aiCalls, close } = await start(root, {}, { 
 if (split) console.log(`split mode: app ${appUrl}, relay ${relayUrl} (GitHub Pages setup)`);
 const browser = await chromium.launch();
 const results = [];
+const only = process.env.E2E_ONLY; // run just the checks whose name contains this
 const check = async (name, fn) => {
+  if (only && !name.includes(only)) return;
   try {
     await Promise.race([fn(), new Promise((_, rej) => setTimeout(() => rej(new Error('timed out after 60s')), 60000))]);
     results.push(['ok', name]); console.log('ok  ', name);
@@ -462,12 +464,84 @@ const VOICE_STUB = `(() => {
   };
 })();`;
 
+// Natural voice stand-ins: a Web Audio context that records what it plays
+// (each fake clip's first sample is the synthesis number), a Worker wrapper
+// that records terminate(), and a log of what the fake voice worker was asked.
+const TTS_STUB = `(() => {
+  const A = window.__audio = { plays: [], stops: 0, created: 0, closed: 0, unlocked: 0 };
+  const T = window.__tts = [];
+  new BroadcastChannel('fake-tts').onmessage = (e) => T.push(e.data);
+  class Src {
+    connect() {} disconnect() {}
+    start() {
+      const b = this.buffer;
+      if (b.length <= 1) { A.unlocked++; return; }
+      A.plays.push({ k: b.data[0], ms: Math.round(1000 * b.length / b.sampleRate), recRunning: ((window.__voice || {}).recs || []).some(r => r.running), speaksBefore: T.filter(x => x.ev === 'speak').length });
+      this.t = setTimeout(() => this.onended && this.onended(), 250);
+    }
+    stop() { A.stops++; clearTimeout(this.t); this.onended && this.onended(); }
+  }
+  class Ctx {
+    constructor() { A.created++; this.state = 'suspended'; this.destination = {}; }
+    resume() { if (this.state !== 'closed') this.state = 'running'; return Promise.resolve(); }
+    close() { A.closed++; this.state = 'closed'; return Promise.resolve(); }
+    createBuffer(ch, len, sr) { const data = new Float32Array(len); return { length: len, sampleRate: sr, data, getChannelData: () => data, copyToChannel: (s) => data.set(s) }; }
+    createBufferSource() { return new Src(); }
+  }
+  window.AudioContext = Ctx; window.webkitAudioContext = Ctx;
+  const RealWorker = window.Worker;
+  window.__workers = [];
+  window.Worker = class extends RealWorker {
+    constructor(u, o) { super(u, o); this.__info = { url: String(u), terminated: false }; window.__workers.push(this.__info); }
+    terminate() { this.__info.terminated = true; super.terminate(); }
+  };
+})();`;
+
+// Stand-in for app/src/tts-worker.js: same messages, scripted timing. loadMs
+// (a number or per model), synthMs and reportMs are per model (reportMs is the time it claims, for the
+// too-slow check); each clip is audioMs long.
+function fakeTtsWorker({ loadMs = 80, failLoad = '', synthMs = { kokoro: 30, kitten: 20 }, reportMs = { kokoro: 30, kitten: 20 }, audioMs = 400 } = {}) {
+  return `const bc = new BroadcastChannel('fake-tts');
+let n = 0, queue = [], busy = false, model = null;
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+self.onmessage = async (e) => {
+  const m = e.data;
+  bc.postMessage({ ev: m.type, text: m.text, id: m.id, model: m.model, voice: m.voice, speed: m.speed });
+  if (m.type === 'load') {
+    model = m.model;
+    self.postMessage({ type: 'stage', stage: 'starting the voice runtime' });
+    self.postMessage({ type: 'stage', stage: 'downloading the voice model' });
+    self.postMessage({ type: 'progress', loaded: 40, total: 100 });
+    await sleep(${JSON.stringify(loadMs)}[m.model] ?? ${JSON.stringify(loadMs)});
+    if (${JSON.stringify(failLoad)}) { self.postMessage({ type: 'error', message: ${JSON.stringify(failLoad)} }); return; }
+    self.postMessage({ type: 'progress', loaded: 100, total: 100 });
+    self.postMessage({ type: 'stage', stage: 'loading the voice model' });
+    self.postMessage({ type: 'ready', ms: 1, cached: false });
+  } else if (m.type === 'speak') { queue.push(m); drain(); }
+  else if (m.type === 'cancel') { for (const j of queue.splice(0)) self.postMessage({ type: 'cancelled', id: j.id }); }
+};
+async function drain() {
+  if (busy) return; busy = true;
+  while (queue.length) {
+    const j = queue.shift(), k = ++n;
+    await sleep(${JSON.stringify(synthMs)}[model]);
+    const s = new Float32Array(Math.round(24 * ${audioMs})).fill(0.1); s[0] = k;
+    bc.postMessage({ ev: 'audio', k, text: j.text, model });
+    self.postMessage({ type: 'audio', id: j.id, samples: s, sampleRate: 24000, ms: ${JSON.stringify(reportMs)}[model] }, [s.buffer]);
+  }
+  busy = false;
+}`;
+}
+// What the fake audio context played, as text.
+const playedTexts = (page) => page.evaluate(() => window.__audio.plays.map(p => (window.__tts.find(x => x.ev === 'audio' && x.k === p.k) || {}).text));
+
 await check('voice call: speech in → message, reply spoken in chunks (markdown stripped), mic paused while speaking, barge-in, repeat, End', async () => {
   const D = await device('voice');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
   await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
   await D.ctx.addInitScript(VOICE_STUB);
-  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  // This test covers the system voice (the natural voice is the computer default).
+  await D.page.evaluate(cfg => { localStorage.setItem('squiggle-settings', JSON.stringify({ voiceEngine: 'system' })); return T.storage.useStorage(cfg); }, CFG);
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
   await D.page.click('#new-chat');
@@ -534,6 +608,7 @@ await check('voice call: unsupported browser and blocked microphone give clear m
   const D = await device('voice-phone', { width: 390, height: 844 });
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
   await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.ctx.route(appUrl + '/src/tts-worker.js', r => r.fulfill({ contentType: 'text/javascript', body: fakeTtsWorker({ loadMs: 400 }) }));
   await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
@@ -546,15 +621,220 @@ await check('voice call: unsupported browser and blocked microphone give clear m
   await D.page.click('.call .primary');
   await D.page.waitForSelector('.call', { state: 'detached' });
   await D.ctx.addInitScript(VOICE_STUB);
+  await D.ctx.addInitScript(TTS_STUB);
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
   await D.page.evaluate(() => { window.__voice.deny = true; });
   await D.page.click('#call');
   await D.page.waitForFunction(() => /Microphone access is blocked/.test(document.querySelector('.call .call-error')?.textContent || ''), null, { timeout: 5000 });
   assert.equal(await D.page.$eval('.call .primary', el => el.textContent), 'Close');
+  // The call stopped itself: the natural voice it started loading is freed.
+  const freed = await D.page.evaluate(() => ({ workers: window.__workers.map(w => w.terminated), closed: window.__audio.closed, marker: localStorage.getItem('squiggle-voice-loading') }));
+  assert.deepEqual(freed, { workers: [true], closed: 1, marker: null });
+  assert.equal(await D.page.$eval('.call .call-note', el => el.hidden), true, 'no voice status left on a stopped call');
   const w = await D.page.evaluate(() => [document.documentElement.scrollWidth, innerWidth]);
   assert.ok(w[0] <= w[1], 'no horizontal scroll at phone width');
   assert.notEqual(await D.page.$eval('#composer', el => getComputedStyle(el).display), 'none');
+});
+
+// A device with the scripted chat model, fake speech APIs and a fake voice worker.
+async function voiceDevice(label, worker, ctxOpts) {
+  const ctx = await browser.newContext(ctxOpts || { viewport: { width: 1280, height: 820 } });
+  await ctx.route('https://api.github.com/**', r => r.fulfill({ status: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' }, contentType: 'application/json', body: JSON.stringify({ login: 'tester', id: 42, name: 'Test Er' }) }));
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  const D = { ctx, worker };
+  await ctx.route(appUrl + '/src/tts-worker.js', r => r.fulfill({ contentType: 'text/javascript', headers: { 'Cache-Control': 'no-store' }, body: D.worker }));
+  await ctx.addInitScript(VOICE_STUB);
+  await ctx.addInitScript(TTS_STUB);
+  const page = D.page = await ctx.newPage();
+  page.errors = [];
+  page.on('pageerror', e => page.errors.push(String(e)));
+  page.on('console', m => { if (m.type() === 'error') page.errors.push(m.text()); });
+  await page.goto(appUrl + '/');
+  await page.waitForSelector('#setup:not([hidden]) button');
+  await page.evaluate(async (cfg) => {
+    const util = await import('/src/util.js'); await util.kv.set('auth', { access_token: 't' });
+    const gh = await import('/src/github.js'); await gh.loadAuth();
+    await (await import('/src/storage.js')).useStorage(cfg);
+  }, CFG);
+  await page.reload();
+  await page.waitForSelector('#app:not([hidden])');
+  return D;
+}
+const callState = (page) => page.$eval('.call .call-head span[aria-live]', el => el.textContent);
+const saidInCall = async (page, text, n) => {
+  await page.evaluate((t) => window.__say(t, true), text);
+  if (n) await page.waitForFunction((k) => window.__audio.plays.length + window.__voice.spoken.length >= k, n, { timeout: 10000 });
+};
+
+await check('natural voice (computer default): loads on the call tap, speaks replies through Web Audio with the next sentence synthesized ahead; barge-in, End frees it', async () => {
+  const D = await voiceDevice('natural', fakeTtsWorker({ loadMs: 150 }));
+  const { page } = D;
+  await page.click('#new-chat');
+  await page.click('#call');
+  await page.waitForSelector('.call');
+  await page.waitForFunction(() => window.__tts.some(x => x.ev === 'load'));
+  const start = await page.evaluate(() => ({ load: window.__tts.find(x => x.ev === 'load'), unlocked: window.__audio.unlocked, created: window.__audio.created, primed: window.__voice.primed, marker: JSON.parse(localStorage.getItem('squiggle-voice-loading')) }));
+  assert.deepEqual([start.load.model, start.load.voice], ['kokoro', 'af_heart']);
+  assert.equal(start.created, 1); assert.ok(start.unlocked >= 1, 'audio unlocked inside the tap');
+  assert.ok(start.primed, 'system speech primed too (the fallback)');
+  assert.equal(start.marker.phase, 'load', 'crash marker while loading');
+  await page.waitForFunction(() => /Natural voice ready \(Kokoro 82M\)/.test(document.querySelector('.call .call-note').textContent));
+  if (shotsDir) await page.screenshot({ path: `${shotsDir}/desktop-call-natural.png` });
+  assert.equal(await page.evaluate(() => localStorage.getItem('squiggle-voice-loading')), null, 'marker cleared once loaded');
+
+  await saidInCall(page, 'markdown reply please', 4);
+  await page.waitForFunction(() => document.querySelector('.call[data-state="listening"]') && window.__voice.recs[0].running, null, { timeout: 8000 });
+  // The first chunk is cut at its first sentence end so speech starts sooner.
+  assert.deepEqual(await playedTexts(page), ['Bold answer with a link.', 'Second sentence is here.', 'Code omitted.', 'All done now.']);
+  const plays = await page.evaluate(() => window.__audio.plays);
+  assert.ok(plays[0].speaksBefore >= 2, 'the next sentence was being synthesized while the first played');
+  assert.ok(plays.every(p => !p.recRunning), 'recognition paused while speaking');
+  assert.deepEqual(await page.evaluate(() => window.__voice.spoken), [], 'no system speech');
+  assert.ok((await page.evaluate(() => window.__tts.filter(x => x.ev === 'speak'))).every(x => x.voice === 'af_heart' && x.speed === 1));
+  assert.equal(await page.evaluate(() => localStorage.getItem('squiggle-voice-loading')), null, 'marker cleared after speaking');
+
+  // Barge-in: tap while it speaks; audio stops and queued synthesis is dropped.
+  await saidInCall(page, 'markdown reply again');
+  await page.waitForFunction(() => window.__audio.plays.length > 4, null, { timeout: 8000 });
+  assert.equal(await callState(page), 'Speaking');
+  await page.click('.call .call-hint');
+  assert.equal(await callState(page), 'Listening');
+  const after = await page.evaluate(() => ({ stops: window.__audio.stops, cancel: window.__tts.some(x => x.ev === 'cancel'), n: window.__audio.plays.length }));
+  assert.ok(after.stops >= 1 && after.cancel, JSON.stringify(after));
+  await page.waitForTimeout(700);
+  assert.equal(await page.evaluate(() => window.__audio.plays.length), after.n, 'nothing more plays after barge-in');
+
+  await page.click('.call-actions .primary');
+  await page.waitForSelector('.call', { state: 'detached' });
+  const end = await page.evaluate(() => ({ workers: window.__workers.map(w => w.terminated), closed: window.__audio.closed, marker: localStorage.getItem('squiggle-voice-loading') }));
+  assert.deepEqual(end, { workers: [true], closed: 1, marker: null }, 'End frees the voice model and audio');
+  assert.deepEqual(page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+  await D.ctx.close();
+});
+
+await check('natural voice falls back: a failed load uses the system voice with a plain message; a slow Kokoro moves to the light voice', async () => {
+  const D = await voiceDevice('natural-fallback', fakeTtsWorker({ loadMs: 50, failLoad: 'the voice download failed (HTTP 503)' }));
+  const { page } = D;
+  await page.click('#new-chat');
+  await page.click('#call');
+  await page.waitForFunction(() => /Couldn't load the natural voice: the voice download failed \(HTTP 503\)\. This call uses the system voice\./.test(document.querySelector('.call .call-note').textContent));
+  assert.deepEqual(await page.evaluate(() => window.__workers.map(w => w.terminated)), [true], 'failed load frees the worker');
+  await saidInCall(page, 'markdown reply please', 3);
+  assert.equal((await page.evaluate(() => window.__voice.spoken)).length, 3, 'spoken by the system voice');
+  await page.click('.call-actions .primary');
+
+  // Kokoro claims 2.5x slower than speech: after two sentences the rest goes to
+  // the system voice, the light model loads, and the next reply uses it.
+  D.worker = fakeTtsWorker({ loadMs: { kokoro: 50, kitten: 1500 }, synthMs: { kokoro: 60, kitten: 20 }, reportMs: { kokoro: 1000, kitten: 100 } });
+  await page.reload();
+  await page.waitForSelector('#app:not([hidden])');
+  await page.click('#call');
+  await page.waitForFunction(() => /Natural voice ready/.test(document.querySelector('.call .call-note').textContent));
+  // Every status line the call shows (they replace each other quickly here).
+  await page.evaluate(() => { const el = document.querySelector('.call .call-note'); window.__notes = []; new MutationObserver(() => window.__notes.push(el.textContent)).observe(el, { childList: true, characterData: true, subtree: true }); });
+  await saidInCall(page, 'markdown reply please', 3);
+  await page.waitForFunction(() => window.__notes.some(t => /Kokoro 82M is too slow on this device \(2\.5× slower than speech\), so Squiggle switched to the light natural voice/.test(t)), null, { timeout: 8000 });
+  await page.waitForFunction(() => document.querySelector('.call[data-state="listening"]'), null, { timeout: 8000 });
+  const mixed = { audio: await playedTexts(page), system: await page.evaluate(() => window.__voice.spoken.map(s => s.text)) };
+  assert.equal(mixed.audio.length + mixed.system.length, 4, JSON.stringify(mixed));
+  assert.ok(mixed.system.length >= 1 && mixed.audio.length >= 1, JSON.stringify(mixed));
+  assert.equal(JSON.parse(await page.evaluate(() => localStorage.getItem('squiggle-settings'))).voiceModel, 'kitten', 'remembered');
+  await page.waitForFunction(() => window.__tts.some(x => x.ev === 'load' && x.model === 'kitten') && window.__notes.some(t => /Light natural voice ready; it speaks from the next reply/.test(t)), null, { timeout: 8000 });
+  assert.deepEqual(await page.evaluate(() => window.__workers.map(w => w.terminated)), [true, false], 'Kokoro freed, Kitten running');
+  const n = await page.evaluate(() => window.__audio.plays.length);
+  await saidInCall(page, 'markdown reply again');
+  await page.waitForFunction((k) => window.__audio.plays.length >= k + 3, n, { timeout: 8000 });
+  assert.equal(await page.evaluate(() => window.__audio.created), 1, 'the same unlocked audio context');
+  await page.click('.call-actions .primary');
+  assert.deepEqual(await page.evaluate(() => window.__workers.map(w => w.terminated)), [true, true]);
+  assert.deepEqual(page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+  await D.ctx.close();
+});
+
+await check('natural voice on a phone: the first call asks; a crash while it loaded is explained on the next open', async () => {
+  const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1';
+  const D = await voiceDevice('natural-phone', fakeTtsWorker({ loadMs: 400 }), { userAgent: IPHONE, viewport: { width: 390, height: 844 } });
+  const { page } = D;
+  await page.click('#call');
+  await page.waitForSelector('.call[data-state="ask"]');
+  assert.match(await page.textContent('.call'), /Use the natural voice\?.*downloads about 28 MB once and runs on this phone/s);
+  assert.equal(await page.evaluate(() => window.__workers.length), 0, 'nothing loads before the answer');
+  if (shotsDir) await page.screenshot({ path: `${shotsDir}/phone-voice-ask.png` });
+  await page.click('.call-actions .primary');
+  await page.waitForSelector('.call[data-state="listening"]');
+  await page.waitForFunction(() => window.__tts.some(x => x.ev === 'load'));
+  const r = await page.evaluate(() => ({ load: window.__tts.find(x => x.ev === 'load'), saved: JSON.parse(localStorage.getItem('squiggle-settings')), unlocked: window.__audio.unlocked, marker: JSON.parse(localStorage.getItem('squiggle-voice-loading')) }));
+  assert.equal(r.load.model, 'kitten', 'phones use the light voice');
+  assert.equal(r.saved.voiceEngine, 'natural');
+  assert.ok(r.unlocked >= 1, 'audio unlocked in the answer tap');
+  assert.equal(r.marker.model, 'kitten');
+  const w = await page.evaluate(() => [document.documentElement.scrollWidth, innerWidth]);
+  assert.ok(w[0] <= w[1], 'no horizontal scroll at phone width');
+  await page.click('.call-actions .primary');
+  // Second call: no question.
+  await page.click('#call');
+  await page.waitForSelector('.call[data-state="listening"]');
+  await page.click('.call-actions .primary');
+
+  // The tab was killed while Kokoro loaded: next open explains and switches to system voices.
+  await page.evaluate(() => {
+    const s = JSON.parse(localStorage.getItem('squiggle-settings'));
+    localStorage.setItem('squiggle-settings', JSON.stringify({ ...s, voiceModel: 'kokoro' }));
+    localStorage.setItem('squiggle-voice-loading', JSON.stringify({ model: 'kokoro', phase: 'load', stage: 'loading the voice model', at: Date.now() }));
+  });
+  await page.reload();
+  await page.waitForSelector('#voice-banner:not([hidden])');
+  const text = await page.textContent('#voice-banner');
+  assert.match(text, /Loading the natural voice \(Kokoro 82M\) crashed this tab last time, while loading the voice model\./, text);
+  assert.match(text, /calls use system voices now/);
+  if (shotsDir) await page.screenshot({ path: `${shotsDir}/phone-voice-crash.png` });
+  const after = await page.evaluate(() => ({ s: JSON.parse(localStorage.getItem('squiggle-settings')), marker: localStorage.getItem('squiggle-voice-loading') }));
+  assert.equal(after.s.voiceEngine, 'system'); assert.equal(after.marker, null);
+  await page.click('#voice-banner button:has-text("Use the light natural voice")');
+  assert.equal(await page.isHidden('#voice-banner'), true);
+  const s2 = await page.evaluate(() => JSON.parse(localStorage.getItem('squiggle-settings')));
+  assert.deepEqual([s2.voiceEngine, s2.voiceModel], ['natural', 'kitten']);
+  // A crash while speaking says so too.
+  await page.evaluate(() => localStorage.setItem('squiggle-voice-loading', JSON.stringify({ model: 'kitten', phase: 'speak', stage: 'speaking', at: Date.now() })));
+  await page.reload();
+  await page.waitForSelector('#voice-banner:not([hidden])');
+  assert.match(await page.textContent('#voice-banner'), /The natural voice \(KittenTTS nano 0\.8\) crashed this tab while speaking last time\./);
+  assert.deepEqual(page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+  await D.ctx.close();
+});
+
+await check('settings: Natural/System and Best/Light choices; Test voice loads, plays and frees the natural voice', async () => {
+  const D = await voiceDevice('natural-settings', fakeTtsWorker({ loadMs: 100 }));
+  const { page } = D;
+  await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
+  await page.waitForSelector('#drawer #voice-select');
+  const field = () => page.evaluate(() => {
+    const f = document.querySelector('#voice-select').closest('.field');
+    return { pressed: [...f.querySelectorAll('.seg button[aria-pressed="true"]')].map(b => b.textContent), options: [...f.querySelectorAll('#voice-select option')].map(o => o.textContent) };
+  });
+  let f = await field();
+  assert.deepEqual(f.pressed, ['Natural', 'Best (~90 MB)', 'Normal']);
+  assert.equal(f.options[0], 'Heart (US, female)');
+  await page.selectOption('#voice-select', 'bf_emma');
+  await page.click('#drawer button:has-text("Test voice")');
+  await page.waitForFunction(() => /took .* s for .* s of speech/.test(document.querySelector('.voice-status').textContent), null, { timeout: 8000 });
+  const t = await page.evaluate(() => ({ load: window.__tts.find(x => x.ev === 'load'), speak: window.__tts.find(x => x.ev === 'speak'), plays: window.__audio.plays.length, workers: window.__workers.map(w => w.terminated), closed: window.__audio.closed }));
+  assert.deepEqual([t.load.model, t.load.voice, t.speak.text], ['kokoro', 'bf_emma', 'Hi, this is how I sound on a call.']);
+  assert.deepEqual([t.plays, t.workers, t.closed], [1, [true], 1], 'played once, then freed');
+  if (shotsDir) await page.locator('#voice-select').locator('xpath=ancestor::div[contains(@class,"field")]').screenshot({ path: `${shotsDir}/desktop-voice-settings.png` });
+  await page.click('#drawer .seg button:has-text("Light (")');
+  f = await field();
+  assert.deepEqual(f.pressed, ['Natural', 'Light (~28 MB)', 'Normal']);
+  assert.equal(f.options[0], 'Bella (female)');
+  await page.click('#drawer .seg button:has-text("System voices")');
+  f = await field();
+  assert.deepEqual(f.pressed, ['System voices', 'Normal']);
+  assert.match(f.options[0], /^Automatic/);
+  assert.equal(JSON.parse(await page.evaluate(() => localStorage.getItem('squiggle-settings'))).voiceEngine, 'system');
+  assert.deepEqual(page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+  await D.ctx.close();
 });
 
 await check('a full agent turn through the UI (scripted model): tools, untrusted labels, memory, thread', async () => {
