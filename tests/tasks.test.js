@@ -172,3 +172,9 @@ test('checkLine returns what the model took from the last result', () => {
   assert.equal(tasks.checkLine('Check: The page says season 2 premiered in Feb 2025.\nNext: answer'), 'The page says season 2 premiered in Feb 2025.');
   assert.equal(tasks.checkLine('Request: x\nNext: y'), '');
 });
+
+test('trimArgs keeps tool arguments small enough for the session record', () => {
+  const big = 'x'.repeat(5000);
+  assert.deepEqual(tasks.trimArgs({ path: '/repos/app/src/main.js', content: big, n: 3, list: ['a'] }),
+    { path: '/repos/app/src/main.js', content: 'x'.repeat(300) + '… (5000 characters)', n: 3, list: ['a'] });
+});

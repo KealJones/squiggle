@@ -1316,6 +1316,14 @@ await check('small models: a long page comes back as a card saved in /web, grep 
   assert.deepEqual(replaced.map(r => r.name), ['fetch_url', 'grep'].slice(0, replaced.length));
   assert.equal(replaced[0].response.kept, 'the card says the page is about Gemma 3 model sizes.');
   assert.equal(replaced[0].response.saved, '/web/1.txt');
+  // The reply keeps every call with its arguments (and the error, when one fails).
+  const saved = await D.page.evaluate(async () => {
+    const sessions = await import('/src/sessions.js');
+    const s = sessions.list().find(x => x.messages.some(m => /models\.example\.test/.test(m.content)));
+    return s.messages.filter(m => m.role === 'assistant').flatMap(m => m.tools || []);
+  });
+  assert.deepEqual(saved.find(t => t.name === 'grep').args, { pattern: 'GB|MB', path: '/web/1.txt' });
+  assert.equal(saved.find(t => t.name === 'fetch_url').args.url, 'https://models.example.test/gemma3');
 });
 
 await browser.close();

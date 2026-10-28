@@ -231,3 +231,15 @@ export function junkCheck(thinking) {
   const line = String(thinking || '').split('\n').find(l => /^\s*check\s*:/i.test(l));
   return Boolean(line && JUNK.test(line));
 }
+
+// Tool arguments for the session record: strings over 300 characters (file
+// contents, code) keep their start and say how long they were.
+export function trimArgs(args) {
+  const out = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (typeof v === 'string' && v.length > 300) out[k] = v.slice(0, 300) + `… (${v.length} characters)`;
+    else if (v && typeof v === 'object') out[k] = JSON.stringify(v).length > 300 ? JSON.stringify(v).slice(0, 300) + '…' : v;
+    else out[k] = v;
+  }
+  return out;
+}

@@ -48,6 +48,7 @@ export const LITE_SYSTEM = [
 
 const lite = () => engine.isLite(settings.model);
 
+
 // Plain chat for small models without tool training (engine.chatOnly).
 const plain = () => Boolean(engine.chatOnly && engine.chatOnly(settings.model));
 
@@ -520,8 +521,13 @@ class Turn {
     await this.close();
   }
 
+  // Every call is kept on the reply with its arguments (long values trimmed) and,
+  // when it failed, the error the model got, so failures can be studied later.
   toolEvent(t) {
-    this.reply.tools.push({ name: t.name, label: t.label, ok: t.ok });
+    const rec = { name: t.name, label: t.label, ok: t.ok };
+    if (t.args && typeof t.args === 'object' && Object.keys(t.args).length) rec.args = tasks.trimArgs(t.args);
+    if (t.ok === false && t.error) rec.error = truncate(String(t.error), 600);
+    this.reply.tools.push(rec);
     this.ui.onTool && this.ui.onTool({ ...t, running: false });
   }
 
@@ -549,7 +555,7 @@ class Turn {
     }
     if (name === 'done') return { response: { error: 'There is no step to finish yet. Call plan first, or just answer.' } };
     const res = await runTool(call, { session: this.session, threadId: this.threadId, room, pageCards: lite() && !plain(), approve: (req) => askApproval(req, this.ui, this.signal) });
-    this.toolEvent({ name: res.name, label: res.label, ok: res.ok });
+    this.toolEvent({ name: res.name, label: res.label, ok: res.ok, args: res.args, error: res.model && res.model.error });
     if (res.observation) sessions.addObservation(this.session, { ...res.observation, thread: this.threadId });
     let response = res.model && typeof res.model === 'object' ? res.model : { value: res.model };
     const json = JSON.stringify(response);
