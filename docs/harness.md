@@ -156,6 +156,10 @@ id like facts):
 - **Used**: at the start of a turn the harness retrieves recipes for the request;
   a strong match goes in the prompt and is offered as the starting plan. Using
   one bumps `uses` and `lastUsed`.
+  Matching is by words, typo-tolerant (one edit, two for long words; never in
+  numbers), and slot-aware: the same request about different names ("who was born
+  first, A or B" against a recipe learned from C and D) lines up with the recipe's
+  phrasing and the new names fill its slots.
 - **Forgotten**: recipes unused for 90 days are deleted (pinned ones stay). They
   are cheap to relearn. The Memory panel lists recipes with uses/last used,
   and the user can pin, edit or delete them.
