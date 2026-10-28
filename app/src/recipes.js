@@ -455,12 +455,51 @@ function lexicalScore(q, docTokens, titleTokens) {
   return Math.min(1, 0.65 * qCov + 0.35 * tHit);
 }
 
+// Edit distance (insert, delete, substitute, swap two neighbours), stopping
+// early past `max`. Small words only, so this stays cheap.
+export function editDistance(a, b, max = 2) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    let rowMin = Infinity;
+    for (let j = 1; j <= b.length; j++) {
+      const c = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + c);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+      rowMin = Math.min(rowMin, d[i][j]);
+    }
+    if (rowMin > max) return max + 1;
+  }
+  return d[a.length][b.length];
+}
+
+// Dictation and typos: a query word that isn't in the recipe counts as the
+// recipe's closest word when it's one edit away (two for long words), e.g.
+// "deploi" -> "deploy", "squigle" -> "squiggle". Short words and numbers
+// must match exactly, so "port 8080" never matches "port 8081".
+function fuzzy(q, docTokens) {
+  return q.map((w) => {
+    if (docTokens.has(w) || w.length < 4 || /\d/.test(w)) return w;
+    const max = w.length >= 8 ? 2 : 1;
+    let best = null, bestD = max + 1;
+    for (const t of docTokens) {
+      if (t.length < 4 || /\d/.test(t) || t[0] !== w[0] && w.length < 8) continue;
+      const dist = editDistance(w, t, max);
+      if (dist < bestD) { best = t; bestD = dist; }
+    }
+    return best || w;
+  });
+}
+
 function rank(query, pool) {
-  const q = queryTokens(query);
-  if (!q.length || !pool.length) return [];
+  const q0 = queryTokens(query);
+  if (!q0.length || !pool.length) return [];
   const rel = bm25(pool.map(r => ({ id: r.id, text: matchText(r) })))(query);
   return pool.map(r => {
-    const lex = lexicalScore(q, new Set(tokenize(matchText(r))), new Set(tokenize(r.title)));
+    const docTokens = new Set(tokenize(matchText(r)));
+    const q = fuzzy(q0, docTokens);
+    const lex = lexicalScore(q, docTokens, new Set(tokenize(r.title)));
     return { recipe: r, lex, bm: rel.get(r.id) || 0, score: lex };
   });
 }
