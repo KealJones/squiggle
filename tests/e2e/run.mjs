@@ -1132,7 +1132,7 @@ await check('attachments: a PDF is read with pdf.js from the pinned CDN URL', as
   assert.equal(a.error, undefined);
 });
 
-await check('a crash while loading the model is caught on the next open; phones default to Gemma 3 270M', async () => {
+await check('a crash while loading the model is caught on the next open; phones default to Squiggle Small', async () => {
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
   const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1';
   for (const phone of [false, true]) {
@@ -1155,16 +1155,16 @@ await check('a crash while loading the model is caught on the next open; phones 
     }, CFG);
     await page.reload();
     if (phone) {
-      // Phones run Gemma 3 270M on the CPU: the old Gemma 4 crash doesn't block it, and it loads right away.
+      // Phones run Squiggle Small on the CPU: the old Gemma 4 crash doesn't block it, and it loads right away.
       await page.waitForFunction(() => window.__loads === 1);
       const r = await page.evaluate(() => ({ last: window.__lastLoad, marker: localStorage.getItem('squiggle-model-loading'), saved: JSON.parse(localStorage.getItem('squiggle-settings')), cleanup: window.__cleanup }));
-      assert.equal(r.last.id, 'G3', JSON.stringify(r));
-      assert.equal(r.saved.model, 'G3');
+      assert.equal(r.last.id, 'SQ', JSON.stringify(r));
+      assert.equal(r.saved.model, 'SQ');
       assert.equal(r.marker, null);
-      assert.deepEqual(r.cleanup, ['G3', 'cloud'], 'only phone models are kept; old Gemma 4 downloads are freed');
+      assert.deepEqual(r.cleanup, ['G3', 'SQ', 'cloud'], 'only phone models are kept; old Gemma 4 downloads are freed');
       await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
       await page.waitForSelector('#drawer .model-option');
-      assert.deepEqual(await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model)), ['G3', 'cloud']);
+      assert.deepEqual(await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model)), ['G3', 'SQ', 'cloud']);
       if (shotsDir) await page.screenshot({ path: `${shotsDir}/phone-model-picker.png` });
     } else {
       await page.waitForSelector('#model-banner:not([hidden])');
@@ -1178,7 +1178,7 @@ await check('a crash while loading the model is caught on the next open; phones 
       const r = await page.evaluate(() => ({ last: window.__lastLoad, marker: localStorage.getItem('squiggle-model-loading'), cleanup: window.__cleanup }));
       assert.deepEqual(r.last, { id: 'E2B', ctx: 4096, opts: { fast: false } });
       assert.equal(r.marker, null, 'marker cleared after a good load');
-      assert.deepEqual(r.cleanup, ['E4B', 'E2B', 'G3', 'cloud']);
+      assert.deepEqual(r.cleanup, ['E4B', 'E2B', 'G3', 'SQ', 'cloud']);
       // Replies are tracked too: progress writes the marker, idle clears it.
       await page.evaluate(() => window.__progress('writing the reply'));
       const mk = JSON.parse(await page.evaluate(() => localStorage.getItem('squiggle-model-loading')));
@@ -1192,7 +1192,7 @@ await check('a crash while loading the model is caught on the next open; phones 
       assert.match(await page.textContent('#model-banner'), /Fake E2B crashed this tab while answering, while writing the reply\./);
       await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
       await page.waitForSelector('#drawer .model-option');
-      assert.deepEqual(await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model)), ['E4B', 'E2B', 'G3', 'cloud']);
+      assert.deepEqual(await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model)), ['E4B', 'E2B', 'G3', 'SQ', 'cloud']);
     }
     assert.deepEqual(page.errors, []);
     await ctx.close();
@@ -1260,6 +1260,23 @@ await check('stock Gemma 3 270M runs as plain chat: no system prompt, no tools, 
   for (const c of convs) { assert.equal(c.system, ''); assert.deepEqual(c.tools, []); }
   assert.deepEqual(convs[1].messages.map(m => m.role), ['user', 'model'], 'the second turn sees the first exchange');
   assert.equal(log.filter(e => e.type === 'complete').length, 0, 'no titles, facts or summaries from the small model');
+});
+
+await check('Squiggle Small (fine-tuned) gets the harness: system prompt and tools', async () => {
+  const D = await device('sq');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'SQ'; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  await D.page.fill('#input', 'hi');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => (window.__engineLog || []).some(e => e.type === 'respond'));
+  const c = await D.page.evaluate(() => window.__engineLog.find(e => e.type === 'conversation'));
+  assert.match(c.system, /^You are Squiggle, an assistant that figures things out\./);
+  assert.ok(c.tools.includes('find') && c.tools.includes('plan') && c.tools.includes('web_search'), JSON.stringify(c.tools));
 });
 
 await browser.close();

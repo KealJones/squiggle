@@ -141,3 +141,30 @@ test('without tools, nothing is held back or parsed', async () => {
   assert.equal(r.calls.length, 0);
   assert.match(r.text, /tool_call/);
 });
+
+test('thinking that llama.cpp splits into reasoning_content still reaches the thinking view', async () => {
+  const w = { async createChatCompletion() {
+    return (async function* () {
+      yield { choices: [{ delta: { reasoning_content: 'Request: weather. ' } }] };
+      yield { choices: [{ delta: { reasoning_content: 'Next: find.' } }] };
+      yield { choices: [{ delta: { content: '```tool_call\n{"name": "find", "arguments": {"query": "search the web"}}\n```' } }] };
+    })();
+  } };
+  const r = await runAll(new Conversation(w, cfg()), 'weather?');
+  assert.equal(r.thinking, 'Request: weather. Next: find.');
+  assert.equal(r.text, '');
+  assert.equal(r.calls[0].function.name, 'find');
+});
+
+test('a closing </think> left in the content after reasoning_content is dropped', async () => {
+  const w = { async createChatCompletion() {
+    return (async function* () {
+      yield { choices: [{ delta: { reasoning_content: 'A casual hello.' } }] };
+      yield { choices: [{ delta: { content: '\n</thi' } }] };
+      yield { choices: [{ delta: { content: 'nk>\nHey! What can I do for you?' } }] };
+    })();
+  } };
+  const r = await runAll(new Conversation(w, cfg()), 'hi');
+  assert.equal(r.thinking, 'A casual hello.');
+  assert.equal(r.text, 'Hey! What can I do for you?');
+});
