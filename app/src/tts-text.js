@@ -292,11 +292,3 @@ export function tidyAudio(samples, sampleRate, { threshold = 0.004, keepStartMs 
   for (let i = 0; i < f; i++) { const g = i / f; out[i] *= g; out[out.length - 1 - i] *= g; }
   return out;
 }
-
-/** Real-time factor over recent chunks (synthesis time / audio length). The
- *  natural voice keeps up while this stays under 1. */
-export function realTimeFactor(history, last = 3) {
-  const h = history.slice(-last).filter(x => x && x.audioMs > 0);
-  if (!h.length) return 0;
-  return h.reduce((s, x) => s + x.synthMs, 0) / h.reduce((s, x) => s + x.audioMs, 0);
-}

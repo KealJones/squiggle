@@ -168,20 +168,122 @@ const ERRORS = {
   'audio-capture': 'No microphone was found. Plug one in or check your sound settings.',
 };
 
+// ── Speakers ───────────────────────────────────────────────────────────────
+// A speaker says one chunk at a time:
+//   prime()                 inside the call button's tap (iOS unlocks audio only then)
+//   ready()                 can speak now (the natural voice may still be loading)
+//   prepare(text) → item    start any slow work early (the natural voice synthesizes)
+//   play(item, onEnd)       speak; onEnd(error?) exactly once, when done or failed
+//   cancel()                stop now and drop prepared work
+//   tooSlow?()              the natural voice can't keep up with speech
+
+const rateOf = (s) => Math.min(2, Math.max(0.5, Number(s.voiceRate) || 1));
+
+/** The browser's speech synthesis. Errors just move on to the next chunk. */
+export function systemSpeaker({ synth, Utterance, lang = 'en-US', getSettings = () => ({}) }) {
+  let watchdog = null;
+  return {
+    kind: 'system',
+    ready: () => true,
+    prime() { try { const u = new Utterance(''); u.volume = 0; synth.speak(u); } catch {} },
+    prepare: (text) => ({ text }),
+    play(item, onEnd) {
+      const s = getSettings();
+      const u = new Utterance(item.text);
+      const voice = pickVoice(synth.getVoices && synth.getVoices(), lang, s.voiceURI);
+      if (voice) { u.voice = voice; u.lang = voice.lang; } else u.lang = lang;
+      u.rate = rateOf(s);
+      let ended = false;
+      const done = () => { if (ended) return; ended = true; clearTimeout(watchdog); onEnd(); };
+      u.onend = done;
+      u.onerror = done;
+      // Some browsers drop 'end' (Chrome after a long pause); don't hang the call.
+      clearTimeout(watchdog);
+      watchdog = setTimeout(() => { try { synth.cancel(); } catch {} done(); }, 6000 + item.text.length * 130 / u.rate);
+      try { synth.speak(u); } catch { done(); }
+    },
+    cancel() { clearTimeout(watchdog); try { synth.cancel(); } catch {} },
+  };
+}
+
+/** The natural voice: `tts` (tts.js createTTS) synthesizes, `player` plays.
+ *  Chunks are synthesized ahead (prepare) while earlier ones play, so there
+ *  are no gaps as long as synthesis runs faster than speech. */
+export function neuralSpeaker({
+  tts, player, voice, getSettings = () => ({}), now = () => Date.now(),
+  synthTimeoutMs = (text) => 20000 + text.length * 150, slowRtf = 1.15, slowAfter = 2,
+}) {
+  const stats = [];
+  return {
+    kind: 'natural',
+    ready: () => tts.state === 'ready',
+    prime() { player.unlock(); },
+    prepare(text) {
+      const item = { text };
+      item.audio = tts.synth(text, { speed: rateOf(getSettings()), voice }).then((a) => {
+        if (a.samples.length) stats.push({ synthMs: a.ms, audioMs: 1000 * a.samples.length / a.sampleRate });
+        return a;
+      });
+      item.audio.catch(() => {}); // play() reports failures
+      return item;
+    },
+    play(item, onEnd) {
+      let finished = false, watchdog = null;
+      const end = (err) => {
+        if (finished) return;
+        finished = true; clearTimeout(timer); clearTimeout(watchdog);
+        onEnd(err);
+      };
+      const timer = setTimeout(() => end(new Error('the natural voice took too long')), synthTimeoutMs(item.text));
+      const audio = item.audio || this.prepare(item.text).audio;
+      audio.then((a) => {
+        if (finished) return;
+        clearTimeout(timer);
+        if (!a.samples.length) { end(); return; }
+        const ms = 1000 * a.samples.length / a.sampleRate;
+        watchdog = setTimeout(() => { player.stop(); end(); }, ms + 3000);
+        player.play(a.samples, a.sampleRate).then(() => end(), end);
+      }, (e) => { if (!(e && e.cancelled)) end(e); });
+    },
+    cancel() { tts.cancel(); player.stop(); },
+    rtf: () => realTimeFactor(stats),
+    tooSlow: () => stats.length >= slowAfter && realTimeFactor(stats) > slowRtf,
+  };
+}
+
+/** Synthesis time / audio length over the last few chunks (under 1 keeps up). */
+export function realTimeFactor(history, last = 3) {
+  const h = history.slice(-last).filter(x => x && x.audioMs > 0);
+  if (!h.length) return 0;
+  return h.reduce((s, x) => s + x.synthMs, 0) / h.reduce((s, x) => s + x.audioMs, 0);
+}
+
 // ── Call state machine ─────────────────────────────────────────────────────
 
-/** A hands-free call. Injected: SR (recognition constructor), synth, Utterance,
- *  send(text) (runs a normal chat turn; resolves when it is over). The UI calls
- *  feed(rawReplyText) while the reply streams and finish(rawReply) at the end.
- *  States: listening → thinking → speaking → listening … ; idle when ended. */
+/** A hands-free call. Injected: SR (recognition constructor), send(text) (runs
+ *  a normal chat turn; resolves when it is over), and either a `speaker` (with
+ *  a `fallback`, normally system speech) or synth + Utterance for system speech.
+ *  The UI calls feed(rawReplyText) while the reply streams and finish(rawReply)
+ *  at the end. States: listening → thinking → speaking → listening … ; idle
+ *  when ended.
+ *
+ *  Each reply is spoken by one voice: the speaker if it's ready when the reply
+ *  starts, else the fallback. If the speaker fails or can't keep up, the rest
+ *  of the call uses the fallback and onFallback(reason, detail) says why;
+ *  setSpeaker() installs a new one for the next reply. */
 export function createCall({
-  SR, synth, Utterance, send, lang = 'en-US', getSettings = () => ({}), onChange = () => {}, onError = () => {},
-  silenceMs = 1200, interimSilenceMs = 2200, resumeDelayMs = 350,
+  SR, synth, Utterance, speaker = null, fallback = null, send, lang = 'en-US', getSettings = () => ({}),
+  onChange = () => {}, onError = () => {}, onFallback = () => {},
+  silenceMs = 1200, interimSilenceMs = 2200, resumeDelayMs = 350, lookahead = 2,
 }) {
+  const system = synth && Utterance ? systemSpeaker({ synth, Utterance, lang, getSettings }) : null;
+  let primary = speaker || system;
+  fallback = fallback || (speaker ? system : null);
+  let primaryFailed = false, turnSpeaker = null;
   let active = false, state = 'idle';
   let rec = null, recRunning = false, wantListen = false, restartTimer = null, restarts = [];
   let finalText = '', interimText = '', commitTimer = null;
-  let gen = 0, queue = [], speaking = false, watchdog = null, resumeTimer = null;
+  let gen = 0, queue = [], speaking = false, resumeTimer = null;
   let turnOpen = false, muted = false, cursor = 0, latestRaw = '', transcript = '', error = '';
 
   const snapshot = () => ({ state, transcript, interim: Boolean(interimText), canRepeat: active && !turnOpen && Boolean(speakable(latestRaw)), error });
@@ -264,7 +366,7 @@ export function createCall({
     if (!text || !active || state !== 'listening') return;
     transcript = text;
     pauseRec();
-    gen++; queue = []; muted = false; cursor = 0; latestRaw = '';
+    gen++; queue = []; muted = false; cursor = 0; latestRaw = ''; turnSpeaker = null;
     turnOpen = true;
     setState('thinking');
     Promise.resolve().then(() => send(text)).catch((e) => onError(String(e && e.message || e)))
@@ -292,39 +394,65 @@ export function createCall({
     pump();
   }
 
+  // The voice for this reply, chosen when its first chunk is queued.
+  function voiceForTurn() {
+    if (!turnSpeaker) turnSpeaker = !primaryFailed && primary.ready() ? primary : (fallback || primary);
+    return turnSpeaker;
+  }
+
   function enqueue(chunks) {
     if (!chunks.length) return;
-    queue.push(...chunks);
+    const sp = voiceForTurn();
+    for (const text of chunks) queue.push({ text, speaker: sp, item: null });
+    prefetch();
     pump();
+  }
+
+  // Start synthesizing the next few chunks while the current one plays.
+  function prefetch() {
+    for (const q of queue.slice(0, lookahead)) if (!q.item) q.item = q.speaker.prepare(q.text);
+  }
+
+  // The speaker failed or fell behind: the rest of the call (from this chunk
+  // on) uses the fallback.
+  function switchToFallback(reason, detail, redo) {
+    if (!fallback || primaryFailed) return;
+    primaryFailed = true;
+    try { primary.cancel(); } catch {}
+    turnSpeaker = fallback;
+    queue = [...(redo ? [redo] : []), ...queue].map(q => ({ text: q.text, speaker: fallback, item: null }));
+    onFallback(reason, detail);
   }
 
   function pump() {
     if (!active || speaking) return;
-    const text = queue.shift();
-    if (text == null) {
+    const next = queue.shift();
+    if (next == null) {
       if (!turnOpen && (state === 'speaking' || state === 'thinking')) resumeSoon();
       return;
     }
     speaking = true;
     if (state !== 'speaking') setState('speaking');
     if (!getSettings().voiceBargeIn) pauseRec();
-    const myGen = gen;
-    const s = getSettings();
-    const u = new Utterance(text);
-    const voice = pickVoice(synth.getVoices && synth.getVoices(), lang, s.voiceURI);
-    if (voice) { u.voice = voice; u.lang = voice.lang; } else u.lang = lang;
-    u.rate = Math.min(2, Math.max(0.5, Number(s.voiceRate) || 1));
-    const done = () => {
+    const myGen = gen, sp = next.speaker;
+    const item = next.item || sp.prepare(next.text);
+    prefetch();
+    sp.play(item, (err) => {
       if (myGen !== gen) return;
-      clearTimeout(watchdog);
       speaking = false;
+      if (sp === primary && sp !== fallback) {
+        if (err) switchToFallback('error', err, next);
+        else if (sp.tooSlow && sp.tooSlow()) switchToFallback('slow', sp.rtf ? sp.rtf() : 0);
+      }
       pump();
-    };
-    u.onend = done;
-    u.onerror = done;
-    // Some browsers drop 'end' (Chrome after a long pause); don't hang the call.
-    watchdog = setTimeout(() => { if (myGen === gen && speaking) { try { synth.cancel(); } catch {} done(); } }, 6000 + text.length * 130 / u.rate);
-    try { synth.speak(u); } catch { done(); }
+    });
+  }
+
+  /** A new voice (say, a lighter model that finished loading) for the next reply. */
+  function setSpeaker(sp) {
+    primary = sp;
+    primaryFailed = false;
+    if (active) try { sp.prime(); } catch {}
   }
 
   function resumeSoon(delay = resumeDelayMs) {
@@ -344,8 +472,8 @@ export function createCall({
 
   function stopSpeech() {
     gen++; queue = []; speaking = false;
-    clearTimeout(watchdog); clearTimeout(resumeTimer);
-    try { synth.cancel(); } catch {}
+    clearTimeout(resumeTimer);
+    for (const sp of new Set([primary, fallback])) if (sp) { try { sp.cancel(); } catch {} }
   }
 
   // Tap or talk over the reply: stop speaking and listen. Tapping while
@@ -365,15 +493,16 @@ export function createCall({
     pauseRec();
     const { chunks } = takeSpeakable(latestRaw, 0, true);
     muted = false;
+    turnSpeaker = null;
     enqueue(chunks);
   }
 
   function start() {
     if (active) return;
     active = true; error = '';
-    // iOS Safari only lets speech start from a user gesture; start() runs inside
-    // the call button's tap, so speak a silent utterance now to unlock it.
-    try { const u = new Utterance(''); u.volume = 0; synth.speak(u); } catch {}
+    // iOS Safari only lets speech and Web Audio start from a user gesture;
+    // start() runs inside the call button's tap, so unlock both now.
+    for (const sp of new Set([primary, fallback])) if (sp) { try { sp.prime(); } catch {} }
     transcript = '';
     resume();
   }
@@ -392,5 +521,9 @@ export function createCall({
     setState('idle');
   }
 
-  return { start, end, feed, finish, bargeIn, repeat, snapshot, get active() { return active; } };
+  return {
+    start, end, feed, finish, bargeIn, repeat, snapshot, setSpeaker,
+    get active() { return active; },
+    get voice() { return primaryFailed ? (fallback || primary).kind : primary.kind; },
+  };
 }
