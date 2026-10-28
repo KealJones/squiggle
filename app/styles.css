@@ -179,7 +179,9 @@ a { color: var(--action); }
 .call-transcript.interim { color: var(--ink-soft); font-style: italic; }
 .call-hint, .call-error { font-size: 0.82rem; color: var(--ink-soft); }
 .call-error { color: var(--danger); }
-.call-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.call-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.call[data-state="ask"] { cursor: default; }
+.voice-status { font-size: 0.82rem; color: var(--ink-soft); }
 .call-actions .btn { min-height: 44px; min-width: 88px; }
 #call[aria-pressed="true"] { color: var(--action); }
 
