@@ -217,3 +217,38 @@ test('cloud model: a Workers AI quota error comes back as the limit message and 
     assert.equal(store.get('usage').used, 0);
   } finally { f.mock.restore(); }
 });
+
+test('search: LangSearch first when its key is set; DuckDuckGo when it fails; the key never leaves the relay', async () => {
+  const { readFileSync } = await import('node:fs');
+  const html = readFileSync(new URL('./fixtures/ddg-lite.html', import.meta.url), 'utf8');
+  const orig = globalThis.fetch;
+  const calls = [];
+  let ls = { ok: true, body: { code: 200, data: { webPages: { value: [
+    { name: 'Pokémon Horizons: The Series', url: 'https://en.wikipedia.org/wiki/Pok%C3%A9mon_Horizons', snippet: 'The <b>latest</b> Pokémon anime series.' },
+    { name: 'no url' },
+  ] } } } };
+  globalThis.fetch = mock.fn(async (url, init = {}) => {
+    calls.push({ url, init });
+    if (url === 'https://api.langsearch.com/v1/web-search') return ls.ok ? Response.json(ls.body) : new Response('{"msg":"limit"}', { status: 429 });
+    if (url.startsWith('https://api.duckduckgo.com/')) return Response.json({});
+    return new Response(html);
+  });
+  try {
+    const headers = { Origin: 'https://sq.example.workers.dev' };
+    const e = { ...env, LANGSEARCH_API_SECRET_KEY: 'sk-test' };
+    const r = await worker.fetch(req('/api/search?q=latest%20pokemon%20series&n=3', { headers }), e);
+    assert.equal(r.status, 200);
+    const d = await r.json();
+    assert.deepEqual(d.results, [{ title: 'Pokémon Horizons: The Series', url: 'https://en.wikipedia.org/wiki/Pok%C3%A9mon_Horizons', snippet: 'The latest Pokémon anime series.' }]);
+    assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test');
+    assert.deepEqual(JSON.parse(calls[0].init.body), { query: 'latest pokemon series', count: 3, freshness: 'noLimit' });
+    assert.ok(!JSON.stringify(d).includes('sk-test'), 'the key is not in the response');
+    assert.equal(calls.length, 1, 'DuckDuckGo not called');
+    ls.ok = false; calls.length = 0;
+    const fb = await (await worker.fetch(req('/api/search?q=squiggle%20relay&n=1', { headers }), e)).json();
+    assert.equal(fb.results[0].url, 'https://example.com/docs/squiggle?a=1&b=2', 'DuckDuckGo when LangSearch fails');
+    calls.length = 0;
+    await worker.fetch(req('/api/search?q=squiggle%20relay&n=1', { headers }), env);
+    assert.ok(!calls.some(c => c.url.includes('langsearch')), 'no key, no LangSearch');
+  } finally { globalThis.fetch = orig; }
+});
