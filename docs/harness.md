@@ -259,6 +259,22 @@ proposal lets the model choose what it carries forward, sees what everything cos
 and hands off to a fresh context instead of running out. It's meant for every model,
 and especially to be learned by the small one from Gemma 4 runs (next section).
 
+### 0. Three context modes
+
+Settings gets one choice of three, replacing today's "Smart context" checkbox:
+
+| Mode | Who picks what's in each prompt | Today's name |
+|---|---|---|
+| **Compress** | The harness: a rolling summary plus the recent messages. | compact |
+| **Smart** | The harness: retrieval of what's relevant from this chat (other chats only through `find`). | smart |
+| **AI-managed** | The model: the budget line, steps that say what they need, summarise steps and checkpoints below. The harness only shows costs and trims when something won't fit. | new |
+
+Sections 1 (told up front), 2 (the budget line) and 5 (checkpoint) apply in every mode, since
+they only help. Sections 3 and 4 (steps that attach what they need, summarise steps) define
+AI-managed mode: there, a step's `needs` replace the automatic "Found earlier in this task"
+retrieval. Compress and Smart keep the harness's own choices. The internal `full` mode stays
+for debugging but isn't offered.
+
 ### 1. Told up front
 
 One paragraph in every system prompt (small-model version kept to two lines):
@@ -339,8 +355,10 @@ A harness tool, available in the chat phase and inside steps:
 
 ### Open questions
 
-- Should `needs` on a step replace the automatic "Found earlier in this task" retrieval, or
-  only add to it? (Proposed: add to it at first, then measure whether retrieval still helps.)
+- ~~Should `needs` replace the automatic retrieval?~~ Settled: in AI-managed mode yes; Smart
+  keeps retrieval (section 0).
+- Which mode the phone should default to once AI-managed exists: probably AI-managed after
+  the Gemma-taught model learns it, Smart until then.
 - The checkpoint threshold (600 tokens) and the summarise suggestion (a third of the window)
   need measuring on the phone.
 - Big models have room to spare; they get the same tools, but the budget line matters
