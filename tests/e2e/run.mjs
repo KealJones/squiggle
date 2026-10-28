@@ -1199,6 +1199,29 @@ if (shotsDir) {
   await fresh.screenshot({ path: `${shotsDir}/setup-signin.png` });
 }
 
+await check('stock Gemma 3 270M runs as plain chat: no system prompt, no tools, no background jobs', async () => {
+  const D = await device('plain-g3');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'G3'; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  for (const [i, msg] of ['hi', 'When was the last time anyone was on the moon?'].entries()) {
+    await D.page.fill('#input', msg);
+    await D.page.press('#input', 'Enter');
+    await D.page.waitForFunction(n => (window.__engineLog || []).filter(e => e.type === 'respond').length >= n, i + 1);
+  }
+  await D.page.waitForTimeout(2500);   // background jobs run 1.5 s after a turn
+  const log = await D.page.evaluate(() => window.__engineLog);
+  const convs = log.filter(e => e.type === 'conversation');
+  assert.equal(convs.length, 2);
+  for (const c of convs) { assert.equal(c.system, ''); assert.deepEqual(c.tools, []); }
+  assert.deepEqual(convs[1].messages.map(m => m.role), ['user', 'model'], 'the second turn sees the first exchange');
+  assert.equal(log.filter(e => e.type === 'complete').length, 0, 'no titles, facts or summaries from the small model');
+});
+
 await browser.close();
 close();
 const failed = results.filter(r => r[0] === 'FAIL');

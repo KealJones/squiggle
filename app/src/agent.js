@@ -47,8 +47,11 @@ export const LITE_SYSTEM = [
 ].join('\n');
 
 const lite = () => engine.isLite(settings.model);
+// Plain chat for small models without tool training (engine.chatOnly).
+const plain = () => Boolean(engine.chatOnly && engine.chatOnly(settings.model));
 
 function systemPrompt(threadId, session) {
+  if (plain()) return '';
   if (lite()) return `${LITE_SYSTEM}\nToday is ${new Date().toDateString()}.`;
   const thread = threadId && session.threads[threadId];
   return [
@@ -68,6 +71,7 @@ function systemPrompt(threadId, session) {
 
 // Tools for a phase: the enabled agent tools plus the harness's own.
 function phaseTools(step) {
+  if (plain()) return [];
   const base = toolSpecs(settings.tools).filter(t => !(step && t.name === 'note'));
   const h = tasks.HARNESS_SPECS;
   return [...base, h.plan, ...(step ? [h.done] : []), h.need, h.find];
@@ -233,6 +237,8 @@ class Turn {
     const budget = Math.max(1000, Math.min(settings.contextSize - MAX_OUTPUT - toolTokens - 200, Math.floor(settings.contextSize * 0.5) - toolTokens));
     const ctx = await this.context(await this.prepare(), budget);
     this.reply.context = ctx.report;
+    // Plain chat: only the recent messages; extra sections would be read as instructions.
+    if (plain()) ctx.system = '';
     this.conv = await engine.conversation({ system: ctx.system, messages: ctx.messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT });
     let used = estTokens(ctx.system) + estTokens(JSON.stringify(ctx.messages)) + toolTokens + estTokens(this.shown);
     const room = () => Math.max(0, (settings.contextSize - used - Math.min(MAX_OUTPUT, 700)) * 3);
@@ -584,6 +590,7 @@ function nameSession(session) {
   if (!first) return;
   session.title = truncate(first.content.replace(/\s+/g, ' '), 60).replace(/\n.*$/s, '');
   sessions.touch(session);
+  if (plain()) return;   // the small model can't write titles; the first message is the title
   engine.background(async () => {
     const t = await engine.complete('You write short titles.', `Write a 2-6 word title for a conversation that starts with:\n\n${truncate(first.content, 800)}\n\nReply with only the title.`, { maxOutputTokens: 24 });
     const clean = t.replace(/^["'#*\s]+|["'.*\s]+$/g, '').slice(0, 60);
@@ -593,6 +600,7 @@ function nameSession(session) {
 
 // Fold messages that left the recent window into the line's summary.
 async function rollingSummary(session, threadId) {
+  if (plain()) return;
   const key = threadId || 'main';
   const line = sessions.lineMessages(session, threadId);
   const current = session.summaries[key] || null;
@@ -612,6 +620,7 @@ async function rollingSummary(session, threadId) {
 
 // One-line outcome of a side thread, shown under its parent message.
 async function threadOutcome(session, threadId) {
+  if (plain()) return;
   const t = session.threads[threadId];
   const msgs = session.messages.filter(m => m.thread === threadId);
   if (!t || msgs.length < 2) return;
@@ -627,6 +636,7 @@ async function threadOutcome(session, threadId) {
 // Learn lasting facts from the latest exchange (saved as auto facts the
 // person can review or delete in the Memory panel).
 async function learnFacts(session, threadId) {
+  if (plain()) return;
   const line = sessions.lineMessages(session, threadId);
   const last = line.slice(-2);
   if (last.length < 2 || last[0].role !== 'user') return;
