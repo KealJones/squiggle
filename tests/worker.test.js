@@ -283,3 +283,38 @@ test('search: LangSearch looks at the past year for "latest" questions, widens w
     assert.equal(bodies.length, 2);
   } finally { globalThis.fetch = orig; }
 });
+
+test('search: Tavily first for "latest" questions (past year), LangSearch first otherwise; each falls back to the other', async () => {
+  const orig = globalThis.fetch;
+  const hits = [];
+  const fail = new Set();
+  globalThis.fetch = mock.fn(async (url, init = {}) => {
+    if (url === 'https://api.langsearch.com/v1/web-search') {
+      hits.push('lang');
+      if (fail.has('lang')) return new Response('', { status: 429 });
+      return Response.json({ data: { webPages: { value: [{ name: 'L1', url: 'https://l.com/1', snippet: 'a' }, { name: 'L2', url: 'https://l.com/2', snippet: 'b' }] } } });
+    }
+    if (url === 'https://api.tavily.com/search') {
+      hits.push('tavily:' + (JSON.parse(init.body).time_range || 'any'));
+      assert.equal(init.headers.Authorization, 'Bearer tv-key');
+      if (fail.has('tavily')) return new Response('', { status: 432 });
+      return Response.json({ results: [{ title: 'T1', url: 'https://t.com/1', content: 'x <b>y</b>' }, { title: 'T2', url: 'https://t.com/2', content: 'z' }] });
+    }
+    return Response.json({});
+  });
+  try {
+    const headers = { Origin: 'https://sq.example.workers.dev' };
+    const e = { ...env, LANGSEARCH_API_SECRET_KEY: 'k', TAVILY_KEY: 'tv-key' };
+    const first = async (q) => (await (await worker.fetch(req('/api/search?n=4&q=' + encodeURIComponent(q), { headers }), e)).json()).results[0];
+    assert.deepEqual(await first('latest pokemon tv series'), { title: 'T1', url: 'https://t.com/1', snippet: 'x y' });
+    assert.deepEqual(hits, ['tavily:year']);
+    hits.length = 0;
+    assert.equal((await first('who wrote hamlet')).url, 'https://l.com/1');
+    assert.deepEqual(hits, ['lang']);
+    hits.length = 0; fail.add('lang');
+    assert.equal((await first('who wrote hamlet')).url, 'https://t.com/1', 'LangSearch down: Tavily');
+    assert.deepEqual(hits, ['lang', 'tavily:any']);
+    hits.length = 0; fail.clear(); fail.add('tavily');
+    assert.equal((await first('latest pokemon tv series')).url, 'https://l.com/1', 'Tavily out of credits: LangSearch');
+  } finally { globalThis.fetch = orig; }
+});
