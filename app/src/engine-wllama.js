@@ -167,6 +167,24 @@ export function splitThinking(raw) {
 
 // True when some run of LOOP_WORDS words appears LOOP_TIMES times: the small
 // model is repeating itself and won't stop on its own.
+// The run of words that repeats (for telling the model where it got stuck), or ''.
+export function repeatedRun(text, n = LOOP_WORDS, times = LOOP_TIMES) {
+  const words = String(text).toLowerCase().match(/[a-z0-9_']+/g) || [];
+  const seen = new Map();
+  for (let i = 0; i + n <= words.length; i++) {
+    const key = words.slice(i, i + n).join(' ');
+    const c = (seen.get(key) || 0) + 1;
+    if (c >= times) return key;
+    seen.set(key, c);
+  }
+  return '';
+}
+
+// Sent to the model after a loop is stopped, once per reply; it gets one more try.
+export const loopNote = (run) => `(Squiggle: your last reply got stuck repeating "${run}" and was stopped and dropped. ` +
+  'Start over. In a short Check, say what you actually have so far, or that it doesn\'t answer the question. ' +
+  'Then call one tool or give the answer. Don\'t repeat anything.)';
+
 export function isLooping(text, n = LOOP_WORDS, times = LOOP_TIMES) {
   const words = String(text).toLowerCase().match(/[a-z0-9_']+/g) || [];
   if (words.length < n * times) return false;
@@ -194,8 +212,10 @@ export class Conversation {
   async delete() {}
 
   // One model reply. Yields { thinking } and { content } pieces as they come
-  // (a tool-call block is held back), then returns { calls, aborted }.
-  async *generate() {
+  // (a tool-call block is held back), then returns { calls, aborted, looped, run }.
+  // With canRetry, a looping reply is dropped (not kept in history) so the caller
+  // can tell the model and try again; `retry` raises the repetition penalty.
+  async *generate({ canRetry = false, retry = false } = {}) {
     const ctrl = this.ctrl = new AbortController();
     let out = '', thinkShown = 0, shown = 0, inCall = false, looped = false, text = '', checked = 0, reasoning = '', rChecked = 0;
     // Stop output that keeps repeating itself: checked at sentence ends, and at least
@@ -210,7 +230,7 @@ export class Conversation {
         temperature: this.greedy ? 0 : 0.7,
         top_k: 64,
         top_p: 0.95,
-        penalty_repeat: REPEAT_PENALTY,
+        penalty_repeat: retry ? 1.3 : REPEAT_PENALTY,
         cache_prompt: true,
         abortSignal: ctrl.signal,
       });
@@ -254,6 +274,12 @@ export class Conversation {
     const parts = splitThinking(out);
     text = parts.open ? '' : parts.text;
     if (parts.open && parts.thinking.length > thinkShown) yield { thinking: parts.thinking.slice(thinkShown) };
+    if (looped && canRetry) {
+      const run = repeatedRun((reasoning || '') + ' ' + out) || repeatedRun(out) || '';
+      if (shown > 0) yield { content: '\n\n_(got stuck repeating itself; trying again)_\n\n' };
+      else yield { thinking: '\n\n[Stuck repeating itself. Squiggle stopped it and asked it to try again.]\n\n' };
+      return { calls: [], aborted: false, looped: true, run };
+    }
     const calls = inCall ? parseToolCalls(text.slice(shown)) : [];
     if (text.length > shown && !calls.length) yield { content: text.slice(shown) };   // incl. an unparseable block
     if (looped) yield { content: '\n\n_(stopped: the model was repeating itself)_' };
@@ -274,7 +300,17 @@ export class Conversation {
         }
       }
     }
-    const { calls, aborted } = yield* this.generate();
+    let res = yield* this.generate({ canRetry: true });
+    if (res.looped) {
+      // Tell the model where it got stuck and give it one more try; the note
+      // leaves history afterwards so later turns don't see it.
+      const note = { role: 'user', content: loopNote(res.run) };
+      this.messages.push(note);
+      res = yield* this.generate({ retry: true });
+      const i = this.messages.indexOf(note);
+      if (i >= 0) this.messages.splice(i, 1);
+    }
+    const { calls, aborted } = res;
     if (aborted || !calls.length) return;
     for (const c of calls) {
       if (c.function.name === 'find_tools') c.function.name = 'find';     // the old name
