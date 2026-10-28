@@ -531,7 +531,7 @@ export const TOOLS = [
 
   // Math
   {
-    spec: { name: 'calculate', description: 'Calculate a math expression exactly: + - * / ^, parentheses, percentages (15% of 240), and sqrt, round(x, digits), min, max, abs, floor, ceil, pow, log, ln, exp. Use it for every sum, price, percentage or conversion; never do math in your head.', parameters: S({ expression: str('A math expression, e.g. "300 * 25% + (120 - 60)" or "round((72 - 32) * 5 / 9, 1)"') }, ['expression']) },
+    spec: { name: 'calculate', description: 'Calculate a math expression exactly: + - * / ^, parentheses, percentages (15% of 240), pi and e, sqrt, round(x, digits), min, max, abs, floor, ceil, pow, log, ln, exp. Use it for every sum, price, percentage or conversion; never do math in your head.', parameters: S({ expression: str('A math expression, e.g. "300 * 25% + (120 - 60)" or "round((72 - 32) * 5 / 9, 1)"') }, ['expression']) },
     async run({ expression }) {
       const r = calculate(expression);
       return r.error ? { model: { expression, error: r.error } } : { model: { expression, result: r.result }, label: `calculated ${truncate(String(expression), 40)} = ${r.result}` };
