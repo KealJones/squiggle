@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { speakable, splitSentences, takeSpeakable, pickVoice, support, createCall, neuralSpeaker, systemSpeaker, realTimeFactor } from '../app/src/voice.js';
+import { speakable, splitSentences, takeSpeakable, pickVoice, support, createCall, neuralSpeaker, systemSpeaker, realTimeFactor, firstPiece } from '../app/src/voice.js';
 
 test('speakable strips markdown formatting', () => {
   const s = speakable('# Title\n\nThis is **bold**, *italic* and `code`.\n\n- first item\n- second item\n\n1. one\n> quoted');
@@ -257,4 +257,35 @@ test('natural voice: a play that never ends is cut off by the watchdog', async (
   await new Promise((resolve) => sp.play(sp.prepare('x'), resolve));
   assert.ok(Date.now() - t0 >= 2900 && log.includes('stop'));
   void P;
+});
+
+test('firstPiece: a long first chunk is cut at its first sentence or clause break', () => {
+  assert.deepEqual(firstPiece('Short one.'), ['Short one.']);
+  assert.deepEqual(firstPiece('Hi! I checked the repo, and the build is passing again.'), ['Hi! I checked the repo,', 'and the build is passing again.']);
+  assert.deepEqual(firstPiece('Bold answer with a link. Second sentence is here.'), ['Bold answer with a link.', 'Second sentence is here.']);
+  assert.deepEqual(firstPiece('We can use e.g. a cache here, which is much faster overall.'), ['We can use e.g. a cache here,', 'which is much faster overall.']);
+  assert.deepEqual(firstPiece('A long sentence without any breaks that goes on and on and on'), ['A long sentence without any breaks that goes on and on and on']);
+  assert.deepEqual(firstPiece('This sentence is long enough to be cut, ok.'), ['This sentence is long enough to be cut, ok.'], 'no tiny second piece');
+});
+
+test('natural voice: the first chunk of each reply is cut short so speech starts sooner; system speech is not', async () => {
+  const P = fakeCallParts(), N = fakeNatural();
+  const long = 'Hi! I checked the repo, and the build is passing again. Second sentence of the reply is here.';
+  let call;
+  call = createCall({ SR: P.SR, speaker: N.speaker, fallback: P.system, silenceMs: 10, resumeDelayMs: 5,
+    send: async () => { call.feed(long); call.finish(long); } });
+  call.start();
+  P.recs[0].onresult({ resultIndex: 0, results: [Object.assign([{ transcript: 'hi' }], { isFinal: true })] });
+  await wait(200);
+  assert.deepEqual(N.log.filter(l => l[0] === 'synth').map(l => l[1]), ['Hi! I checked the repo,', 'and the build is passing again.', 'Second sentence of the reply is here.']);
+  call.end();
+  const P2 = fakeCallParts();
+  let call2;
+  call2 = createCall({ SR: P2.SR, synth: P2.synth, Utterance: P2.U, silenceMs: 10, resumeDelayMs: 5,
+    send: async () => { call2.feed(long); call2.finish(long); } });
+  call2.start();
+  P2.recs[0].onresult({ resultIndex: 0, results: [Object.assign([{ transcript: 'hi' }], { isFinal: true })] });
+  await wait(150);
+  assert.deepEqual(P2.spoken.slice(), ['Hi! I checked the repo, and the build is passing again.', 'Second sentence of the reply is here.']);
+  call2.end();
 });

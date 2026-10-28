@@ -684,9 +684,10 @@ await check('natural voice (computer default): loads on the call tap, speaks rep
   if (shotsDir) await page.screenshot({ path: `${shotsDir}/desktop-call-natural.png` });
   assert.equal(await page.evaluate(() => localStorage.getItem('squiggle-voice-loading')), null, 'marker cleared once loaded');
 
-  await saidInCall(page, 'markdown reply please', 3);
+  await saidInCall(page, 'markdown reply please', 4);
   await page.waitForFunction(() => document.querySelector('.call[data-state="listening"]') && window.__voice.recs[0].running, null, { timeout: 8000 });
-  assert.deepEqual(await playedTexts(page), ['Bold answer with a link. Second sentence is here.', 'Code omitted.', 'All done now.']);
+  // The first chunk is cut at its first sentence end so speech starts sooner.
+  assert.deepEqual(await playedTexts(page), ['Bold answer with a link.', 'Second sentence is here.', 'Code omitted.', 'All done now.']);
   const plays = await page.evaluate(() => window.__audio.plays);
   assert.ok(plays[0].speaksBefore >= 2, 'the next sentence was being synthesized while the first played');
   assert.ok(plays.every(p => !p.recRunning), 'recognition paused while speaking');
@@ -696,7 +697,7 @@ await check('natural voice (computer default): loads on the call tap, speaks rep
 
   // Barge-in: tap while it speaks; audio stops and queued synthesis is dropped.
   await saidInCall(page, 'markdown reply again');
-  await page.waitForFunction(() => window.__audio.plays.length > 3, null, { timeout: 8000 });
+  await page.waitForFunction(() => window.__audio.plays.length > 4, null, { timeout: 8000 });
   assert.equal(await callState(page), 'Speaking');
   await page.click('.call .call-hint');
   assert.equal(await callState(page), 'Listening');
@@ -737,7 +738,7 @@ await check('natural voice falls back: a failed load uses the system voice with 
   await page.waitForFunction(() => window.__notes.some(t => /Kokoro 82M is too slow on this device \(2\.5× slower than speech\), so Squiggle switched to the light natural voice/.test(t)), null, { timeout: 8000 });
   await page.waitForFunction(() => document.querySelector('.call[data-state="listening"]'), null, { timeout: 8000 });
   const mixed = { audio: await playedTexts(page), system: await page.evaluate(() => window.__voice.spoken.map(s => s.text)) };
-  assert.equal(mixed.audio.length + mixed.system.length, 3, JSON.stringify(mixed));
+  assert.equal(mixed.audio.length + mixed.system.length, 4, JSON.stringify(mixed));
   assert.ok(mixed.system.length >= 1 && mixed.audio.length >= 1, JSON.stringify(mixed));
   assert.equal(JSON.parse(await page.evaluate(() => localStorage.getItem('squiggle-settings'))).voiceModel, 'kitten', 'remembered');
   await page.waitForFunction(() => window.__tts.some(x => x.ev === 'load' && x.model === 'kitten') && window.__notes.some(t => /Light natural voice ready; it speaks from the next reply/.test(t)), null, { timeout: 8000 });

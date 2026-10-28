@@ -89,6 +89,24 @@ export function splitSentences(plain, { max = 240, min = 28 } = {}) {
   return merged;
 }
 
+/** The natural voice starts speaking once the first chunk is synthesized, and
+ *  that takes time in proportion to its length. So a long first chunk is cut
+ *  at its first sentence or clause break (after `min` characters). */
+export function firstPiece(text, { max = 40, min = 12 } = {}) {
+  const t = String(text || '').trim();
+  if (t.length <= max) return [t];
+  const re = /[.!?…]+["'”’)\]]*\s|[,;:]\s|\s[—–]\s/g;
+  let m;
+  while ((m = re.exec(t))) {
+    const end = m.index + m[0].length;
+    if (end < min) continue;
+    if (/^\./.test(m[0]) && ABBREV.test(t.slice(0, m.index + 1))) continue;
+    if (t.length - end < 8) break; // nothing worth a second piece
+    return [t.slice(0, end).trim(), t.slice(end).trim()];
+  }
+  return [t];
+}
+
 /** Streaming chunker. `raw` is the reply so far (markdown); `from` is how much of
  *  it was already taken. Returns the new speakable chunks and the new offset.
  *  Cuts only at a sentence end outside a code fence, so partial markdown and
@@ -402,7 +420,9 @@ export function createCall({
 
   function enqueue(chunks) {
     if (!chunks.length) return;
+    const first = !turnSpeaker;
     const sp = voiceForTurn();
+    if (first && sp.kind === 'natural') chunks = [...firstPiece(chunks[0]), ...chunks.slice(1)];
     for (const text of chunks) queue.push({ text, speaker: sp, item: null });
     prefetch();
     pump();
