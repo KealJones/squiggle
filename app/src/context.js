@@ -4,10 +4,8 @@
 //   always:   system prompt, the most recent turns, pinned messages,
 //             a rolling summary of older turns (the "backbone"),
 //             and relevant memory facts
-//   smart:    + older messages, saved tool output (web pages, files),
-//             thread outcomes and other chats, ranked by relevance to the new
-//             message plus the active goal and step (docs/harness.md,
-//             "Smart context v2"); other chats need a stronger match
+//   smart:    + older messages, saved tool output (web pages, files) and
+//             thread outcomes, ranked by relevance to the new message
 //   compact:  summary + recent only (classic compaction)
 //   full:     as many recent turns as fit, nothing retrieved
 //
@@ -16,15 +14,10 @@
 import { estTokens, truncate } from './util.js';
 import { bm25, blend, cosine } from './search.js';
 import { wrapUntrusted } from './untrusted.js';
-import { replayNote } from './attachments.js';
 
 const RECENT_SHARE = { smart: 0.45, compact: 0.6, full: 1 };
 const MIN_RECENT = 2;
-const OBS_MIN_SCORE = 0.9;
 const MIN_SCORE = 0.18;
-const CHAT_MIN_SCORE = 0.5;   // other chats only come back on a strong match
-const MAX_OTHER_SESSIONS = 40;
-const MAX_OTHER_MESSAGES = 30;
 const CHUNK_TOKENS = 700;
 
 const day = (ts) => new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -36,7 +29,6 @@ const day = (ts) => new Date(ts).toLocaleString(undefined, { month: 'short', day
 // tool actions go in a separate system-prompt section instead (see below).
 export function messageText(m, threadNotes) {
   let text = m.role === 'assistant' ? scrubFakeToolNotes(m.content).trim() : (m.content || '');
-  if (m.role === 'user' && m.attachments && m.attachments.length) text += '\n\n' + replayNote(m.attachments);
   const note = threadNotes && threadNotes.get(m.id);
   if (note) text += `\n\n[a side thread on this message concluded: ${note}]`;
   return text;
@@ -77,10 +69,6 @@ export function chunk(text, maxTokens = CHUNK_TOKENS) {
  * @param {Function} [o.recall]    async (query, k) => [{ fact, score }]
  * @param {Function} [o.embed]     async (texts) => Float32Array[] | null
  * @param {Function} [o.factText]
- * @param {string}   [o.focus]     the active goal and step, added to the retrieval query
- * @param {object[]} [o.extra]     sections from the harness, shown first: [{ kind, title, text, label }]
- * @param {object[]} [o.others]    other sessions to search (smart mode)
- * @param {boolean} [o.actions]    false leaves out the recap of earlier tool calls (small models)
  */
 export async function assembleContext(o) {
   const { line, session, threadId = null, query, budget, mode = 'smart', system } = o;
@@ -116,19 +104,10 @@ export async function assembleContext(o) {
 
   const sections = [];
 
-  // Harness sections (resolved references, a recipe for a similar task).
-  for (const x of o.extra || []) {
-    if (!x || !x.text || !String(x.text).trim()) continue;
-    const body = `## ${x.title}\n${String(x.text).trim()}`;
-    sections.push(body);
-    used += estTokens(body);
-    report.items.push({ kind: x.kind || 'harness', label: x.label || x.title, tokens: estTokens(body) });
-  }
-
   // What the agent actually did with tools in the replayed turns.
   const actions = recent.filter(m => m.role === 'assistant' && m.tools && m.tools.length)
     .flatMap(m => m.tools.filter(t => t.ok !== false).map(t => t.label || t.name));
-  if (actions.length && o.actions !== false) {
+  if (actions.length) {
     const body = `## Tool calls you made in the conversation above\n${actions.slice(-12).map(a => `- ${truncate(a, 160)}`).join('\n')}\n(These already happened. To do anything new, call the tool again; never just say it was done.)`;
     sections.push(body);
     used += estTokens(body);
@@ -159,29 +138,9 @@ export async function assembleContext(o) {
     }
   }
 
-  // 3b. The agent's own notepad for this chat (all modes): what it decided
-  // matters. Kept whole when it fits; otherwise the newest notes.
-  const notes = Object.values(session.notes || {}).filter(n => !n.deleted).sort((a, b) => a.ts - b.ts);
-  if (notes.length) {
-    const cap = Math.floor(budget * 0.25);
-    const lines = [];
-    let t = 0;
-    for (const n of [...notes].reverse()) {
-      const ln = `- [${n.id}] ${n.text}`;
-      const lt = estTokens(ln);
-      if (t + lt > cap) break;
-      lines.unshift(ln); t += lt;
-      report.items.push({ kind: 'note', id: n.id, label: n.text.slice(0, 80), tokens: lt });
-    }
-    if (lines.length) {
-      sections.push(`## Your notes for this chat (update or delete with the note tool when they stop being relevant)\n${lines.join('\n')}${lines.length < notes.length ? `\n(${notes.length - lines.length} older notes not shown; delete ones you no longer need)` : ''}`);
-      used += t;
-    }
-  }
-
   // 4. Memory facts (all modes; they're small and about the person).
   if (o.recall) {
-    const facts = (await o.recall(o.focus ? `${query}\n${o.focus}` : query, 10)).filter(r => r.score >= 0.25);
+    const facts = (await o.recall(query, 10)).filter(r => r.score >= 0.25);
     const cap = Math.floor(budget * 0.12);
     const lines = [];
     let t = 0;
@@ -215,56 +174,24 @@ export async function assembleContext(o) {
         cands.push({ id: 't:' + t.id, kind: 'thread', ts: t.updated, text: `${t.title}\n${t.summary}`, render: (x) => `(side thread "${t.title}") ${x}`, label: `Thread: ${t.title}`, ref: t.id });
       }
     }
-    // Other chats: their messages, searched like this one's but with a higher bar.
-    const others = (o.others || []).filter(x => x && x.id !== session.id && !x.deleted)
-      .sort((a, b) => (b.updated || 0) - (a.updated || 0)).slice(0, MAX_OTHER_SESSIONS);
-    // Keyword search picks the best few first, so embeddings (when on) only
-    // run over a handful of other-chat messages, not every message.
-    const chatDocs = [];
-    for (const x of others) {
-      for (const m of x.messages || []) {
-        if (!m.content || (m.role !== 'user' && m.role !== 'assistant')) continue;
-        chatDocs.push({ id: `c:${x.id}:${m.id}`, text: truncate(messageText(m), 1500), x, m });
-      }
-    }
-    if (chatDocs.length) {
-      const pre = bm25(chatDocs)(query + (o.focus ? '\n' + o.focus : ''));
-      const top = chatDocs.filter(d => pre.has(d.id)).sort((a, b) => pre.get(b.id) - pre.get(a.id)).slice(0, MAX_OTHER_MESSAGES);
-      for (const { id, text, x, m } of top) {
-        cands.push({ id, kind: 'chat', ts: m.ts, text, render: (y) => `(from the chat "${truncate(x.title || '', 50)}", ${day(m.ts)}, ${m.role === 'user' ? 'user said' : 'you said'}) ${y}`, label: `${x.title || 'Chat'}: ${snippet(m.content)}`, ref: m.id });
-      }
-    }
     if (cands.length) {
       const prevUser = [...recent].reverse().find(m => m.role === 'user');
-      const q = query + (o.focus ? '\n' + o.focus : '') + (prevUser ? '\n' + prevUser.content : '');
+      const q = query + (prevUser ? '\n' + prevUser.content : '');
       const kw = bm25(cands)(q);
       let sem = null;
       const vecs = o.embed ? await o.embed([q, ...cands.map(c => c.text)]).catch(() => null) : null;
       if (vecs) { sem = new Map(); cands.forEach((c, i) => sem.set(c.id, cosine(vecs[0], vecs[i + 1]))); }
       const scores = blend(kw, sem);
       const newest = Math.max(...cands.map(c => c.ts || 0));
-      // Old tool output only comes back on a strong match. When the message
-      // names a file, only output about that file qualifies (a README that
-      // mentions tools.js is not "about" tools.js). Notes cover the rest.
-      const named = [...String(query).matchAll(/[\w.-]+\.[a-z]{1,5}\b/gi)].map(m => m[0].toLowerCase()).filter(f => !/^\d/.test(f));
-      const obsOk = (c, s) => c.kind !== 'observation' || (named.length
-        ? named.some(f => c.label.toLowerCase().includes(f))
-        : s >= OBS_MIN_SCORE);
       const ranked = cands
         .map(c => ({ c, s: (scores.get(c.id) || 0) + 0.05 * recency(c.ts, newest) }))
-        .filter(x => x.s >= (x.c.kind === 'chat' ? CHAT_MIN_SCORE : MIN_SCORE) && obsOk(x.c, x.s))
+        .filter(x => x.s >= MIN_SCORE)
         .sort((a, b) => b.s - a.s);
-      const obsCap = Math.floor(budget * 0.25);
-      let obsUsed = 0;
-      const chatCap = Math.floor(budget * 0.15);
-      let chatUsed = 0;
       const picked = [];
       for (const { c, s } of ranked) {
         const body = c.render(truncate(c.text, 4000));
         const t = estTokens(body) + 4;
         if (used + t > budget) continue;
-        if (c.kind === 'observation') { if (obsUsed + t > obsCap) continue; obsUsed += t; }
-        if (c.kind === 'chat') { if (chatUsed + t > chatCap) continue; chatUsed += t; }
         picked.push({ c, body, s });
         used += t;
         report.items.push({ kind: c.kind, id: c.id, ref: c.ref, label: c.label, tokens: t, score: round(s) });

@@ -85,10 +85,9 @@ test('search endpoint: browser-only, opt-in, returns JSON results, reports bot c
   const { readFileSync } = await import('node:fs');
   const html = readFileSync(new URL('./fixtures/ddg-lite.html', import.meta.url), 'utf8');
   const orig = globalThis.fetch;
-  let page = html, seen, ia = {}, wiki = {};
+  let page = html, seen, ia = {};
   globalThis.fetch = mock.fn(async (url) => {
     if (url.startsWith('https://api.duckduckgo.com/')) return Response.json(ia);
-    if (url.startsWith('https://en.wikipedia.org/w/api.php')) return Response.json(wiki);
     seen = url; return new Response(page);
   });
   try {
@@ -112,13 +111,7 @@ test('search endpoint: browser-only, opt-in, returns JSON results, reports bot c
     assert.equal((await partly.json()).results.length, 0);
     ia = {};
     const blocked = await worker.fetch(req('/api/search?q=x', { headers }), env);
-    assert.equal(blocked.status, 503, 'blocked, and Wikipedia found nothing');
-    wiki = { query: { search: [{ title: 'Pokémon Horizons: The Series', snippet: 'the <span class="searchmatch">latest</span> Pokémon anime series' }] } };
-    const fb = await worker.fetch(req('/api/search?q=latest%20pokemon%20series', { headers }), env);
-    assert.equal(fb.status, 200, 'falls back to Wikipedia search');
-    const fbd = await fb.json();
-    assert.deepEqual(fbd.results, [{ title: 'Pokémon Horizons: The Series', url: 'https://en.wikipedia.org/wiki/Pok%C3%A9mon_Horizons%3A_The_Series', snippet: 'the latest Pokémon anime series' }]);
-    assert.match(fbd.note, /Wikipedia/);
+    assert.equal(blocked.status, 503);
   } finally { globalThis.fetch = orig; }
 });
 

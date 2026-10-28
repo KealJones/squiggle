@@ -58,14 +58,3 @@ test('mergeFor picks a strategy by path', () => {
   const merged = JSON.parse(mergeFor('sessions/s1.json')(JSON.stringify(base()), JSON.stringify({ ...base(), messages: [...base().messages, { id: 'm9', role: 'user', content: 'x', ts: 9 }] })));
   assert.equal(merged.messages.length, 3);
 });
-
-test('agent notes merge per note; an erase syncs as a tombstone', () => {
-  const base = { id: 's', updated: 1, messages: [], threads: {}, observations: [], summaries: {} };
-  const a = { ...base, updated: 5, notes: { n1: { id: 'n1', text: 'tools.js: runTool ~line 510', ts: 1, mts: 4 }, n2: { id: 'n2', text: 'old', ts: 2, mts: 2 } } };
-  const b = { ...base, updated: 6, notes: { n1: { id: 'n1', text: 'tools.js: runTool at line 512', ts: 1, mts: 6 }, n2: { id: 'n2', deleted: true, ts: 2, mts: 7 }, n3: { id: 'n3', text: 'next: check guard.js', ts: 3, mts: 3 } } };
-  const m = mergeSession(a, b);
-  assert.equal(m.notes.n1.text, 'tools.js: runTool at line 512');
-  assert.equal(m.notes.n2.deleted, true);
-  assert.equal(m.notes.n3.text, 'next: check guard.js');
-  assert.deepEqual(mergeSession(b, a).notes, m.notes);
-});

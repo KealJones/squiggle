@@ -14,7 +14,6 @@ import * as grants from './grants.js';
 import { wrapUntrusted } from './untrusted.js';
 import { truncate } from './util.js';
 import { bm25 } from './search.js';
-import { calculate } from './calc.js';
 
 const MAX_READ = 12000;
 const REPOS = '/repos';
@@ -26,9 +25,6 @@ function realPath(r) {
   if (r.area === 'repos' && r.repo) return { kind: 'fs', path: `${REPOS}/${r.repo}${r.rel ? '/' + r.rel : ''}` };
   return { kind: 'virtual' };
 }
-
-// Attached documents are outside content even though they live under /home.
-const isAttachmentPath = (p) => /^\/home\/attachments(\/|$)/.test(agentPath(resolveAgentPath(p)));
 
 async function readAgentFile(p) {
   const r = resolveAgentPath(p);
@@ -48,16 +44,6 @@ async function listAgentDir(p) {
 }
 
 async function safeReaddir(dir) { try { return await pfs.readdir(dir); } catch { return []; } }
-
-// The ~600 characters of `text` around the best-matching query word.
-function bestPart(text, query) {
-  const words = String(query).toLowerCase().split(/\W+/).filter(w => w.length > 2);
-  const low = text.toLowerCase();
-  let at = -1;
-  for (const w of words) { const i = low.indexOf(w); if (i >= 0 && (at < 0 || i < at)) at = i; }
-  const start = Math.max(0, at - 150);
-  return (start ? '…' : '') + text.slice(start, start + 600);
-}
 
 // ── Repo helpers ──────────────────────────────────────────────────────────
 async function repoDir(name) {
@@ -154,7 +140,6 @@ function getSandbox() {
 const S = (props, required = []) => ({ type: 'object', properties: props, required });
 const str = (description) => ({ type: 'string', description });
 const num = (description) => ({ type: 'integer', description });
-const bool = (description) => ({ type: 'boolean', description });
 
 export const TOOLS = [
   // Files
@@ -166,79 +151,18 @@ export const TOOLS = [
     },
   },
   {
-    spec: { name: 'read_file', description: 'Read lines of a text file from the workspace, with line numbers. Long files come in parts: use grep to find the lines you need, then read just that range.', parameters: S({ path: str('File path, e.g. /home/notes.md or /repos/app/README.md'), start_line: num('First line to read (default 1)'), end_line: num('Last line to read (default start_line + 150)') }, ['path']) },
-    async run({ path, start_line = 1, end_line }, ctx = {}) {
+    spec: { name: 'read_file', description: 'Read a text file from the workspace.', parameters: S({ path: str('File path, e.g. /home/notes.md or /repos/app/README.md'), offset: num('Character offset to start from (for long files)') }, ['path']) },
+    async run({ path, offset = 0 }) {
       const text = await readAgentFile(path);
       if (text == null) return { model: { error: `No such file: ${path}` }, label: `read ${path} (missing)` };
-      const lines = text.split('\n');
-      const start = Math.max(1, Math.floor(start_line) || 1);
-      let end = Math.min(lines.length, Math.floor(end_line) || start + 149);
-      // Never more than the room left in the model's context (ctx.room, in chars).
-      const cap = Math.min(MAX_READ, ctx.room || MAX_READ);
-      let out = '';
-      for (let i = start; i <= end; i++) {
-        const line = `${i}: ${lines[i - 1]}\n`;
-        if (out.length + line.length > cap) { end = i - 1; break; }
-        out += line;
-      }
+      const part = text.slice(offset, offset + MAX_READ);
+      const more = text.length > offset + MAX_READ;
       const fromRepo = resolveAgentPath(path).area === 'repos';
       return {
-        model: { path, total_lines: lines.length, start_line: start, end_line: end, content: fromRepo || isAttachmentPath(path) ? wrapUntrusted('file ' + path, out) : out, ...(end < lines.length ? { more: `lines ${end + 1}-${lines.length} not shown; read them with start_line, or grep for what you need` } : {}) },
-        label: `read ${path}${start > 1 || end < lines.length ? ` lines ${start}-${end}` : ''}`,
+        model: { path, chars: text.length, offset, content: fromRepo ? wrapUntrusted('file ' + path, part) : part, ...(more ? { next_offset: offset + MAX_READ } : {}) },
+        label: `read ${path}`,
         observation: fromRepo ? { source: 'read_file', title: path, text: text.slice(0, 20000) } : null,
       };
-    },
-  },
-  {
-    spec: { name: 'grep', description: 'Search files for a word or regular expression. Returns matching lines as path:line: text. Use it to find where something is before reading.', parameters: S({ pattern: str('Text or regular expression, e.g. "function send" or "TODO|FIXME"'), path: str('Folder or file to search, e.g. /repos/app or /repos/app/src (default /home)'), ignore_case: bool('Case-insensitive (default true)'), skip: num('Skip this many matches (to get the next page)') }, ['pattern']) },
-    async run({ pattern, path = '/home', ignore_case = true, skip = 0 }, ctx = {}) {
-      let re;
-      try { re = new RegExp(pattern, ignore_case ? 'i' : ''); } catch { re = new RegExp(String(pattern).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), ignore_case ? 'i' : ''); }
-      const base = agentPath(resolveAgentPath(path));
-      const single = await readAgentFile(base);
-      const files = single != null ? [''] : (await listAgentDir(base)).map(e => e.replace(/\s+\(\d+ B\)$/, '')).filter(f => !f.endsWith('/'));
-      const cap = Math.min(6000, ctx.room || 6000);
-      const hits = [];
-      let size = 0, scanned = 0, more = false, seen = 0;
-      for (const f of files) {
-        if (/\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|woff2?|ttf|wasm|lock|map|min\.js)$/i.test(f)) continue;
-        const fp = f ? base.replace(/\/$/, '') + '/' + f : base;
-        const text = f ? await readAgentFile(fp) : single;
-        if (text == null || text.length > 1e6) continue;
-        scanned++;
-        const lines = text.split('\n');
-        for (let i = 0; i < lines.length; i++) {
-          if (!re.test(lines[i])) continue;
-          if (seen++ < skip) continue;
-          const hit = `${fp}:${i + 1}: ${lines[i].trim().slice(0, 160)}`;
-          if (size + hit.length > cap || hits.length >= 60) { more = true; break; }
-          hits.push(hit); size += hit.length + 1;
-        }
-        if (more) break;
-      }
-      const fromRepo = resolveAgentPath(base).area === 'repos';
-      const body = hits.join('\n') || '(no matches)';
-      return {
-        model: { pattern, path: base, files_searched: scanned, matches: fromRepo || hits.some(h => h.startsWith('/home/attachments/')) ? wrapUntrusted('grep ' + base, body) : body, ...(more ? { more: `more matches not shown; call again with skip: ${skip + hits.length}, or narrow the pattern or path` } : {}) },
-        label: `grep "${truncate(String(pattern), 40)}" in ${base} (${hits.length}${more ? '+' : ''})`,
-      };
-    },
-  },
-  {
-    spec: { name: 'note', description: 'Your notepad for this chat. Save what matters for the task (findings, file locations, decisions, next steps) so you don\'t need old tool output again; update or delete notes as they stop being relevant. Your notes are always shown to you.', parameters: S({ action: { type: 'string', enum: ['add', 'update', 'delete'], description: 'add a note, update one by id, or delete one by id' }, id: str('Note id (for update/delete)'), text: str('Note text (for add/update); keep it short') }, ['action']) },
-    async run({ action, id, text }, ctx = {}) {
-      const s = ctx.session;
-      if (!s) return { model: { error: 'No chat to keep notes in.' } };
-      if (action === 'add' || action === 'update') {
-        if (!text || !String(text).trim()) return { model: { error: 'Give the note text.' } };
-        const n = sessions.setNote(s, action === 'update' ? id : null, String(text).trim().slice(0, 1500));
-        if (!n) return { model: { error: `No note with id ${id}.` } };
-        return { model: { ok: true, id: n.id, notes: sessions.liveNotes(s).length }, label: `${action === 'add' ? 'noted' : 'updated note'}: ${truncate(n.text, 60)}` };
-      }
-      if (action === 'delete') {
-        return sessions.deleteNote(s, id) ? { model: { ok: true, deleted: id }, label: `erased note ${id}` } : { model: { error: `No note with id ${id}.` } };
-      }
-      return { model: { error: 'action must be add, update or delete.' } };
     },
   },
   {
@@ -515,32 +439,19 @@ export const TOOLS = [
       const docs = [];
       for (const s of sessions.list()) {
         for (const m of s.messages) if (m.content) docs.push({ id: `${s.id}|${m.id}`, text: m.content, s, m });
-        // Attached documents are searchable too (their text is outside content).
-        for (const o of s.observations || []) if (o.source === 'attachment') docs.push({ id: `${s.id}|${o.id}`, text: o.title + '\n' + o.text, s, o });
       }
       const scores = bm25(docs)(query);
       const top = docs.filter(d => scores.has(d.id)).sort((a, b) => scores.get(b.id) - scores.get(a.id)).slice(0, 6);
       return {
-        model: { results: top.map(d => d.o
-          ? { session: d.s.title, when: new Date(d.o.ts).toISOString().slice(0, 10), role: 'attachment', file: d.o.title, text: wrapUntrusted('attachment ' + d.o.title, bestPart(d.o.text, query)), this_session: d.s.id === ctx.session.id }
-          : { session: d.s.title, when: new Date(d.m.ts).toISOString().slice(0, 10), role: d.m.role, text: truncate(d.m.content, 600), this_session: d.s.id === ctx.session.id }) },
+        model: { results: top.map(d => ({ session: d.s.title, when: new Date(d.m.ts).toISOString().slice(0, 10), role: d.m.role, text: truncate(d.m.content, 600), this_session: d.s.id === ctx.session.id })) },
         label: `searched history for "${query}"`,
       };
     },
   },
 
-  // Math
-  {
-    spec: { name: 'calculate', description: 'Calculate a math expression exactly: + - * / ^, parentheses, percentages (15% of 240), pi and e, sqrt, round(x, digits), min, max, abs, floor, ceil, pow, log, ln, exp. Use it for every sum, price, percentage or conversion; never do math in your head.', parameters: S({ expression: str('A math expression, e.g. "300 * 25% + (120 - 60)" or "round((72 - 32) * 5 / 9, 1)"') }, ['expression']) },
-    async run({ expression }) {
-      const r = calculate(expression);
-      return r.error ? { model: { expression, error: r.error } } : { model: { expression, result: r.result }, label: `calculated ${truncate(String(expression), 40)} = ${r.result}` };
-    },
-  },
-
   // Code
   {
-    spec: { name: 'run_js', description: 'Run JavaScript in an isolated sandbox (no access to the user\'s data or files). Use for code, data processing, or checking logic, not for plain math (use calculate). Use console.log or return a value. Top-level await works.', parameters: S({ code: str('JavaScript code') }, ['code']) },
+    spec: { name: 'run_js', description: 'Run JavaScript in an isolated sandbox (no access to the user\'s data or files). Use for math, data processing, or checking logic. Use console.log or return a value. Top-level await works.', parameters: S({ code: str('JavaScript code') }, ['code']) },
     async run({ code }) {
       const r = await getSandbox().run(String(code || ''));
       return { model: { stdout: truncate((r.logs || []).join('\n'), 6000), result: r.result != null ? truncate(r.result, 4000) : undefined, error: r.error || undefined }, label: 'ran JavaScript' };

@@ -1,6 +1,5 @@
 // Models. Gemma 4 E2B/E4B run on this device through LiteRT-LM on WebGPU;
-// Gemma 3 270M runs on the CPU through wllama (engine-wllama.js) and is the
-// phone default; the cloud model (Gemma 4 26B) runs on the relay (engine-cloud.js). Handles
+// the cloud model (Gemma 4 26B) runs on the relay (engine-cloud.js). Handles
 // the one-time resumable download into IndexedDB, engine startup, and
 // streaming generation with tools.
 import { kv, mutex } from './util.js';
@@ -14,12 +13,6 @@ export const MODELS = {
     url: HF + 'litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-web.litertlm' },
   E2B: { label: 'Gemma 4 E2B', size: '2.0 GB', note: 'faster, still good with tools', phone: false, runtime: 'litert',
     url: HF + 'litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.litertlm' },
-  G3: { label: 'Gemma 3 270M', size: '242 MB', note: 'tiny and fast; runs on a phone\'s CPU, no WebGPU needed. Chat only: no tools or web lookups, and it often gets facts wrong', phone: true, runtime: 'wllama',
-    url: HF + 'unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q4_0.gguf', bytes: 241574944 },
-  // Experimental: LFM2.5-350M fine-tuned on Squiggle's harness format (tp-parse
-  // experiments/squiggle-ft). Same runtime and prompt format as G3.
-  SQ: { label: 'Squiggle Small (experimental)', size: '219 MB', note: 'LFM2.5 350M trained on Squiggle\'s own tools and habits (plan, find, done). Uses tools and looks things up; still often wrong; runs on a phone\'s CPU', phone: true, runtime: 'wllama', tools: true,
-    url: HF + 'kealjones/squiggle-small/resolve/main/squiggle-small-lfm25-Q4_0.gguf', bytes: 219312160 },
   // Not on this device: runs on the relay (only listed when the relay offers it).
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true },
 };
@@ -28,7 +21,7 @@ export const MODELS = {
 export function modelFiles(id) {
   const m = MODELS[id];
   if (!m) throw new Error(`Unknown model "${id}".`);
-  return m.runtime === 'litert' ? [{ url: m.url }] : [];
+  return m.runtime === 'cloud' ? [] : [{ url: m.url }];
 }
 
 const FLUSH_BYTES = 16 * 1024 * 1024;
@@ -44,13 +37,6 @@ let bgBusy = false;
 
 export const engineReady = () => Boolean(engine);
 export const currentModel = () => loadedModel;
-// The small CPU model (prompt-based tools, short system prompt).
-export const isLite = (id = loadedModel) => Boolean(MODELS[id] && MODELS[id].runtime === 'wllama');
-// A small model with no tool training (stock Gemma 3 270M) can't follow the
-// harness: any system prompt makes it answer the instructions instead of the
-// person ("Okay, I'm ready to be Squiggle!"). It runs as plain chat: no system
-// prompt, no tools, no background summaries. A fine-tuned build sets `tools: true`.
-export const chatOnly = (id = loadedModel) => isLite(id) && !(MODELS[id] && MODELS[id].tools);
 
 export async function webgpuStatus() {
   if (!('gpu' in navigator)) return { ok: false, reason: 'This browser has no WebGPU. Use a recent Chrome, Edge, or Safari (iOS/macOS 26+).' };
@@ -80,14 +66,12 @@ export function isMobile() {
   return /Android|iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 }
 
-// The model for this device: computers run E4B; phones run Squiggle Small
-// (LFM2.5 350M fine-tuned on the harness) on the CPU, because Gemma 4 doesn't fit a phone browser tab's memory (iOS
-// Safari kills the tab). Phones can still pick the cloud model.
+// The model for this device: computers run E4B; phones use the cloud model,
+// because no on-device model fits a phone browser tab's memory (iOS Safari
+// kills the tab). The UI falls back when the relay doesn't offer the cloud.
 export function deviceModel() {
-  return isMobile() ? 'SQ' : 'E4B';
+  return isMobile() ? 'cloud' : 'E4B';
 }
-// Runs without WebGPU (CPU only).
-export const needsGpu = (id) => Boolean(MODELS[id] && MODELS[id].runtime === 'litert');
 export const suggestModel = deviceModel;
 export const modelFitsDevice = (id) => !isMobile() || Boolean(MODELS[id] && MODELS[id].phone);
 
@@ -97,11 +81,6 @@ const metaKey = (url) => 'model-meta:' + url;
 const recSize = (r) => (r == null ? 0 : r.size ?? r.byteLength);
 
 export async function downloadInfo(id) {
-  const wm = MODELS[id];
-  if (wm && wm.runtime === 'wllama') {
-    const done = await (await import('./engine-wllama.js')).isDownloaded(wm.url);
-    return { total: wm.bytes, stored: done ? wm.bytes : 0, complete: done };
-  }
   let total = 0, stored = 0, complete = true;
   for (const f of modelFiles(id)) {
     const m = (await kv.get(metaKey(f.url))) || { total: 0, stored: 0, complete: false };
@@ -131,10 +110,6 @@ export async function download(id, onProgress, signal, { onWaiting } = {}) {
 
 async function downloadUnlocked(id, onProgress, signal) {
   if ((await downloadInfo(id)).complete) return;
-  if (MODELS[id].runtime === 'wllama') {
-    try { await navigator.storage?.persist?.(); } catch {}
-    return (await import('./engine-wllama.js')).downloadModel(MODELS[id].url, onProgress, signal);
-  }
   const files = modelFiles(id);
   const metas = await Promise.all(files.map(f => kv.get(metaKey(f.url))));
   const sizes = files.map((f, i) => (metas[i] && metas[i].total) || f.size);
@@ -231,7 +206,6 @@ async function storedBytes(url) {
 }
 
 export async function deleteModel(id) {
-  if (MODELS[id] && MODELS[id].runtime === 'wllama') return (await import('./engine-wllama.js')).removeModel(MODELS[id].url);
   for (const { url } of modelFiles(id)) {
     for (const off of await chunkOffsets(url)) await kv.del([url, off], 'model');
     await kv.del(metaKey(url));
@@ -288,11 +262,6 @@ export async function load(id, contextSize, { fast = true, onStage = () => {} } 
     loadedModel = id; engineContext = contextSize; engineFast = fast;
     return;
   }
-  if (MODELS[id].runtime === 'wllama') {
-    engine = await (await import('./engine-wllama.js')).createEngine(MODELS[id].url, contextSize, onStage);
-    loadedModel = id; engineContext = contextSize; engineFast = fast;
-    return;
-  }
   onStage('starting the runtime');
   lib = lib || await import(LITERT);
   onStage('loading the model onto the GPU');
@@ -336,15 +305,13 @@ const SAMPLER = { type: 2, p: 0.95, k: 64, temperature: 0.7 };
 const GREEDY = { type: 3 };
 
 // Starts a conversation from a preface: system text, prior turns, tools.
-export async function conversation({ system, messages = [], tools = [], thinking = false, maxOutputTokens = 2048, greedy = false, known = [] }) {
+export async function conversation({ system, messages = [], tools = [], thinking = false, maxOutputTokens = 2048, greedy = false }) {
   if (!engine) throw new Error('Model not loaded.');
   const preface = {
     messages: [{ role: 'system', content: system }, ...messages],
     extra_context: { enable_thinking: thinking },
   };
   if (tools.length) preface.tools = tools.map(t => ({ type: 'function', function: t }));
-  // The small model only sees details of tools it has looked up (engine-wllama.js).
-  if (isLite() && known.length) preface.known = known;
   const cfg = { preface, sessionConfig: { maxOutputTokens, samplerParams: greedy ? GREEDY : SAMPLER } };
   try {
     return await engine.createConversation(cfg);
