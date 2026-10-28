@@ -250,3 +250,98 @@ Habits, in order of importance:
 5. **Messy input**: Keal's rambling, voice-dictated, self-correcting messages,
    bare links, references to old chats.
 6. Plain chat stays plain: "hey whats up lol" gets a short normal reply.
+
+## Proposal: the model manages its own context (not built yet)
+
+Status: **proposed** (Keal, 2026-10-28), for review before any code changes. Today the
+harness decides what each prompt holds (smart context, the step prompt above). This
+proposal lets the model choose what it carries forward, sees what everything costs,
+and hands off to a fresh context instead of running out. It's meant for every model,
+and especially to be learned by the small one from Gemma 4 runs (next section).
+
+### 1. Told up front
+
+One paragraph in every system prompt (small-model version kept to two lines):
+
+> You work over several turns and steps. Each one shows you only what it needs; anything
+> earlier can be fetched with find or attached to a step. Don't try to fit everything into
+> one turn. When you're running low on room, checkpoint and carry on fresh.
+
+### 2. A budget line on every prompt
+
+The last line before the model writes, in the chat phase and in every step:
+
+```
+Context: 2,310 of 4,096 tokens used (about 1,000 left after room for your reply).
+```
+
+Tool results already carry `context_left`; this makes the budget visible before the
+model's first call too, and counts what the attachments below cost.
+
+### 3. Steps that say what they need
+
+`plan(goal, steps)` takes steps as objects as well as strings:
+
+```json
+{"text": "Compare the two birth years", "needs": ["step:1", "step:2"]}
+{"text": "Fix the wave function", "needs": ["file:/repos/squiggle/app/src/main.js:610-640", "note:n3"]}
+```
+
+- **What can be attached:** `step:N` (that step's result), `note:<id>`, `file:<path>[:lines]`
+  (also `/web/<n>.txt` pages), `find:<query>` (whatever `find` returns at that point).
+- **What the step prompt shows:** each attachment with its cost, e.g.
+  `## Attached for this step (612 tokens)`. Unattached earlier results still show as
+  one-liners, as now.
+- **Revising:** calling `plan` again can add steps, reorder the remaining ones, and change
+  any step's `needs`; finished steps keep their results (today's revise rule).
+- **Over budget:** the harness trims the largest attachment (head and tail, or its line
+  range), and the prompt says what was trimmed and how to get the rest. A step never fails
+  for attaching too much.
+
+### 4. Summarise steps
+
+A step can be `{"text": "...", "kind": "summarize", "needs": ["file:/web/2.txt"]}`. It reads
+something big and ends with `done(summary)`. Later steps attach `step:N` (the short summary)
+instead of the big thing. The harness suggests one when a `needs` entry alone would take
+more than about a third of the window.
+
+### 5. Checkpoint: hand off to a fresh context
+
+A harness tool, available in the chat phase and inside steps:
+
+| Tool | Arguments | What it does |
+|---|---|---|
+| `checkpoint` | `summary` (what's known and done so far), `needs` (the same attachment refs as above), `next` (what to do next) | Saves the summary as a note on the task and ends this turn's context. The harness starts a fresh one with: the original request, the summary, the `needs` attachments and `next` as the instruction. The user sees one continuous reply. |
+
+- **When it's offered:** when less than about 600 tokens are left, a tool result (or the
+  budget line) adds: "You're running low on room. Finish now, or checkpoint with what you
+  need for the next turn." Long reasoning is a reason to checkpoint too: thinking that isn't
+  done can go in `summary`.
+- **In the chat phase:** a checkpoint turns the turn into a task, so the summary and
+  attachments survive like step results and `find` can reach them.
+- **Limits:** at most 4 checkpoints per turn, then the harness asks the user whether to go
+  on (the check-in that already exists).
+- **Fallbacks:** if the model never checkpoints and the window fills, today's behaviour
+  stands (the call is refused with "context almost full"), so nothing gets worse.
+
+### 6. How the small model learns it
+
+- **Gemma 4 plays the model** inside this harness, with the small model's 4,096-token window
+  and the small-model prompt. Its real runs are saved: thinking (kept only when short), tool
+  calls, `plan` with `needs`, summarise steps and checkpoints. Gemma 4 is Apache-2.0;
+  Anthropic support confirmed Claude can't write these examples (2026-10-28).
+- **New families:** a long page that needs a summarise step; a multi-step task whose later
+  steps attach earlier results; a task too big for one window that has to checkpoint; a
+  revised plan after a step finds something unexpected.
+- **New checks:** attachments that are used (the step's Check or result quotes them);
+  checkpoint summaries that carry the facts the next turn needed; no checkpoint when there
+  was plenty of room.
+
+### Open questions
+
+- Should `needs` on a step replace the automatic "Found earlier in this task" retrieval, or
+  only add to it? (Proposed: add to it at first, then measure whether retrieval still helps.)
+- The checkpoint threshold (600 tokens) and the summarise suggestion (a third of the window)
+  need measuring on the phone.
+- Big models have room to spare; they get the same tools, but the budget line matters
+  mostly for small ones.
