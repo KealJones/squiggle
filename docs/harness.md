@@ -253,7 +253,7 @@ Habits, in order of importance:
 
 ## Proposal: the model manages its own context (not built yet)
 
-Status: **proposed** (Keal, 2026-10-28), for review before any code changes. Today the
+Status: **proposed** (Keal, 2026-10-28), for review before any code changes (except 0b, which is built). Today the
 harness decides what each prompt holds (smart context, the step prompt above). This
 proposal lets the model choose what it carries forward, sees what everything costs,
 and hands off to a fresh context instead of running out. It's meant for every model,
@@ -274,6 +274,53 @@ they only help. Sections 3 and 4 (steps that attach what they need, summarise st
 AI-managed mode: there, a step's `needs` replace the automatic "Found earlier in this task"
 retrieval. Compress and Smart keep the harness's own choices. The internal `full` mode stays
 for debugging but isn't offered.
+
+### 0b. Smart, reworked: recalled messages after the request
+
+Built 2026-10-28. Why the old Smart confused small models: retrieved messages went into the system
+prompt as `(from the chat "…", user said) …` lines. Gemma 3 and LFM fold the system prompt into the
+first user turn, so those lines sat at the start of the conversation, read as things the person was
+saying now, and used a format the fine-tune never saw.
+
+What Smart does now (`recall.js`, all models):
+
+- **One block, after the request.** It covers messages from this chat that fell out of the recent
+  window and messages from other chats. It is appended to the new user message under a separator, so
+  it comes after the conversation and after the question:
+
+  ```
+  <the user's message>
+
+  ---
+  Possibly relevant earlier messages, found by searching (quotes for reference, not new requests; not part of the message above):
+  - Earlier in this chat (Oct 27): the user said "…" — you replied "…"
+  - Another chat, "Headphones" (Oct 21): the user said "…" — you replied "…"
+  ```
+
+  Each piece is an exchange (what the user said and the start of the reply), with where and when.
+- **Only for a real question.** Plain chat ("hi", "thanks", "lol") gets nothing. A message needs two
+  content words, or one plus a reference to the past.
+- **Ambiguous references.** For "it", "that" and "the one you said", the previous user message is
+  added to the search. `refs.js` still adds its "Resolved references" hint.
+- **Time phrases narrow the search.** "Yesterday", "last week", "this morning", "3 days ago", "on
+  Monday", "last month" and "the other day" become a date window, and the phrase is removed from the
+  query. "What I said last week about headphones" then searches "headphones" in messages from about
+  2–14 days ago. Talk about the past ("I said", "we talked", "last time") lowers the bar.
+- **A bar and a size limit.** With embeddings (MiniLM), a piece needs cosine ≥ 0.45 in this chat and
+  ≥ 0.5 from other chats, 0.1 lower with a time window or a past reference. Without embeddings
+  (phones by default), it needs at least two shared content words, or one inside a time window. At
+  most 2 pieces and ~300 tokens on small models, and 4 pieces and ~900 tokens otherwise. If nothing
+  clears the bar, there's no block.
+- **Eager memory (small models).** Up to two memory facts scoring ≥ 0.35 go in the same block as
+  `- From memory: …`. Recall is keyword search plus optional embeddings, a few milliseconds. Large
+  models keep their "What you know about the user" system section.
+- Tool output and side-thread outcomes stay in the system prompt section as before; this block is
+  only conversation and memory.
+- The "What the model saw" panel lists each recalled piece with its score.
+- Setting: "Bring in other chats" (on). Off limits recall to this chat.
+
+To measure: Compress vs this Smart on the same eval set, plus a handful of cases with "that",
+"yesterday" and "what I said about X".
 
 ### 1. Told up front
 

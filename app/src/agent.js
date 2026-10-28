@@ -27,6 +27,7 @@ export const settings = {
   fastDecode: true,         // multi-token prediction: faster, uses more memory
   contextMode: 'smart',     // 'smart' (default) | 'compact' | 'full'
   semantic: true,           // MiniLM embeddings for retrieval (off on phones; BM25 alone works)
+  recallChats: true,        // smart mode may recall messages from other chats too
   learn: true,              // extract memory facts after turns
   tools: null,              // Set of enabled tool names, or null for all
 };
@@ -268,13 +269,12 @@ class Turn {
     return assembleContext({
       line, session, threadId, query: shown, budget, mode: settings.contextMode,
       system: systemPrompt(threadId, session), extra, focus,
-      // Small models get recent messages and the harness's own sections only:
-      // they look up memory and past chats with find, and a 4K window can't spare
-      // the room (injected facts and other chats also confused them).
-      // No other chats for any model: matching on shared words pulled in every chat
-      // where the user said "hi". The model searches them (find, search_history) when it needs to.
-      others: [],
-      recall: lite() ? null : (q, k) => memory.recall(q, k), factText: memory.factText,
+      // Smart mode recalls a few earlier messages (this chat's and, with the setting
+      // on, other chats') and, for small models, memory facts into a labelled block
+      // after the request (recall.js); only on a real question and above a bar.
+      others: settings.recallChats === false ? [] : sessions.list(),
+      small: lite(),
+      recall: (q, k) => memory.recall(q, k), factText: memory.factText,
       actions: !lite(),   // "Tool calls you made" read to small models as things the user said
       embed: settings.contextMode === 'smart' && settings.semantic ? embed : null,
     });
@@ -300,6 +300,8 @@ class Turn {
     // the free room (the model reads the rest with read_file / grep).
     const att = attachmentPrompt(this.attachments, Math.floor(room() / 2));
     let pending = att.text ? `${this.shown}\n\n${att.text}` : this.shown;
+    // Recalled earlier messages go after the request, clearly quoted (not for plain chat).
+    if (ctx.recalled && !plain()) { pending += `\n\n${ctx.recalled}`; used += estTokens(ctx.recalled); }
     this.attNote = att.note || '';
     used += estTokens(att.text);
     let chatCalls = 0, full = false;

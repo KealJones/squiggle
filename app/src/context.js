@@ -17,14 +17,12 @@ import { estTokens, truncate } from './util.js';
 import { bm25, blend, cosine } from './search.js';
 import { wrapUntrusted } from './untrusted.js';
 import { replayNote } from './attachments.js';
+import { recallBlock } from './recall.js';
 
 const RECENT_SHARE = { smart: 0.45, compact: 0.6, full: 1 };
 const MIN_RECENT = 2;
 const OBS_MIN_SCORE = 0.9;
 const MIN_SCORE = 0.18;
-const CHAT_MIN_SCORE = 0.5;   // other chats only come back on a strong match
-const MAX_OTHER_SESSIONS = 40;
-const MAX_OTHER_MESSAGES = 30;
 const CHUNK_TOKENS = 700;
 
 const day = (ts) => new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -80,6 +78,7 @@ export function chunk(text, maxTokens = CHUNK_TOKENS) {
  * @param {string}   [o.focus]     the active goal and step, added to the retrieval query
  * @param {object[]} [o.extra]     sections from the harness, shown first: [{ kind, title, text, label }]
  * @param {object[]} [o.others]    other sessions to search (smart mode)
+ * @param {boolean} [o.small]     small model: tighter recall limits, memory facts in the recalled block
  * @param {boolean} [o.actions]    false leaves out the recap of earlier tool calls (small models)
  */
 export async function assembleContext(o) {
@@ -115,6 +114,7 @@ export async function assembleContext(o) {
   if (recent.length) report.items.push({ kind: 'recent', label: `Last ${recent.length} message${recent.length === 1 ? '' : 's'}`, tokens: recentTokens, ids: [...recentIds] });
 
   const sections = [];
+  let recalled = { text: '', items: [] };
 
   // Harness sections (resolved references, a recipe for a similar task).
   for (const x of o.extra || []) {
@@ -180,7 +180,7 @@ export async function assembleContext(o) {
   }
 
   // 4. Memory facts (all modes; they're small and about the person).
-  if (o.recall) {
+  if (o.recall && !o.small) {
     const facts = (await o.recall(o.focus ? `${query}\n${o.focus}` : query, 10)).filter(r => r.score >= 0.25);
     const cap = Math.floor(budget * 0.12);
     const lines = [];
@@ -199,10 +199,14 @@ export async function assembleContext(o) {
   if (mode === 'smart') {
     const cands = [];
     const pinnedIds = new Set(pinned.map(m => m.id));
-    for (const m of older) {
-      if (pinnedIds.has(m.id) || !m.content) continue;
-      cands.push({ id: 'm:' + m.id, kind: 'message', ts: m.ts, text: messageText(m), render: (x) => `(${m.role === 'user' ? 'user said' : 'you said'}, ${day(m.ts)}) ${x}`, label: snippet(m.content), ref: m.id });
-    }
+    // Messages (this chat's older ones and other chats') go to the recalled
+    // block after the request (recall.js); this section is tool output and threads.
+    recalled = await recallBlock({
+      query, focus: o.focus, prevUser: (([...recent].reverse().find(m => m.role === 'user')) || {}).content || '',
+      inChat: older.filter(m => !pinnedIds.has(m.id)), others: (o.others || []).filter(x => x && x.id !== session.id),
+      embed: o.embed, recall: o.small ? o.recall : null, factText: o.factText, textOf: (m) => messageText(m), small: o.small, now: o.now,
+    }).catch(() => recalled);
+    for (const it of recalled.items) { used += it.tokens; report.items.push({ ...it, placed: 'after the message' }); }
     const lineThread = (obs) => !obs.thread || obs.thread === threadId;
     for (const ob of (session.observations || []).filter(lineThread)) {
       chunk(ob.text).forEach((c, i) => cands.push({
@@ -213,25 +217,6 @@ export async function assembleContext(o) {
     for (const t of Object.values(session.threads || {})) {
       if (t.summary && t.id !== threadId && !recentIds.has(t.parent)) {
         cands.push({ id: 't:' + t.id, kind: 'thread', ts: t.updated, text: `${t.title}\n${t.summary}`, render: (x) => `(side thread "${t.title}") ${x}`, label: `Thread: ${t.title}`, ref: t.id });
-      }
-    }
-    // Other chats: their messages, searched like this one's but with a higher bar.
-    const others = (o.others || []).filter(x => x && x.id !== session.id && !x.deleted)
-      .sort((a, b) => (b.updated || 0) - (a.updated || 0)).slice(0, MAX_OTHER_SESSIONS);
-    // Keyword search picks the best few first, so embeddings (when on) only
-    // run over a handful of other-chat messages, not every message.
-    const chatDocs = [];
-    for (const x of others) {
-      for (const m of x.messages || []) {
-        if (!m.content || (m.role !== 'user' && m.role !== 'assistant')) continue;
-        chatDocs.push({ id: `c:${x.id}:${m.id}`, text: truncate(messageText(m), 1500), x, m });
-      }
-    }
-    if (chatDocs.length) {
-      const pre = bm25(chatDocs)(query + (o.focus ? '\n' + o.focus : ''));
-      const top = chatDocs.filter(d => pre.has(d.id)).sort((a, b) => pre.get(b.id) - pre.get(a.id)).slice(0, MAX_OTHER_MESSAGES);
-      for (const { id, text, x, m } of top) {
-        cands.push({ id, kind: 'chat', ts: m.ts, text, render: (y) => `(from the chat "${truncate(x.title || '', 50)}", ${day(m.ts)}, ${m.role === 'user' ? 'user said' : 'you said'}) ${y}`, label: `${x.title || 'Chat'}: ${snippet(m.content)}`, ref: m.id });
       }
     }
     if (cands.length) {
@@ -252,26 +237,23 @@ export async function assembleContext(o) {
         : s >= OBS_MIN_SCORE);
       const ranked = cands
         .map(c => ({ c, s: (scores.get(c.id) || 0) + 0.05 * recency(c.ts, newest) }))
-        .filter(x => x.s >= (x.c.kind === 'chat' ? CHAT_MIN_SCORE : MIN_SCORE) && obsOk(x.c, x.s))
+        .filter(x => x.s >= MIN_SCORE && obsOk(x.c, x.s))
         .sort((a, b) => b.s - a.s);
       const obsCap = Math.floor(budget * 0.25);
       let obsUsed = 0;
-      const chatCap = Math.floor(budget * 0.15);
-      let chatUsed = 0;
       const picked = [];
       for (const { c, s } of ranked) {
         const body = c.render(truncate(c.text, 4000));
         const t = estTokens(body) + 4;
         if (used + t > budget) continue;
         if (c.kind === 'observation') { if (obsUsed + t > obsCap) continue; obsUsed += t; }
-        if (c.kind === 'chat') { if (chatUsed + t > chatCap) continue; chatUsed += t; }
         picked.push({ c, body, s });
         used += t;
         report.items.push({ kind: c.kind, id: c.id, ref: c.ref, label: c.label, tokens: t, score: round(s) });
       }
       if (picked.length) {
         picked.sort((a, b) => (a.c.ts || 0) - (b.c.ts || 0)); // chronological reads better
-        sections.push(`## Possibly relevant earlier context (retrieved for this message)\n${picked.map(p => p.body).join('\n\n')}`);
+        sections.push(`## Possibly relevant earlier tool output (retrieved for this message)\n${picked.map(p => p.body).join('\n\n')}`);
       }
     }
   }
@@ -291,9 +273,10 @@ export async function assembleContext(o) {
   if (messages.length && messages[messages.length - 1].role === 'user') messages.push({ role: 'model', content: '(no reply)' });
 
   report.used = used;
+  report.recalled = recalled.text;
   report.dropped = Math.max(0, older.length - report.items.filter(i => i.kind === 'message').length - pinned.length);
   const systemText = [system, ...sections].join('\n\n');
-  return { system: systemText, messages, report };
+  return { system: systemText, messages, report, recalled: recalled.text };
 }
 
 function pickSummary(session, threadId, line) {
