@@ -227,9 +227,9 @@
     const MMPROJ_URL = HF + 'mmproj-LFM2.5-VL-450m-Q8_0.gguf';
     const N_CTX = 2048;
     // How many tokens a photo turns into: fewer is faster and lighter, more reads
-    // small text better. Try ?img=64 / 128 / 256 in the address to compare.
+    // small text better. Try ?img=128 or ?img=256 in the address to compare.
     const IMG_PARAM = Number(new URLSearchParams(location.search).get('img'));
-    const IMAGE_MAX_TOKENS = [64, 128, 256].includes(IMG_PARAM) ? IMG_PARAM : 128;
+    const IMAGE_MAX_TOKENS = [128, 256].includes(IMG_PARAM) ? IMG_PARAM : 128;
     const MAX_SIDE = IMAGE_MAX_TOKENS >= 256 ? 768 : 512;   // photos are shrunk to this first
     const SYSTEM = 'You are a helpful assistant that can see images. Read any text in an image exactly. Keep answers short and clear. If you are not sure what something is, say so.';
     const DEFAULT_ASK = 'What is in this photo? Read any text you can see.';
@@ -449,7 +449,15 @@
         if (u.role === 'user' && a.role === 'assistant' && a.content.trim()) pairs.push([u, a]);
       }
       const msgs = [{ role: 'system', content: SYSTEM }];
-      for (const [u, a] of pairs.slice(-MAX_PAIRS)) msgs.push({ role: 'user', content: u.content }, { role: 'assistant', content: a.content });
+      // The newest photo stays with the turn it came with, so follow-up questions
+      // can still see it (llama.cpp reuses the cached prompt, so it isn't re-read).
+      const keep = pairs.slice(-MAX_PAIRS);
+      const lastPhoto = [...keep].reverse().find(([u]) => u.photoBytes);
+      for (const [u, a] of keep) {
+        const text = u.content || DEFAULT_ASK;
+        const content = lastPhoto && u === lastPhoto[0] ? [{ type: 'image', data: u.photoBytes.slice(0) }, { type: 'text', text }] : text;
+        msgs.push({ role: 'user', content }, { role: 'assistant', content: a.content });
+      }
       return msgs;
     }
 
@@ -499,9 +507,11 @@
       $('start').hidden = true;
       const msgs = history();
       const ask = text || DEFAULT_ASK;
-      // Only the newest photo goes to the model; earlier turns go back as text.
+      // A new photo replaces the old one; without one, the last photo stays in history.
+      if (photo) for (const m of msgs) if (Array.isArray(m.content)) m.content = m.content.find(c => c.type === 'text').text;
       msgs.push({ role: 'user', content: photo ? [{ type: 'image', data: photo.bytes.slice(0) }, { type: 'text', text: ask }] : ask });
-      addTurn('user', text, photo && photo.url);
+      const userTurn = addTurn('user', text, photo && photo.url);
+      if (photo) userTurn.photoBytes = photo.bytes;
       unpick();
       state.busy = true;
       const turn = state.current = addTurn('assistant', '');
@@ -551,7 +561,7 @@
         const firstMs = first ? first - t0 : end - t0;
         const bits = [];
         if (turn.stopped) bits.push('Stopped');
-        if (photo) bits.push(`read the photo in ${(((timings && timings.prompt_ms) || firstMs) / 1000).toFixed(1)} s`);
+        if (photo || msgs.some(m => Array.isArray(m.content))) bits.push(`${photo ? 'read the photo' : 'looked at the photo again'} in ${(((timings && timings.prompt_ms) || firstMs) / 1000).toFixed(1)} s`);
         bits.push(`${n} tokens`);
         if (tps) bits.push(`${tps.toFixed(1)} tokens/s`);
         bits.push(`first word after ${(firstMs / 1000).toFixed(1)} s`);
