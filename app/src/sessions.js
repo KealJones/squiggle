@@ -11,7 +11,7 @@ const pendingSave = new Set();
 
 export function newSession(title = 'New chat') {
   const now = Date.now();
-  const s = { v: 1, id: uid('s'), title, created: now, updated: now, messages: [], threads: {}, observations: [], summaries: {}, notes: {} };
+  const s = { v: 1, id: uid('s'), title, created: now, updated: now, messages: [], threads: {}, observations: [], summaries: {}, notes: {}, tasks: {} };
   cache.set(s.id, s);
   return s;
 }
@@ -157,6 +157,14 @@ export function deleteNote(session, id) {
   return true;
 }
 
+// Step-mode tasks (tasks.js). Saved on the session and merged by id, newest wins.
+export function saveTask(session, task) {
+  session.tasks = session.tasks || {};
+  session.tasks[task.id] = task;
+  touch(session);
+  return task;
+}
+
 function parse(text) { try { return JSON.parse(text); } catch { return null; } }
 
 function normalize(s) {
@@ -165,5 +173,6 @@ function normalize(s) {
   s.threads = s.threads || {};
   s.observations = s.observations || [];
   s.summaries = s.summaries || {};
+  s.tasks = s.tasks || {};
   return s;
 }

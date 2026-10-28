@@ -16,7 +16,11 @@ export function loadEmbedder() {
   if (extractor || failed) return Promise.resolve(Boolean(extractor));
   loading = loading || (async () => {
     try {
-      const { pipeline } = await import(LIB);
+      const { pipeline, env } = await import(LIB);
+      // transformers.js caches the ONNX runtime's JS and loads it from a blob:
+      // URL, which the page CSP blocks (semantic search then never loaded).
+      // Load it straight from the CDN instead; the browser caches it anyway.
+      try { env.useWasmCache = false; } catch {}
       extractor = await pipeline('feature-extraction', MODEL, { dtype: 'q8', device: 'wasm' });
       return true;
     } catch (e) {

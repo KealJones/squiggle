@@ -40,6 +40,8 @@ let bgBusy = false;
 
 export const engineReady = () => Boolean(engine);
 export const currentModel = () => loadedModel;
+// The small CPU model (prompt-based tools, short system prompt).
+export const isLite = (id = loadedModel) => Boolean(MODELS[id] && MODELS[id].runtime === 'wllama');
 
 export async function webgpuStatus() {
   if (!('gpu' in navigator)) return { ok: false, reason: 'This browser has no WebGPU. Use a recent Chrome, Edge, or Safari (iOS/macOS 26+).' };
@@ -325,13 +327,15 @@ const SAMPLER = { type: 2, p: 0.95, k: 64, temperature: 0.7 };
 const GREEDY = { type: 3 };
 
 // Starts a conversation from a preface: system text, prior turns, tools.
-export async function conversation({ system, messages = [], tools = [], thinking = false, maxOutputTokens = 2048, greedy = false }) {
+export async function conversation({ system, messages = [], tools = [], thinking = false, maxOutputTokens = 2048, greedy = false, known = [] }) {
   if (!engine) throw new Error('Model not loaded.');
   const preface = {
     messages: [{ role: 'system', content: system }, ...messages],
     extra_context: { enable_thinking: thinking },
   };
   if (tools.length) preface.tools = tools.map(t => ({ type: 'function', function: t }));
+  // The small model only sees details of tools it has looked up (engine-wllama.js).
+  if (isLite() && known.length) preface.known = known;
   const cfg = { preface, sessionConfig: { maxOutputTokens, samplerParams: greedy ? GREEDY : SAMPLER } };
   try {
     return await engine.createConversation(cfg);

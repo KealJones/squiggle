@@ -651,6 +651,82 @@ await check('a full agent turn through the UI (scripted model): tools, untrusted
   assert.deepEqual(errs, []);
 });
 
+await check('step mode through the UI: plan, live checklist, find, done, final reply, recipe; need asks and resumes', async () => {
+  const D = await device('steps');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  await D.page.fill('#input', 'PLANTEST kill whatever is on port 8080');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => /it is free now/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 20000 });
+  const r = await D.page.evaluate(async () => {
+    const sessions = await import('/src/sessions.js');
+    const log = window.__engineLog;
+    const s = sessions.list().find(x => x.messages.some(m => /PLANTEST/.test(m.content)));
+    const reply = s.messages.find(m => m.role === 'assistant');
+    const task = s.tasks[reply.task];
+    const steps = log.filter(x => x.type === 'conversation' && /## Plan/.test(x.system));
+    return {
+      task: task && { goal: task.goal, status: task.status, steps: task.steps.map(x => [x.status, x.result]) },
+      stepSystems: steps.map(x => x.system),
+      stepTools: steps.map(x => x.tools),
+      finalTools: log.filter(x => x.type === 'conversation' && /What each step found/.test(x.system)).map(x => x.tools),
+      findResult: JSON.stringify(log.find(x => x.type === 'respond' && Array.isArray(x.input) && x.input[0].content[0].name === 'find').input),
+      chip: document.querySelector('#messages .plan.chip summary')?.textContent,
+      reply: reply.content, trail: (reply.tools || []).map(t => t.label), thinking: reply.thinking || '',
+    };
+  });
+  assert.deepEqual(r.task, { goal: 'Free port 8080', status: 'done', steps: [['done', 'node (pid 4242) is on 8080'], ['done', 'Stopped node (pid 4242).']] });
+  assert.equal(r.stepSystems.length, 2, 'a fresh prompt per step');
+  assert.match(r.stepSystems[0], /## Goal\nFree port 8080\n\n## Plan\n1\. \[now\] Find what is listening on 8080\n2\. \[todo\] Stop it/);
+  assert.match(r.stepSystems[1], /1\. \[done\] Find what is listening on 8080 → node \(pid 4242\) is on 8080\n2\. \[now\] Stop it/);
+  assert.ok(r.stepTools[0].includes('done') && !r.stepTools[0].includes('note'), 'steps get done, not the notepad');
+  assert.deepEqual(r.finalTools, [[]], 'the final reply has no tools');
+  assert.match(r.findResult, /"found":"Tools:\\n- /);
+  assert.match(r.chip, /^2\/2 steps/);
+  assert.match(r.reply, /^Port 8080 had node/);
+  assert.ok(r.trail.some(l => /^planned 2 steps/.test(l)) && r.trail.some(l => /^done: /.test(l)), JSON.stringify(r.trail));
+  assert.match(r.thinking, /Look it up first\./);
+  assert.match(r.thinking, /Step 2: Stop it\nStopped node/);
+
+  // The finished plan became a recipe; a similar request gets it in the prompt.
+  await D.page.waitForFunction(async () => (await import('/src/recipes.js')).list().length === 1, null, { timeout: 8000 });
+  const recipe = await D.page.evaluate(async () => (await import('/src/recipes.js')).list()[0]);
+  assert.deepEqual(recipe.steps, ['Find what is listening on 8080', 'Stop it']);
+  await D.page.fill('#input', 'kill whatever is listening on port 8080');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => /Plain answer to: kill whatever/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 15000 });
+  const sys = await D.page.evaluate(() => window.__engineLog.filter(x => x.type === 'conversation').pop().system);
+  assert.match(sys, /## Recipe from a similar task[^\n]*\n[^\n]*\n1\. Find what is listening on 8080\n2\. Stop it/);
+
+  // need with nothing found: the question is the reply; the next message is the answer.
+  await D.page.click('#new-chat');
+  await D.page.fill('#input', 'NEEDTEST set things up');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => /Which repo should I use\?/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 15000 });
+  assert.match(await D.page.textContent('#messages .plan.chip summary'), /0\/1 steps/);
+  await D.page.fill('#input', 'the app repo');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => /Used the app repo, as you said\./.test(document.querySelector('#messages-inner').textContent), null, { timeout: 15000 });
+  const n = await D.page.evaluate(async () => {
+    const sessions = await import('/src/sessions.js');
+    const s = sessions.list().find(x => x.messages.some(m => /NEEDTEST/.test(m.content)));
+    const t = Object.values(s.tasks)[0];
+    return { status: t.status, answers: t.answers, result: t.steps[0].result, sys: window.__engineLog.filter(x => x.type === 'conversation' && /## Plan/.test(x.system)).pop().system };
+  });
+  assert.equal(n.status, 'done');
+  assert.deepEqual(n.answers, [{ q: 'Which repo should I use?', a: 'the app repo' }]);
+  assert.equal(n.result, 'Use the app repo');
+  assert.match(n.sys, /## The user answered your questions\n- Which repo should I use\?: the app repo/);
+  if (shotsDir) await D.page.screenshot({ path: `${shotsDir}/steps.png` });
+  const errs = D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e));
+  assert.deepEqual(errs, []);
+  await D.ctx.close();
+});
+
 await check('attachments: a text file is stored, shown as a chip, searchable, and its wrapped extract reaches the model', async () => {
   const D = await device('attach');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));

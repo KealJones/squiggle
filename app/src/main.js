@@ -6,9 +6,11 @@ import * as storage from './storage.js';
 import * as sessions from './sessions.js';
 import * as memory from './memory.js';
 import * as grants from './grants.js';
+import * as recipes from './recipes.js';
+import * as tasks from './tasks.js';
 import * as engine from './engine.js';
 import * as agent from './agent.js';
-import { loadEmbedder } from './embed.js';
+import { loadEmbedder, embed } from './embed.js';
 import { resolveAgentPath } from './guard.js';
 import { pfs, walk } from './git.js';
 import { bm25 } from './search.js';
@@ -64,7 +66,7 @@ function loadSettings() {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch {}
   const mobile = engine.isMobile();
-  Object.assign(agent.settings, { model: engine.deviceModel() }, mobile ? { contextSize: 4096, fastDecode: false } : {}, saved);
+  Object.assign(agent.settings, { model: engine.deviceModel() }, mobile ? { contextSize: 4096, fastDecode: false, semantic: false } : {}, saved);
   // Phones only run models that fit a phone; anything else moves to the default.
   if (!engine.MODELS[agent.settings.model] || !engine.modelFitsDevice(agent.settings.model)) {
     agent.settings.model = engine.deviceModel();
@@ -82,6 +84,13 @@ function loadSettings() {
   if (mobile && !saved.mobileTuned) {
     Object.assign(agent.settings, { contextSize: 4096, fastDecode: false, mobileTuned: true });
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...saved, model: agent.settings.model, contextSize: 4096, fastDecode: false, mobileTuned: true })); } catch {}
+  }
+  // Harness v2: smart context is the default (BM25 alone is enough on a phone;
+  // embeddings stay optional). Move existing devices over once.
+  if (!saved.harnessV2) {
+    agent.settings.contextMode = 'smart';
+    saved = { ...saved, contextMode: 'smart', harnessV2: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
   if (saved.tools) agent.settings.tools = new Set(saved.tools);
   applyTheme();
@@ -124,7 +133,8 @@ async function startApp() {
   $('#setup-steps').hidden = true;
   $('#setup-body').replaceChildren(h('p', { class: 'muted' }, 'Opening your sessions… '), squiggleWait());
   await storage.open();
-  await Promise.all([sessions.loadAll(), memory.load(), grants.load()]);
+  await Promise.all([sessions.loadAll(), memory.load(), grants.load(), recipes.load()]);
+  recipes.prune();
   wireApp();
   setSync();
   openSession(sessions.list()[0] || sessions.newSession());
@@ -418,9 +428,11 @@ function wireApp() {
     await sessions.reload(changed);
     await memory.reload(changed);
     await grants.reload(changed);
+    await recipes.reload(changed);
     if (current && current.deleted) openSession(sessions.list()[0] || sessions.newSession());
   });
   memory.events.on('change', () => { if (drawerPanel === 'memory') renderMemoryPanel(); });
+  recipes.events.on('change', () => { if (drawerPanel === 'memory') renderMemoryPanel(); });
   sessions.events.on('session', (id) => { if (drawerPanel === 'notes' && current && id === current.id) renderNotesPanel(); });
   addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeDrawer(); closeSidebar(); } });
 }
@@ -513,6 +525,8 @@ function messageEl(m, { inThread, streaming }) {
   const el = h('div', { class: `msg ${m.role}`, 'data-mid': m.id || '' });
   const col = h('div', { style: m.role === 'user' ? 'display:flex;flex-direction:column;align-items:flex-end;width:100%' : '' });
   if (m.role === 'assistant') {
+    const task = m.task && current && current.tasks && current.tasks[m.task];
+    if (task) col.append(planEl(task, { live: false }));
     if (m.tools && m.tools.length) col.append(toolTrail(m.tools));
     // Saved thinking stays viewable (collapsed); it's never sent back to the model.
     if (m.thinking) col.append(h('details', { class: 'thinking' }, h('summary', {}, 'Thinking'), h('div', {}, m.thinking)));
@@ -546,6 +560,42 @@ function messageEl(m, { inThread, streaming }) {
   }
   el.append(col);
   return el;
+}
+
+// The plan as a checklist: live above the reply while it runs, then a
+// compact "N/M steps" chip that expands to the same list.
+function planEl(task, { live }) {
+  const { done, total } = tasks.progress(task);
+  const now = tasks.current(task);
+  const state = task.status === 'done' ? 'done' : task.waiting ? 'waiting for your answer' : task.status === 'stopped' ? 'paused' : 'working';
+  const list = h('ol', { class: 'plan-steps' }, task.steps.map(s => h('li', { class: `step ${s.status}${s === now && task.status === 'active' ? ' now' : ''}` },
+    h('span', { class: 'mark', 'aria-hidden': 'true' }, s.status === 'done' ? '✓' : s.status === 'blocked' ? '?' : s === now && live && task.status === 'active' && !task.waiting ? '' : '○'),
+    s === now && live && task.status === 'active' && !task.waiting && s.status !== 'blocked' ? squiggleWait() : '',
+    h('span', { class: 'text' }, s.text,
+      s.result ? h('span', { class: 'result' }, s.result) : '',
+      s.need ? h('span', { class: 'result' }, 'Needs: ' + s.need) : ''))));
+  const head = [h('strong', {}, task.goal), ' ', h('span', { class: 'muted' }, `${done}/${total} steps · ${state}`)];
+  if (live) return h('div', { class: 'plan live', role: 'status', 'aria-live': 'polite' }, h('div', { class: 'plan-head' }, ...head), list);
+  return h('details', { class: 'plan chip' }, h('summary', {}, `${done}/${total} steps`, h('span', { class: 'muted' }, ` · ${task.goal}`)), list);
+}
+
+// "Keep going?" after every 60 tool calls (never "say continue").
+function checkInCard(task, calls, decide) {
+  const card = h('div', { class: 'approval checkin', role: 'group', 'aria-label': 'Keep going?' },
+    h('p', { class: 'q' }, `Squiggle has made ${calls} tool calls on this. Keep going?`),
+    task ? planEl(task, { live: false }) : '');
+  card.append(h('div', { class: 'row' },
+    h('button', { class: 'btn primary', onclick: () => card.settle(true) }, 'Keep going'),
+    h('button', { class: 'btn ghost', onclick: () => card.settle(false) }, 'Stop here')));
+  let settled = false;
+  card.settle = (go) => {
+    if (settled) return;
+    settled = true;
+    decide(go);
+    card.replaceChildren(h('p', { class: 'muted' }, go ? 'Kept going.' : 'Paused. Say "continue" to pick it up again.'));
+    card.classList.add('settled');
+  };
+  return card;
 }
 
 function toolTrail(tools) {
@@ -636,7 +686,7 @@ async function send(text, threadId, files = []) {
   const container = threadId ? $('#thread-messages') : $('#messages-inner');
   const scroller = threadId ? $('#thread-scroll') : $('#messages');
   if (!threadId && !session.messages.some(m => !m.thread)) container.replaceChildren();
-  let live = null, body = null, trail = null, think = null;
+  let live = null, body = null, trail = null, think = null, plan = null;
   const vc = !threadId && call ? call.ctl : null; // a voice call speaks this reply as it streams
   const liveTools = [];
   setBusy(true);
@@ -651,8 +701,9 @@ async function send(text, threadId, files = []) {
           live = h('div', { class: 'msg assistant' });
           trail = h('div');
           think = h('details', { class: 'thinking', hidden: true }, h('summary', {}, 'Thinking'), h('div'));
+          plan = h('div', { hidden: true });
           body = h('div', { class: 'body' }, squiggleWait());
-          live.append(trail, think, body);
+          live.append(plan, trail, think, body);
           container.append(live);
           scrollDown(scroller);
         },
@@ -664,6 +715,14 @@ async function send(text, threadId, files = []) {
           if (existing) Object.assign(existing, t); else liveTools.push({ ...t });
           trail.replaceChildren(toolTrail(liveTools));
           scrollDown(scroller);
+        },
+        onPlan: (task) => { plan.hidden = false; plan.replaceChildren(planEl(task, { live: true })); scrollDown(scroller); },
+        onCheckIn: ({ task, calls }, decide) => {
+          const card = checkInCard(task, calls, decide);
+          controller.signal.addEventListener('abort', () => card.settle(false), { once: true });
+          live.insertBefore(card, body);
+          scrollDown(scroller);
+          card.querySelector('button').focus({ preventScroll: true });
         },
         onApproval: (req, decide) => {
           const card = approvalCard(req, (d) => decide(d));
@@ -1009,7 +1068,7 @@ async function loadModel() {
     modelState = 'ready';
     banner();
     updateComposerNote();
-    if (agent.settings.contextMode === 'smart') loadEmbedder();
+    if (agent.settings.contextMode === 'smart' && agent.settings.semantic) loadSemantic();
   } catch (e) {
     setCrashMarker(null);
     modelState = 'error';
@@ -1087,6 +1146,11 @@ function renderNotesPanel() {
   c.append(body);
 }
 
+// Semantic search (MiniLM on the CPU) for smart context, memory and recipes.
+function loadSemantic() {
+  loadEmbedder().then((ok) => { if (ok) recipes.setEmbedder(embed); });
+}
+
 function renderMemoryPanel() {
   const c = openDrawer('Memory', 'memory');
   const body = h('div', { class: 'drawer-body' });
@@ -1109,8 +1173,43 @@ function renderMemoryPanel() {
   };
   search.addEventListener('input', draw);
   body.append(h('p', { class: 'muted', style: 'margin-top:0' }, 'What Squiggle knows about you and your projects. Synced to all your devices; delete anything that\'s wrong.'), add, search, list);
+  body.append(recipeSection());
   c.append(body);
   draw();
+}
+
+// Recipes: how finished tasks were solved, reused for similar requests.
+function recipeSection() {
+  const all = recipes.list();
+  const wrap = h('section', { class: 'recipes' }, h('h3', {}, 'Recipes'),
+    h('p', { class: 'muted' }, 'How Squiggle solved tasks before, so the next similar request is faster. Unused recipes are forgotten after 90 days unless pinned.'));
+  if (!all.length) { wrap.append(h('p', { class: 'muted' }, 'None yet. When Squiggle finishes a task it made a plan for, it saves how it did it here.')); return wrap; }
+  const ul = h('ul', { class: 'fact-list recipe-list' });
+  for (const r of all) {
+    const used = r.uses ? `used ${r.uses} time${r.uses === 1 ? '' : 's'}, last ${ago(r.lastUsed)}` : `saved ${ago(r.created)}`;
+    const steps = h('ol', { class: 'recipe-steps' }, (r.steps || []).map(st => h('li', {}, st)));
+    const edit = () => {
+      const ta = h('textarea', { class: 'recipe-edit', rows: Math.min(10, (r.steps || []).length + 2), 'aria-label': 'Recipe steps, one per line' }, (r.steps || []).join('\n'));
+      const title = h('input', { class: 'search', type: 'text', value: r.title, 'aria-label': 'Recipe title' });
+      const form = h('form', { class: 'recipe-form' }, title, ta, h('div', { class: 'row' },
+        h('button', { class: 'btn primary', type: 'submit' }, 'Save'), h('button', { class: 'btn ghost', type: 'button', onclick: () => renderMemoryPanel() }, 'Cancel')));
+      form.onsubmit = (e) => { e.preventDefault(); recipes.update(r.id, { title: title.value.trim() || r.title, steps: ta.value.split('\n').map(x => x.trim()).filter(Boolean) }); };
+      li.replaceChildren(form);
+      title.focus();
+    };
+    const li = h('li', {},
+      h('details', { class: 'recipe' },
+        h('summary', {}, h('span', { class: 'fact' }, r.title), ' ', h('span', { class: 'muted' }, used), r.pinned ? h('span', { class: 'auto' }, 'Pinned') : ''),
+        r.when ? h('p', { class: 'muted' }, 'For: ' + r.when) : '', steps,
+        r.specifics && r.specifics.length ? h('p', { class: 'muted' }, r.specifics.join(' · ')) : ''),
+      h('div', { class: 'recipe-actions' },
+        iconButton('i-pin', r.pinned ? 'Unpin recipe' : 'Pin recipe (never forget it)', () => recipes.pin(r.id, !r.pinned), r.pinned),
+        h('button', { class: 'btn ghost small', onclick: edit }, 'Edit'),
+        iconButton('i-close', 'Delete recipe', () => recipes.remove(r.id))));
+    ul.append(li);
+  }
+  wrap.append(ul);
+  return wrap;
 }
 
 // Files (read-only browser of the agent's workspace)
@@ -1148,9 +1247,9 @@ function renderContextPanel(m) {
   const r = m.context;
   const body = h('div', { class: 'drawer-body' });
   const pct = Math.min(100, Math.round(100 * (r.used || 0) / (r.budget || 1)));
-  const kinds = { actions: 'Earlier tool calls', system: 'Instructions', recent: 'Recent messages', pinned: 'Pinned', summary: 'Summary', fact: 'Memory', message: 'Earlier message', observation: 'Saved tool output', thread: 'Thread outcome' };
+  const kinds = { actions: 'Earlier tool calls', system: 'Instructions', recent: 'Recent messages', pinned: 'Pinned', summary: 'Summary', fact: 'Memory', message: 'Earlier message', observation: 'Saved tool output', thread: 'Thread outcome', refs: 'Resolved references', recipe: 'Recipe', plan: 'Plan (step prompt)', chat: 'Another chat', note: 'Note' };
   body.append(
-    h('p', { style: 'margin-top:0' }, `${r.mode === 'smart' ? 'Smart context' : r.mode === 'full' ? 'Full history' : 'Compaction'}: about ${r.used} of ${r.budget} tokens.`),
+    h('p', { style: 'margin-top:0' }, `${r.mode === 'step' ? 'Last step\'s prompt' : r.mode === 'smart' ? 'Smart context' : r.mode === 'full' ? 'Full history' : 'Compaction'}: about ${r.used} of ${r.budget} tokens.`),
     h('div', { class: 'meter' }, h('div', { style: `width:${pct}%` })),
     ...r.items.map(it => h('div', { class: 'ctx-item' },
       h('div', {}, h('div', { class: 'kind' }, kinds[it.kind] || it.kind, it.score != null ? ` · relevance ${it.score}` : ''), h('div', {}, it.label)),
@@ -1217,8 +1316,11 @@ function renderSettingsPanel() {
       h('span', {}, h('strong', {}, 'Speed boost'), h('span', { class: 'hint', style: 'display:block' }, 'Replies come noticeably faster, but it loads an extra helper model and needs more memory. Off by default on phones.')))),
 
     h('div', { class: 'field' }, h('label', { class: 'toggle' },
-      h('input', { type: 'checkbox', checked: S.contextMode === 'smart' ? true : null, onchange: (e) => { S.contextMode = e.target.checked ? 'smart' : 'compact'; saveSettings(); if (S.contextMode === 'smart') loadEmbedder(); updateComposerNote(); } }),
-      h('span', {}, h('strong', {}, 'Smart context (experimental)'), h('span', { class: 'hint', style: 'display:block' }, 'Instead of only a summary plus recent messages, picks the earlier messages, web pages and files most relevant to each question. Downloads a small 23 MB search model. Check "What the model saw" on any reply to compare.')))),
+      h('input', { type: 'checkbox', checked: S.contextMode === 'smart' ? true : null, onchange: (e) => { S.contextMode = e.target.checked ? 'smart' : 'compact'; saveSettings(); if (S.contextMode === 'smart' && S.semantic) loadSemantic(); updateComposerNote(); renderSettingsPanel(); } }),
+      h('span', {}, h('strong', {}, 'Smart context'), h('span', { class: 'hint', style: 'display:block' }, 'Instead of only a summary plus recent messages, picks the earlier messages, other chats, web pages and files most relevant to each question and to the current step. Check "What the model saw" on any reply.')))),
+    S.contextMode !== 'smart' ? '' : h('div', { class: 'field' }, h('label', { class: 'toggle' },
+      h('input', { type: 'checkbox', checked: S.semantic ? true : null, onchange: (e) => { S.semantic = e.target.checked; saveSettings(); if (S.semantic) loadSemantic(); } }),
+      h('span', {}, h('strong', {}, 'Search by meaning'), h('span', { class: 'hint', style: 'display:block' }, 'Also matches by meaning, not just words. Downloads a small 23 MB search model that runs on the CPU. Off by default on phones.')))),
 
     h('div', { class: 'field' }, h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: S.learn ? true : null, onchange: (e) => { S.learn = e.target.checked; saveSettings(); } }),
