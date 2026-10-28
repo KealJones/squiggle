@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as voice from '../app/src/voice.js';
 import { speakable, splitSentences, takeSpeakable, pickVoice, support, createCall, neuralSpeaker, systemSpeaker, realTimeFactor, firstPiece } from '../app/src/voice.js';
 
 test('speakable strips markdown formatting', () => {
@@ -288,4 +289,47 @@ test('natural voice: the first chunk of each reply is cut short so speech starts
   await wait(150);
   assert.deepEqual(P2.spoken.slice(), ['Hi! I checked the repo, and the build is passing again.', 'Second sentence of the reply is here.']);
   call2.end();
+});
+
+// ── readAloud ──────────────────────────────────────────────────────────────
+function fakeSpeaker({ failAt = -1 } = {}) {
+  const s = { prepared: [], played: [], cancelled: 0, primed: 0, pending: null };
+  return Object.assign(s, {
+    prime() { s.primed++; },
+    prepare(text) { s.prepared.push(text); return { text }; },
+    play(item, onEnd) { s.played.push(item.text); s.pending = () => onEnd(s.played.length - 1 === failAt ? new Error('boom') : undefined); },
+    cancel() { s.cancelled++; },
+    finishOne() { const f = s.pending; s.pending = null; f && f(); },
+  });
+}
+
+test('readAloud speaks the reply sentence by sentence, preparing one ahead', () => {
+  const sp = fakeSpeaker();
+  const ends = [];
+  const r = voice.readAloud({ speaker: sp, text: '## Plan\n\nFirst do the thing that matters most here. Then do the second thing after it.\n\n```js\ncode()\n```', onEnd: (e, stopped) => ends.push([e, stopped]) });
+  assert.equal(sp.primed, 1);
+  assert.equal(sp.played.length, 1);
+  assert.equal(sp.prepared.length, 2, 'the next sentence is prepared while the first plays');
+  while (sp.pending) sp.finishOne();
+  assert.ok(sp.played.join(' ').includes('Code omitted'));
+  assert.ok(!sp.played.join(' ').includes('code()'));
+  assert.equal(sp.played.length, r.total);
+  assert.deepEqual(sp.prepared, sp.played, 'each sentence is prepared exactly once');
+  assert.deepEqual(ends, [[null, false]]);
+  assert.equal(r.done, true);
+});
+
+test('readAloud stop() cancels the speaker and ends once; errors end it too', () => {
+  const sp = fakeSpeaker();
+  const ends = [];
+  const r = voice.readAloud({ speaker: sp, text: 'One sentence that is long enough to stand alone. Another sentence that is long enough too.', onEnd: (e, s) => ends.push([e, s]) });
+  r.stop(); r.stop();
+  sp.finishOne();                                   // a late end after stop changes nothing
+  assert.equal(sp.cancelled, 1);
+  assert.deepEqual(ends, [[null, true]]);
+  const sp2 = fakeSpeaker({ failAt: 0 });
+  const ends2 = [];
+  voice.readAloud({ speaker: sp2, text: 'One sentence that is long enough to stand alone. Another sentence that is long enough too.', onEnd: (e, s) => ends2.push([e && e.message, s]) });
+  sp2.finishOne();
+  assert.deepEqual(ends2, [['boom', false]]);
 });

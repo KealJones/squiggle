@@ -106,6 +106,8 @@ both together. Task state lives on the session (`session.tasks`, merged by id li
   voice. Each reply uses one voice (the natural one only if it's loaded when the reply starts).
   Errors, or synthesis slower than speech (RTF > 1.15 over recent chunks), move the call to system
   speech; a slow Kokoro also switches the device to KittenTTS (`voiceModel`).
+- Read aloud: the speaker button under a reply (`voice.readAloud`) uses the same voice choice. The natural
+  voice loads on the tap, is kept 60 s for the next reading, then freed; a call stops reading and frees it.
 - The model loads in a module worker on the call tap (Web Audio unlocks inside that tap) and the
   worker is terminated when the call ends: WASM memory never shrinks, so that's the only way to give
   it back. Crash marker `squiggle-voice-loading` (load and while speaking); found on open, calls
