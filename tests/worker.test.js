@@ -236,12 +236,12 @@ test('search: LangSearch first when its key is set; DuckDuckGo when it fails; th
   try {
     const headers = { Origin: 'https://sq.example.workers.dev' };
     const e = { ...env, LANGSEARCH_API_SECRET_KEY: 'sk-test' };
-    const r = await worker.fetch(req('/api/search?q=latest%20pokemon%20series&n=3', { headers }), e);
+    const r = await worker.fetch(req('/api/search?q=pokemon%20horizons%20series&n=3', { headers }), e);
     assert.equal(r.status, 200);
     const d = await r.json();
     assert.deepEqual(d.results, [{ title: 'Pokémon Horizons: The Series', url: 'https://en.wikipedia.org/wiki/Pok%C3%A9mon_Horizons', snippet: 'The latest Pokémon anime series.' }]);
     assert.equal(calls[0].init.headers.Authorization, 'Bearer sk-test');
-    assert.deepEqual(JSON.parse(calls[0].init.body), { query: 'latest pokemon series', count: 3, freshness: 'noLimit' });
+    assert.deepEqual(JSON.parse(calls[0].init.body), { query: 'pokemon horizons series', count: 3, freshness: 'noLimit' });
     assert.ok(!JSON.stringify(d).includes('sk-test'), 'the key is not in the response');
     assert.equal(calls.length, 1, 'DuckDuckGo not called');
     ls.ok = false; calls.length = 0;
@@ -250,5 +250,36 @@ test('search: LangSearch first when its key is set; DuckDuckGo when it fails; th
     calls.length = 0;
     await worker.fetch(req('/api/search?q=squiggle%20relay&n=1', { headers }), env);
     assert.ok(!calls.some(c => c.url.includes('langsearch')), 'no key, no LangSearch');
+  } finally { globalThis.fetch = orig; }
+});
+
+test('search: LangSearch looks at the past year for "latest" questions, widens when thin, retries a 5xx once', async () => {
+  const orig = globalThis.fetch;
+  const bodies = [];
+  const item = (i) => ({ name: 'R' + i, url: 'https://e.com/' + i, snippet: 's' + i });
+  let plan = [];
+  globalThis.fetch = mock.fn(async (url, init = {}) => {
+    if (url !== 'https://api.langsearch.com/v1/web-search') return Response.json({});
+    bodies.push(JSON.parse(init.body));
+    const step = plan.shift();
+    if (step === 503) return new Response('busy', { status: 503 });
+    return Response.json({ data: { webPages: { value: step.map(item) } } });
+  });
+  try {
+    const headers = { Origin: 'https://sq.example.workers.dev' };
+    const e = { ...env, LANGSEARCH_API_SECRET_KEY: 'k' };
+    const get = async (q) => (await (await worker.fetch(req('/api/search?n=5&q=' + encodeURIComponent(q), { headers }), e)).json()).results.map(r => r.url);
+    plan = [[1, 2, 3]];
+    await get('latest pokemon tv series');
+    assert.equal(bodies.at(-1).freshness, 'oneYear');
+    plan = [[1, 2, 3]];
+    await get('who wrote hamlet');
+    assert.equal(bodies.at(-1).freshness, 'noLimit', 'timeless questions search all time');
+    bodies.length = 0; plan = [[1], [1, 2, 3]];
+    assert.deepEqual(await get('current mayor of tucson'), ['https://e.com/1', 'https://e.com/2', 'https://e.com/3'], 'thin past-year results widen to all time, without repeats');
+    assert.deepEqual(bodies.map(b => b.freshness), ['oneYear', 'noLimit']);
+    bodies.length = 0; plan = [503, [4]];
+    assert.deepEqual(await get('who wrote hamlet'), ['https://e.com/4'], 'a 5xx is retried once');
+    assert.equal(bodies.length, 2);
   } finally { globalThis.fetch = orig; }
 });

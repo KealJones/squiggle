@@ -166,18 +166,35 @@ async function webSearch(q, n, env = {}) {
 }
 
 // LangSearch (https://docs.langsearch.com): a real search API with a free plan.
-// Snippets only, so results stay small for 4K phone contexts.
+// Snippets only, so results stay small for 4K phone contexts. Following its best
+// practices: questions about what's current search the past year first and widen
+// to all time when that comes back thin; a brief server error is retried once.
+const RECENT = /\b(latest|newest|most recent|recent(ly)?|current(ly)?|right now|nowadays|today|tonight|this (week|month|year|season)|upcoming|new(est)? (season|series|version|release|episode|album|movie|model))\b/i;
 async function langSearch(query, n, key) {
+  const freshness = RECENT.test(query) ? 'oneYear' : 'noLimit';
+  const first = await langSearchOnce(query, n, key, freshness);
+  if (freshness !== 'noLimit' && first && first.length < Math.min(3, n)) {
+    const wide = await langSearchOnce(query, n, key, 'noLimit');
+    if (wide && wide.length > first.length) return [...first, ...wide.filter(w => !first.some(f => f.url === w.url))].slice(0, n);
+  }
+  return first;
+}
+async function langSearchOnce(query, n, key, freshness, attempt = 0) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try {
     const r = await fetch('https://api.langsearch.com/v1/web-search', {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, count: n, freshness: 'noLimit' }),
+      body: JSON.stringify({ query, count: n, freshness }),
       signal: ctrl.signal,
     });
-    if (!r.ok) return null;
+    if (r.status >= 500 && attempt === 0) {
+      clearTimeout(timer);
+      await new Promise(res => setTimeout(res, 300 + Math.random() * 400));
+      return langSearchOnce(query, n, key, freshness, 1);
+    }
+    if (!r.ok) return null;   // 429 (burst or daily allowance) and the rest: DuckDuckGo instead
     const d = await r.json();
     const items = (d && d.data && d.data.webPages && d.data.webPages.value) || [];
     return items.filter(x => x && x.url).slice(0, n).map(x => ({
