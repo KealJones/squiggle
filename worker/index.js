@@ -8,16 +8,16 @@
 //   POST /api/auth/refresh               rotate an expiring user token
 //   ANY  /api/git/github.com/<o>/<r>/... git smart-HTTP relay (clone/fetch/push)
 //   GET  /api/fetch?url=...              optional readable-web relay (ENABLE_FETCH)
-//   GET  /api/search?q=...               web search (ENABLE_FETCH): LangSearch when the
-//                                        LANGSEARCH_API_SECRET_KEY secret is set, else (or if it
-//                                        fails) DuckDuckGo Lite plus its Instant Answer, then
-//                                        Wikipedia search when DuckDuckGo asks for a bot check
+//   GET  /api/search?q=...               web search (ENABLE_FETCH): LangSearch and Tavily when
+//                                        their secrets are set (LANGSEARCH_API_SECRET_KEY,
+//                                        TAVILY_KEY), else (or if they fail) DuckDuckGo Lite plus
+//                                        its Instant Answer, then Wikipedia search on a bot check
 //   GET  /api/ai/status                  cloud model: enabled? today's usage and limit
 //   POST /api/ai/chat                    cloud model (Workers AI), for allowed GitHub users only,
 //                                        with a hard daily cap that never goes past the free tier
 //
-// Its only optional secret is a search API key (LANGSEARCH_API_SECRET_KEY), used
-// here and never sent to the browser. Device-flow tokens are minted and refreshed
+// Its only optional secrets are search API keys (LANGSEARCH_API_SECRET_KEY,
+// TAVILY_KEY), used here and never sent to the browser. Device-flow tokens are minted and refreshed
 // with only the public client ID. Tokens pass through the relay on their way to GitHub
 // but are never stored or logged.
 
@@ -134,11 +134,25 @@ async function route(request, url, env) {
 async function webSearch(q, n, env = {}) {
   const query = String(q || '').trim().slice(0, 300);
   if (!query) return json({ error: 'Pass a search query: ?q=...' }, 400);
-  if (env.LANGSEARCH_API_SECRET_KEY) {
-    const results = await langSearch(query, Math.min(Math.max(n, 1), 15), env.LANGSEARCH_API_SECRET_KEY).catch(() => null);
-    if (results && results.length) return json({ query, answer: null, results });
-    // Over its limit, down, or nothing found: DuckDuckGo below.
+  // Search APIs first, when their keys are set: Tavily first for questions about
+  // what's current (its date filter works; LangSearch's past-year filter still
+  // returned 2015 articles), LangSearch first otherwise (free, no monthly cap) so
+  // Tavily's monthly credits go where they help. Then DuckDuckGo, then Wikipedia.
+  const count = Math.min(Math.max(n, 1), 15);
+  const recent = RECENT.test(query);
+  const apis = [
+    env.LANGSEARCH_API_SECRET_KEY && (() => langSearch(query, count, env.LANGSEARCH_API_SECRET_KEY)),
+    env.TAVILY_KEY && (() => tavilySearch(query, count, env.TAVILY_KEY, recent)),
+  ].filter(Boolean);
+  if (recent && env.TAVILY_KEY) apis.reverse();
+  let best = null;
+  for (const run of apis) {
+    const results = await run().catch(() => null);
+    if (results && results.length >= Math.min(2, count)) return json({ query, answer: null, results });
+    if (results && results.length && (!best || results.length > best.length)) best = results;
+    // Over its limit, down, or too little found: the next one.
   }
+  if (best) return json({ query, answer: null, results: best });
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -179,6 +193,30 @@ async function langSearch(query, n, key) {
   }
   return first;
 }
+// Tavily (https://docs.tavily.com): basic depth, 1 credit a search. For questions
+// about what's current, the past year only.
+async function tavilySearch(query, n, key, recent) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const r = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, search_depth: 'basic', max_results: Math.min(n, 20), ...(recent ? { time_range: 'year' } : {}) }),
+      signal: ctrl.signal,
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    return ((d && d.results) || []).filter(x => x && x.url).slice(0, n).map(x => ({
+      title: cleanText(x.title || x.url),
+      url: x.url,
+      snippet: cleanText(x.content || '').slice(0, 400),
+    }));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function langSearchOnce(query, n, key, freshness, attempt = 0) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
