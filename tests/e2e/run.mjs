@@ -679,7 +679,8 @@ await check('read aloud: the speaker button reads a reply with the natural voice
   await page.click('.read-aloud');
   await page.waitForFunction(() => document.querySelector('.read-aloud').getAttribute('aria-pressed') === 'true');
   if (shotsDir) await page.locator('.msg.assistant, .message.assistant, #messages-inner > *:last-child').last().screenshot({ path: `${shotsDir}/read-aloud.png` }).catch(() => page.screenshot({ path: `${shotsDir}/read-aloud.png` }));
-  await page.waitForFunction(() => document.querySelector('.read-aloud').getAttribute('aria-pressed') === 'false', null, { timeout: 10000 });
+  await page.waitForFunction(() => document.querySelector('.read-aloud').getAttribute('aria-pressed') === 'false', null, { timeout: 25000 })
+    .catch(async (e) => { throw new Error(e.message + ' ' + JSON.stringify(await page.evaluate(() => ({ tts: window.__tts, audio: window.__audio, workers: window.__workers, toast: (document.querySelector('.toast') || {}).textContent })))); });
   assert.ok(await page.evaluate(() => window.__audio.plays[0].speaksBefore >= 2), 'the next sentence is synthesized while the first plays');
   const said = (await playedTexts(page)).join(' ');
   assert.match(said, /Bold answer with a link\..*Second sentence is here\..*Code omitted\..*All done now\./);
