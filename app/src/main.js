@@ -1271,11 +1271,16 @@ function voiceSettingsField(S, seg) {
     synth.addEventListener?.('voiceschanged', () => { if (drawerPanel === 'settings') renderSettingsPanel(); });
   }
   const lang = navigator.language || 'en-US';
-  const voices = Array.from(synth.getVoices() || []).sort((a, b) => a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
+  // Best-sounding voices for this language first; robotic ones are left out.
+  const prim = lang.toLowerCase().split('-')[0];
+  const mine = (v) => String(v.lang || '').toLowerCase().startsWith(prim) ? 1 : 0;
+  const voices = Array.from(synth.getVoices() || []).filter(v => voice.voiceQuality(v) > -10)
+    .sort((a, b) => mine(b) - mine(a) || voice.voiceQuality(b) - voice.voiceQuality(a) || a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
+  const tier = (v) => { const q = voice.voiceQuality(v); return q >= 9 ? ', premium' : q >= 6 ? ', enhanced' : ''; };
   const auto = voice.pickVoice(voices, lang, '');
   const select = h('select', { id: 'voice-select', 'aria-label': 'Voice', onchange: (e) => { S.voiceURI = e.target.value; saveSettings(); } },
     h('option', { value: '' }, auto ? `Automatic (${auto.name})` : 'Automatic'),
-    voices.map(v => h('option', { value: v.voiceURI, selected: v.voiceURI === S.voiceURI ? true : null }, `${v.name} (${v.lang})`)));
+    voices.map(v => h('option', { value: v.voiceURI, selected: v.voiceURI === S.voiceURI ? true : null }, `${v.name} (${v.lang}${tier(v)})`)));
   const test = () => {
     synth.cancel();
     const u = new SpeechSynthesisUtterance('Hi, this is how I sound on a call.');
@@ -1291,7 +1296,8 @@ function voiceSettingsField(S, seg) {
     h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: S.voiceBargeIn ? true : null, onchange: (e) => { S.voiceBargeIn = e.target.checked; saveSettings(); } }),
       h('span', {}, h('strong', {}, 'Interrupt by talking'), h('span', { class: 'hint', style: 'display:block' }, 'Keep listening while Squiggle speaks, so you can cut in. Use headphones: on speakers it can hear itself.'))),
-    h('span', { class: 'hint' }, 'Tap the headset button next to the message box to start a hands-free call. Replies are spoken as they arrive; code is skipped and links are read as their site name.'));
+    h('span', { class: 'hint' }, 'Tap the headset button next to the message box to start a hands-free call. Replies are spoken as they arrive; code is skipped and links are read as their site name.'),
+    voices.some(v => mine(v) && voice.voiceQuality(v) >= 6) ? '' : h('span', { class: 'hint' }, 'For a much more natural voice, download a "Premium" or "Enhanced" voice in your device\'s settings (iPhone: Settings → Accessibility → Spoken Content → Voices), then pick it here.'));
 }
 
 // Settings

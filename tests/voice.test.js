@@ -64,6 +64,23 @@ test('pickVoice prefers saved, then exact locale and natural voices', () => {
   assert.equal(pickVoice([], 'en'), null);
 });
 
+test('pickVoice on an iPhone: premium/enhanced voices win; Eloquence and novelty voices never do', () => {
+  const ios = [
+    { name: 'Albert', lang: 'en-US', voiceURI: 'com.apple.speech.synthesis.voice.Albert' },
+    { name: 'Eddy (English (US))', lang: 'en-US', voiceURI: 'com.apple.eloquence.en-US.Eddy', default: true },
+    { name: 'Grandpa (English (US))', lang: 'en-US', voiceURI: 'com.apple.eloquence.en-US.Grandpa' },
+    { name: 'Samantha', lang: 'en-US', voiceURI: 'com.apple.voice.compact.en-US.Samantha' },
+    { name: 'Fred', lang: 'en-US', voiceURI: 'com.apple.speech.synthesis.voice.Fred' },
+  ];
+  assert.equal(pickVoice(ios, 'en-US').name, 'Samantha', 'plain Samantha beats the robotic default');
+  const better = [...ios, { name: 'Ava', lang: 'en-US', voiceURI: 'com.apple.voice.enhanced.en-US.Ava' }];
+  assert.equal(pickVoice(better, 'en-US').name, 'Ava');
+  const best = [...better, { name: 'Zoe', lang: 'en-US', voiceURI: 'com.apple.voice.premium.en-US.Zoe' }, { name: 'Serena', lang: 'en-GB', voiceURI: 'com.apple.voice.premium.en-GB.Serena' }];
+  assert.equal(pickVoice(best, 'en-US').name, 'Zoe', 'same quality: the exact locale wins');
+  assert.equal(pickVoice([{ name: 'Microsoft Ava Online (Natural) - English (United States)', lang: 'en-US', voiceURI: 'x' }, { name: 'Microsoft David - English (United States)', lang: 'en-US', voiceURI: 'y', default: true }], 'en-US').voiceURI, 'x');
+  assert.equal(pickVoice([{ name: 'Google US English', lang: 'en-US', voiceURI: 'g' }, { name: 'Fred', lang: 'en-US', voiceURI: 'f', default: true }], 'en-US').voiceURI, 'g');
+});
+
 test('support reports missing APIs', () => {
   assert.equal(support({}).ok, false);
   assert.equal(support({ webkitSpeechRecognition: function () {}, speechSynthesis: {}, SpeechSynthesisUtterance: function () {} }).ok, true);
