@@ -462,3 +462,17 @@ test('a broken embedder falls back to keywords', async () => {
   R.setEmbedder(async () => null);
   assert.equal((await R.match('kill whatever is listening on port 3000'))[0].recipe.id, ids.kill);
 });
+
+test('typos and dictation slips still find the recipe; numbers are never fuzzed', () => {
+  R._reset(); R.setStore(store);
+  R.save({ title: 'Deploy the Squiggle site', when: 'deploy squiggle to github pages', steps: ['Push main', 'Check the deploy run'] });
+  R.save({ title: 'Kill whatever is on port 8080', when: 'free port 8080', steps: ['lsof -i :8080', 'kill the pid'] });
+  assert.equal(R.matchSync('deploi the squigle site')[0]?.recipe.title, 'Deploy the Squiggle site');
+  assert.equal(R.matchSync('pls deplyo squiggel')[0]?.recipe.title, 'Deploy the Squiggle site');
+  // A different port still fits the same recipe (recipes generalise values), but by words, not by fuzzing the number.
+  assert.equal(R.matchSync('free port 9000')[0]?.recipe.title, 'Kill whatever is on port 8080');
+  assert.equal(R.matchSync('bake a cake').length, 0);
+  assert.equal(R.editDistance('deploi', 'deploy'), 1);
+  assert.equal(R.editDistance('teh', 'the'), 1);
+  assert.equal(R.editDistance('abcdef', 'uvwxyz', 2), 3);
+});
