@@ -492,6 +492,41 @@ function fuzzy(q, docTokens) {
   });
 }
 
+// Same request, different names: "who was born first, Ada Lovelace or Alan
+// Turing?" against a recipe learned from "...Marie Curie or Albert Einstein".
+// The names never match, so word coverage alone stays low. Here the request is
+// lined up with each phrasing of the recipe (title, when, examples) by their
+// longest common word sequence; where both sides have unmatched words in the
+// same gap between anchors, the request's words fill the recipe's slot and
+// count as SLOT of a match. Needs 2+ anchors, anchors making up at least a
+// third of the request, and slots of similar length on both sides.
+const SLOT = 0.8;
+function lcsPairs(a, b) {
+  const n = a.length, m = b.length;
+  const L = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
+    L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const pairs = [];
+  for (let i = 0, j = 0; i < n && j < m;) {
+    if (a[i] === b[j]) { pairs.push([i, j]); i++; j++; } else if (L[i + 1][j] >= L[i][j + 1]) i++; else j++;
+  }
+  return pairs;
+}
+function slotScore(q, phrase) {
+  if (q.length < 2 || phrase.length < 2) return 0;
+  const pairs = lcsPairs(q, phrase);
+  if (pairs.length < 2 || pairs.length * 3 < q.length) return 0;
+  let qSub = 0, pSub = 0;
+  const bounds = [[-1, -1], ...pairs, [q.length, phrase.length]];
+  for (let k = 1; k < bounds.length; k++) {
+    const qGap = bounds[k][0] - bounds[k - 1][0] - 1, pGap = bounds[k][1] - bounds[k - 1][1] - 1;
+    if (qGap > 0 && pGap > 0 && qGap <= 2 * pGap + 1 && pGap <= 2 * qGap + 1) { qSub += qGap; pSub += pGap; }
+  }
+  const qCov = (pairs.length + SLOT * qSub) / q.length;
+  const pCov = (pairs.length + SLOT * pSub) / phrase.length;
+  return Math.min(1, 0.65 * qCov + 0.35 * pCov);
+}
+
 function rank(query, pool) {
   const q0 = queryTokens(query);
   if (!q0.length || !pool.length) return [];
@@ -499,7 +534,11 @@ function rank(query, pool) {
   return pool.map(r => {
     const docTokens = new Set(tokenize(matchText(r)));
     const q = fuzzy(q0, docTokens);
-    const lex = lexicalScore(q, docTokens, new Set(tokenize(r.title)));
+    let lex = lexicalScore(q, docTokens, new Set(tokenize(r.title)));
+    for (const p of [r.title, r.when, ...(r.examples || [])]) {
+      if (lex >= 1) break;
+      lex = Math.max(lex, slotScore(q, tokenize(p).filter(w => !CHATTER.has(w))));
+    }
     return { recipe: r, lex, bm: rel.get(r.id) || 0, score: lex };
   });
 }

@@ -476,3 +476,24 @@ test('typos and dictation slips still find the recipe; numbers are never fuzzed'
   assert.equal(R.editDistance('teh', 'the'), 1);
   assert.equal(R.editDistance('abcdef', 'uvwxyz', 2), 3);
 });
+
+test('the same request about different names reaches the recipe (names fill its slots)', () => {
+  R._reset(); R.setStore(store);
+  R.save(R.fromTask({ goal: 'Find who was born first, Marie Curie or Albert Einstein',
+    steps: [{ text: 'Search the web for Marie Curie birth date', status: 'done' }, { text: 'Search the web for Albert Einstein birth date', status: 'done' }] },
+  [], { request: 'who was born first marie curie or albert einstein' }));
+  R.save(R.fromTask({ goal: 'Get the latest version and latest commit of chalk/chalk',
+    steps: [{ text: 'Read package.json in chalk/chalk', status: 'done' }, { text: 'Read the git log of chalk/chalk', status: 'done' }] },
+  [], { request: 'whats the latest version and commit of chalk' }));
+  for (const q of ['Who was born first, Ada Lovelace or Alan Turing?', 'who was born first ada lovelace or alan turing']) {
+    const [m] = R.matchSync(q);
+    assert.match(m.recipe.title, /born first/);
+    assert.ok(m.score >= R.STRONG, `${q}: ${m.score}`);
+  }
+  const [c] = R.matchSync("what's the latest commit of sindresorhus/ky?");
+  assert.match(c.recipe.title, /latest commit/);
+  assert.ok(c.score >= R.STRONG, String(c.score));
+  // Unrelated requests that share a word or two still don't match.
+  for (const q of ['who was born in paris', 'who was the first person on the moon', 'what is the latest news', 'what is the capital of france'])
+    assert.equal(R.matchSync(q).length, 0, q);
+});
