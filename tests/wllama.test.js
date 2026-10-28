@@ -141,3 +141,17 @@ test('without tools, nothing is held back or parsed', async () => {
   assert.equal(r.calls.length, 0);
   assert.match(r.text, /tool_call/);
 });
+
+test('thinking that llama.cpp splits into reasoning_content still reaches the thinking view', async () => {
+  const w = { async createChatCompletion() {
+    return (async function* () {
+      yield { choices: [{ delta: { reasoning_content: 'Request: weather. ' } }] };
+      yield { choices: [{ delta: { reasoning_content: 'Next: find.' } }] };
+      yield { choices: [{ delta: { content: '```tool_call\n{"name": "find", "arguments": {"query": "search the web"}}\n```' } }] };
+    })();
+  } };
+  const r = await runAll(new Conversation(w, cfg()), 'weather?');
+  assert.equal(r.thinking, 'Request: weather. Next: find.');
+  assert.equal(r.text, '');
+  assert.equal(r.calls[0].function.name, 'find');
+});
