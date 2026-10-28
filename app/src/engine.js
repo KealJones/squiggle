@@ -16,6 +16,10 @@ export const MODELS = {
     url: HF + 'litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.litertlm' },
   G3: { label: 'Gemma 3 270M', size: '242 MB', note: 'tiny and fast; runs on a phone\'s CPU, no WebGPU needed. Chat only: no tools or web lookups, and it often gets facts wrong', phone: true, runtime: 'wllama',
     url: HF + 'unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q4_0.gguf', bytes: 241574944 },
+  // Experimental: LFM2.5-350M fine-tuned on Squiggle's harness format (tp-parse
+  // experiments/squiggle-ft). Same runtime and prompt format as G3.
+  SQ: { label: 'Squiggle Small (experimental)', size: '219 MB', note: 'LFM2.5 350M trained on Squiggle\'s own tools and habits (plan, find, done). Uses tools and looks things up; still often wrong; runs on a phone\'s CPU', phone: true, runtime: 'wllama', tools: true,
+    url: HF + 'kealjones/squiggle-small/resolve/main/squiggle-small-lfm25-Q4_0.gguf', bytes: 219312160 },
   // Not on this device: runs on the relay (only listed when the relay offers it).
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true },
 };
@@ -76,11 +80,11 @@ export function isMobile() {
   return /Android|iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 }
 
-// The model for this device: computers run E4B; phones run Gemma 3 270M on
-// the CPU, because Gemma 4 doesn't fit a phone browser tab's memory (iOS
+// The model for this device: computers run E4B; phones run Squiggle Small
+// (LFM2.5 350M fine-tuned on the harness) on the CPU, because Gemma 4 doesn't fit a phone browser tab's memory (iOS
 // Safari kills the tab). Phones can still pick the cloud model.
 export function deviceModel() {
-  return isMobile() ? 'G3' : 'E4B';
+  return isMobile() ? 'SQ' : 'E4B';
 }
 // Runs without WebGPU (CPU only).
 export const needsGpu = (id) => Boolean(MODELS[id] && MODELS[id].runtime === 'litert');

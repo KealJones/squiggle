@@ -5,6 +5,7 @@ export const MODELS = {
   E4B: { label: 'Fake E4B', size: '3.0 GB', note: 'test', url: 'fake://e4b', phone: false, runtime: 'litert' },
   E2B: { label: 'Fake E2B', size: '2.0 GB', note: 'test', url: 'fake://e2b', phone: false, runtime: 'litert' },
   G3: { label: 'Fake G3', size: '242 MB', note: 'test', url: 'fake://g3', phone: true, runtime: 'wllama' },
+  SQ: { label: 'Fake SQ', size: '219 MB', note: 'test', url: 'fake://sq', phone: true, runtime: 'wllama', tools: true },
   cloud: { label: 'Fake Cloud', size: 'no download', note: 'test', phone: true, runtime: 'cloud', needsRelay: true },
 };
 const log = (window.__engineLog = window.__engineLog || []);

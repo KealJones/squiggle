@@ -155,6 +155,9 @@ export function splitThinking(raw) {
   const rest = raw.slice(lead);
   if (!rest) return { thinking: '', text: '', pending: true };
   if (OPEN.startsWith(rest)) return { thinking: '', text: '', pending: true };   // "<thi" so far
+  // llama.cpp already moved the thinking to reasoning_content and left its closing tag behind.
+  if (CLOSE.startsWith(rest)) return { thinking: '', text: '', pending: true };
+  if (rest.startsWith(CLOSE)) return { thinking: '', text: rest.slice(CLOSE.length).replace(/^\s+/, '') };
   if (!rest.startsWith(OPEN)) return { thinking: '', text: raw };
   const body = rest.slice(OPEN.length);
   const end = body.indexOf(CLOSE);
@@ -209,7 +212,11 @@ export class Conversation {
         abortSignal: ctrl.signal,
       });
       for await (const chunk of stream) {
-        const piece = chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content;
+        const delta = (chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta) || {};
+        // llama.cpp may split a <think> block off into reasoning_content (it does
+        // for chat templates that know about thinking, like LFM2.5's).
+        if (delta.reasoning_content) { yield { thinking: delta.reasoning_content }; continue; }
+        const piece = delta.content;
         if (!piece) continue;
         out += piece;
         const parts = splitThinking(out);

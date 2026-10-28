@@ -82,6 +82,13 @@ function loadSettings() {
     saved = { ...saved, model: agent.settings.model, phoneG3: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
+  // Stock Gemma 3 270M can't use tools (it runs as plain chat); phones move
+  // to Squiggle Small, the fine-tuned model that can. Once; G3 stays in Settings.
+  if (mobile && !saved.phoneSQ) {
+    if (agent.settings.model === 'G3') agent.settings.model = 'SQ';
+    saved = { ...saved, model: agent.settings.model, phoneSQ: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
   if (mobile && !saved.mobileTuned) {
     Object.assign(agent.settings, { contextSize: 4096, fastDecode: false, mobileTuned: true });
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...saved, model: agent.settings.model, contextSize: 4096, fastDecode: false, mobileTuned: true })); } catch {}
@@ -367,9 +374,9 @@ async function setupModel(body) {
   }
   if (!gpu.ok) {
     // No WebGPU: the small CPU model still runs.
-    agent.settings.model = 'G3'; saveSettings();
+    agent.settings.model = 'SQ'; saveSettings();
     body.append(h('h2', {}, 'No WebGPU on this browser'), h('p', {}, gpu.reason),
-      h('p', {}, 'Squiggle will run Gemma 3 270M on the CPU instead: a 242 MB download, much less capable than Gemma 4.'),
+      h('p', {}, 'Squiggle will run Squiggle Small on the CPU instead: a 219 MB download, much less capable than Gemma 4.'),
       h('button', { class: 'btn primary', onclick: async () => { await startApp(); ensureModel(); } }, 'Download and start'));
     return;
   }
@@ -1122,8 +1129,8 @@ async function initModel() {
   if (engine.needsGpu(agent.settings.model)) {
     const gpu = await engine.webgpuStatus();
     if (!gpu.ok) {
-      // No WebGPU: Gemma 3 270M runs on the CPU instead.
-      agent.settings.model = 'G3'; saveSettings();
+      // No WebGPU: Squiggle Small runs on the CPU instead.
+      agent.settings.model = 'SQ'; saveSettings();
       return initModel();
     }
   }
@@ -1164,7 +1171,7 @@ function showLoadBanner() {
 }
 
 // Models from most to least memory needed; a crash offers the next one down.
-const BY_MEMORY = ['E4B', 'E2B', 'G3'];
+const BY_MEMORY = ['E4B', 'E2B', 'SQ', 'G3'];
 function lighterModel(id) {
   const i = BY_MEMORY.indexOf(id);
   return BY_MEMORY.slice(i + 1).find(m => engine.MODELS[m] && engine.modelFitsDevice(m)) || null;

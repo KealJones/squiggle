@@ -135,8 +135,11 @@ by hand. `node tests/e2e/tts-bench.mjs` loads the real voice model in headless C
 
 iOS Safari kills tabs that load Gemma 4 E2B/E4B, and smaller ONNX models (tried and removed:
 Gemma 3, SmolLM, a QAT E2B build on onnxruntime-web) failed on WebGPU readback. Phones default to
-Gemma 3 270M (`G3`): unsloth's Q4_0 GGUF (242 MB) on wllama 3.8.1, CPU only (`n_gpu_layers: 0`),
-in `engine-wllama.js`; wllama caches the file itself. Also the fallback on computers without WebGPU.
+Squiggle Small (`SQ`): LFM2.5-350M fine-tuned on the harness format (tp-parse experiments/squiggle-ft,
+public at kealjones/squiggle-small, Q4_0 GGUF 219 MB, experimental v1). Phones on `G3` move to it once.
+Gemma 3 270M (`G3`, unsloth's Q4_0 GGUF, 242 MB) stays as an option. Both run on wllama 3.8.1, CPU only
+(`n_gpu_layers: 0`), in `engine-wllama.js`; wllama caches the file itself. llama.cpp may split LFM2.5's
+`<think>` into `reasoning_content` (shown as thinking; a stray closing tag is dropped). Also the fallback on computers without WebGPU.
 (ONNX on WASM failed too: the 4-bit export packs embeddings with GatherBlockQuantized, which the
 WASM build lacks, and the older full-precision export got the tab killed.) Stock Gemma 3 270M runs as
 plain chat (`engine.chatOnly`): any system prompt made it answer the instructions instead of the person,
