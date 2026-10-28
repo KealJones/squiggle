@@ -23,6 +23,8 @@ const CASES = [
   ['read this link https://developers.cloudflare.com/workers/', 'fetch_url'],
   ['open that page and summarize it', 'fetch_url'],
   ['save this to a file called notes.md', 'write_file'],
+  ['change the wave function in main.js to slither', 'edit_file'],
+  ['restore main.js to before that commit', 'git_show'],
   ['remember that I prefer pushing straight to main', 'remember'],
   ['commit my changes', 'git_commit'],
   ['push the branch to github', 'git_push'],
