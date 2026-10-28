@@ -144,14 +144,28 @@ async function webSearch(q, n) {
     ]);
     const answer = instantAnswer(instant);
     const blocked = /anomaly|captcha/i.test(page) && !/result-link/.test(page);
-    if (blocked && !answer) {
-      return json({ error: 'DuckDuckGo is asking for a bot check right now. Try again in a little while.' }, 503);
+    const count = Math.min(Math.max(n, 1), 15);
+    if (blocked) {
+      // DuckDuckGo wants a bot check: Wikipedia's search still answers most lookups.
+      const wiki = await wikipediaSearch(query, count, ctrl.signal).catch(() => []);
+      if (!wiki.length && !answer) return json({ error: 'DuckDuckGo is asking for a bot check right now and Wikipedia found nothing. Try again in a little while.' }, 503);
+      return json({ query, answer, results: wiki, note: 'DuckDuckGo asked for a bot check, so these results are from Wikipedia search.' });
     }
-    const results = blocked ? [] : parseDdgLite(page).slice(0, Math.min(Math.max(n, 1), 15));
-    return json({ query, answer, results });
+    return json({ query, answer, results: parseDdgLite(page).slice(0, count) });
   } finally {
     clearTimeout(timer);
   }
+}
+
+// Wikipedia's search API (no key): the fallback when DuckDuckGo is blocked.
+async function wikipediaSearch(query, n, signal) {
+  const u = 'https://en.wikipedia.org/w/api.php?action=query&list=search&format=json&utf8=1&srlimit=' + Math.min(n, 10) + '&srsearch=' + encodeURIComponent(query);
+  const d = await fetch(u, { headers: { 'User-Agent': 'squiggle-relay (https://github.com/KealJones/squiggle)', Accept: 'application/json' }, signal }).then(r => r.json());
+  return ((d && d.query && d.query.search) || []).map(r => ({
+    title: r.title,
+    url: 'https://en.wikipedia.org/wiki/' + encodeURIComponent(String(r.title).replace(/ /g, '_')),
+    snippet: cleanText(r.snippet),
+  }));
 }
 
 const decodeEntities = (s) => s
