@@ -222,8 +222,11 @@ class Turn {
     return assembleContext({
       line, session, threadId, query: shown, budget, mode: settings.contextMode,
       system: systemPrompt(threadId, session), extra, focus,
-      others: settings.contextMode === 'smart' ? sessions.list() : [],
-      recall: (q, k) => memory.recall(q, k), factText: memory.factText,
+      // Small models get recent messages and the harness's own sections only:
+      // they look up memory and past chats with find, and a 4K window can't spare
+      // the room (injected facts and other chats also confused them).
+      others: settings.contextMode === 'smart' && !lite() ? sessions.list() : [],
+      recall: lite() ? null : (q, k) => memory.recall(q, k), factText: memory.factText,
       embed: settings.contextMode === 'smart' && settings.semantic ? embed : null,
     });
   }
@@ -234,7 +237,9 @@ class Turn {
     const toolTokens = lite() ? 300 : estTokens(JSON.stringify(tools));
     // History gets about half the window; the rest stays free for this turn's
     // tool results and the reply (a full window made turns fail at the start).
-    const budget = Math.max(1000, Math.min(settings.contextSize - MAX_OUTPUT - toolTokens - 200, Math.floor(settings.contextSize * 0.5) - toolTokens));
+    // Small models get a quarter: on a 4K phone window half left too little room for a lookup.
+    const share = lite() ? 0.25 : 0.5;
+    const budget = Math.max(lite() ? 600 : 1000, Math.min(settings.contextSize - MAX_OUTPUT - toolTokens - 200, Math.floor(settings.contextSize * share) - toolTokens));
     const ctx = await this.context(await this.prepare(), budget);
     this.reply.context = ctx.report;
     // Plain chat: only the recent messages; extra sections would be read as instructions.
@@ -590,7 +595,7 @@ function nameSession(session) {
   if (!first) return;
   session.title = truncate(first.content.replace(/\s+/g, ' '), 60).replace(/\n.*$/s, '');
   sessions.touch(session);
-  if (plain()) return;   // the small model can't write titles; the first message is the title
+  if (lite()) return;   // small models write junk titles ("Answer: \"Yo\"..."); the first message is the title
   engine.background(async () => {
     const t = await engine.complete('You write short titles.', `Write a 2-6 word title for a conversation that starts with:\n\n${truncate(first.content, 800)}\n\nReply with only the title.`, { maxOutputTokens: 24 });
     const clean = t.replace(/^["'#*\s]+|["'.*\s]+$/g, '').slice(0, 60);
@@ -600,7 +605,7 @@ function nameSession(session) {
 
 // Fold messages that left the recent window into the line's summary.
 async function rollingSummary(session, threadId) {
-  if (plain()) return;
+  if (lite()) return;   // small models aren't trained for this
   const key = threadId || 'main';
   const line = sessions.lineMessages(session, threadId);
   const current = session.summaries[key] || null;
@@ -620,7 +625,7 @@ async function rollingSummary(session, threadId) {
 
 // One-line outcome of a side thread, shown under its parent message.
 async function threadOutcome(session, threadId) {
-  if (plain()) return;
+  if (lite()) return;   // small models aren't trained for this
   const t = session.threads[threadId];
   const msgs = session.messages.filter(m => m.thread === threadId);
   if (!t || msgs.length < 2) return;
@@ -636,7 +641,7 @@ async function threadOutcome(session, threadId) {
 // Learn lasting facts from the latest exchange (saved as auto facts the
 // person can review or delete in the Memory panel).
 async function learnFacts(session, threadId) {
-  if (plain()) return;
+  if (lite()) return;   // small models aren't trained for this
   const line = sessions.lineMessages(session, threadId);
   const last = line.slice(-2);
   if (last.length < 2 || last[0].role !== 'user') return;

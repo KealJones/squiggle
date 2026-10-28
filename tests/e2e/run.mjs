@@ -1277,6 +1277,8 @@ await check('Squiggle Small (fine-tuned) gets the harness: system prompt and too
   const c = await D.page.evaluate(() => window.__engineLog.find(e => e.type === 'conversation'));
   assert.match(c.system, /^You are Squiggle, an assistant that figures things out\./);
   assert.ok(c.tools.includes('find') && c.tools.includes('plan') && c.tools.includes('web_search'), JSON.stringify(c.tools));
+  await D.page.waitForTimeout(2500);
+  assert.equal(await D.page.evaluate(() => window.__engineLog.filter(e => e.type === 'complete').length), 0, 'no titles, facts or summaries from a small model');
 });
 
 await browser.close();
