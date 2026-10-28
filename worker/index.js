@@ -8,14 +8,17 @@
 //   POST /api/auth/refresh               rotate an expiring user token
 //   ANY  /api/git/github.com/<o>/<r>/... git smart-HTTP relay (clone/fetch/push)
 //   GET  /api/fetch?url=...              optional readable-web relay (ENABLE_FETCH)
-//   GET  /api/search?q=...               web search: DuckDuckGo Lite results plus its
-//                                        Instant Answer summary when it has one (ENABLE_FETCH)
+//   GET  /api/search?q=...               web search (ENABLE_FETCH): LangSearch when the
+//                                        LANGSEARCH_API_SECRET_KEY secret is set, else (or if it
+//                                        fails) DuckDuckGo Lite plus its Instant Answer, then
+//                                        Wikipedia search when DuckDuckGo asks for a bot check
 //   GET  /api/ai/status                  cloud model: enabled? today's usage and limit
 //   POST /api/ai/chat                    cloud model (Workers AI), for allowed GitHub users only,
 //                                        with a hard daily cap that never goes past the free tier
 //
-// It holds NO secrets: device-flow tokens are minted and refreshed with only
-// the public client ID. Tokens pass through the relay on their way to GitHub
+// Its only optional secret is a search API key (LANGSEARCH_API_SECRET_KEY), used
+// here and never sent to the browser. Device-flow tokens are minted and refreshed
+// with only the public client ID. Tokens pass through the relay on their way to GitHub
 // but are never stored or logged.
 
 const GITHUB = 'https://github.com';
@@ -121,16 +124,21 @@ async function route(request, url, env) {
     if (request.method !== 'GET') return json({ error: 'Method not allowed.' }, 405);
     const site = request.headers.get('Sec-Fetch-Site');
     if (!request.headers.get('Origin') && site !== 'same-origin') return json({ error: 'Forbidden.' }, 403);
-    return webSearch(url.searchParams.get('q'), Number(url.searchParams.get('n')) || 8);
+    return webSearch(url.searchParams.get('q'), Number(url.searchParams.get('n')) || 8, env);
   }
 
   return json({ error: 'Not found.' }, 404);
 }
 
 // ── Web search (DuckDuckGo Lite: no key, plain HTML) ───────────────────────
-async function webSearch(q, n) {
+async function webSearch(q, n, env = {}) {
   const query = String(q || '').trim().slice(0, 300);
   if (!query) return json({ error: 'Pass a search query: ?q=...' }, 400);
+  if (env.LANGSEARCH_API_SECRET_KEY) {
+    const results = await langSearch(query, Math.min(Math.max(n, 1), 15), env.LANGSEARCH_API_SECRET_KEY).catch(() => null);
+    if (results && results.length) return json({ query, answer: null, results });
+    // Over its limit, down, or nothing found: DuckDuckGo below.
+  }
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -152,6 +160,31 @@ async function webSearch(q, n) {
       return json({ query, answer, results: wiki, note: 'DuckDuckGo asked for a bot check, so these results are from Wikipedia search.' });
     }
     return json({ query, answer, results: parseDdgLite(page).slice(0, count) });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// LangSearch (https://docs.langsearch.com): a real search API with a free plan.
+// Snippets only, so results stay small for 4K phone contexts.
+async function langSearch(query, n, key) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const r = await fetch('https://api.langsearch.com/v1/web-search', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, count: n, freshness: 'noLimit' }),
+      signal: ctrl.signal,
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    const items = (d && d.data && d.data.webPages && d.data.webPages.value) || [];
+    return items.filter(x => x && x.url).slice(0, n).map(x => ({
+      title: cleanText(x.name || x.url),
+      url: x.url,
+      snippet: cleanText(x.snippet || x.text || '').slice(0, 400),
+    }));
   } finally {
     clearTimeout(timer);
   }

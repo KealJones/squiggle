@@ -92,6 +92,8 @@ npx wrangler deploy --config wrangler.relay.toml
 
 Wrangler prints the relay's address, like `https://squiggle-relay.<you>.workers.dev`.
 
+Optional, for more reliable web search: add a free [LangSearch](https://langsearch.com) API key as a secret (`npx wrangler secret put LANGSEARCH_API_SECRET_KEY --config wrangler.relay.toml`). Without it, search uses DuckDuckGo, then Wikipedia when DuckDuckGo asks for a bot check.
+
 **Publish the app.** In your copy of this repo on GitHub:
 
 1. **Settings → Pages → Source: GitHub Actions.**
