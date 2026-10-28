@@ -3,6 +3,7 @@
 // phone default; the cloud model (Gemma 4 26B) runs on the relay (engine-cloud.js). Handles
 // the one-time resumable download into IndexedDB, engine startup, and
 // streaming generation with tools.
+import { failedCallText, repairCalls, unreadableNote } from './toolcall-repair.js';
 import { kv, mutex } from './util.js';
 
 const LITERT = 'https://cdn.jsdelivr.net/npm/@litert-lm/core@0.14.0/+esm';
@@ -357,7 +358,22 @@ export async function conversation({ system, messages = [], tools = [], thinking
 }
 
 // Streams one model response. Returns { text, thinking, toolCalls }.
-export async function respond(conv, input, { onText, onThinking, signal } = {}) {
+export async function respond(conv, input, opts = {}) {
+  try {
+    return await respondOnce(conv, input, opts);
+  } catch (e) {
+    // Gemma 4 wrote a tool call LiteRT couldn't parse (e.g. "plain quotes" instead
+    // of <|"|>). Read it leniently and carry on; if it can't be read, ask once more.
+    const raw = failedCallText(e && e.message);
+    if (raw === null) throw e;
+    const calls = repairCalls(raw);
+    if (calls.length) return { text: '', thinking: '', toolCalls: calls, repaired: raw };
+    if (opts.retried) throw e;
+    return respondOnce(conv, unreadableNote(raw), { ...opts, retried: true });
+  }
+}
+
+async function respondOnce(conv, input, { onText, onThinking, signal } = {}) {
   activeConv = conv;
   const local = MODELS[loadedModel] && MODELS[loadedModel].runtime !== 'cloud';
   if (local) progress('writing the reply');
