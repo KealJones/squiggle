@@ -73,7 +73,8 @@ const INTENTS = [
   [/\b(pull request|open a pr|make a pr|pr for)\b/, { github_open_pr: 5 }],
   [/\b(my repos|list (my )?repos|which repos|what repos|repositories)\b/, { github_list_repos: 4 }],
   [/\bgit\b/, { 'git_*': 1.5 }],
-  [/\b(calculate|compute|math|javascript|regex|parse (this|the)|convert|sort|sum of|average|how many days)\b/, { run_js: 4 }],
+  [/\b(calculate|compute|math|sum of|average|total|percent|percentage|how much (is|are|would|will|does|do)|how many days|convert|times|plus|minus|divided|multiply|split .* (ways|between))\b|\d\s*[-+*/x×÷^%]\s*\d|\$\s?\d/, { calculate: 6 }],
+  [/\b(javascript|js code|run (this |some )?code|regex|parse (this|the)|sort)\b/, { run_js: 4 }],
 ];
 
 const URLISH = /\bhttps?:\/\/\S+/gi;
