@@ -72,8 +72,8 @@ a { color: var(--action); }
 .session-list li button:hover { background: var(--sheet); }
 .session-list li button[aria-current="true"] { background: var(--selected); }
 .session-list li button[aria-current="true"]:hover { background: var(--sheet); }
-.side-nav { display: flex; gap: 2px; padding: 8px; border-top: 1px solid var(--rule); }
-.side-nav button { flex: 1; }
+.side-nav { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 8px; border-top: 1px solid var(--rule); }
+.side-nav button { min-width: 0; }
 .sync-line { font-size: 0.8rem; color: var(--ink-soft); padding: 0 16px 12px; display: flex; gap: 6px; align-items: center; }
 .sync-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--action); }
 .sync-dot.busy { background: var(--marker); }
