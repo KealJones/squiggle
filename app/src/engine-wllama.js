@@ -209,7 +209,11 @@ export class Conversation {
         abortSignal: ctrl.signal,
       });
       for await (const chunk of stream) {
-        const piece = chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content;
+        const delta = (chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta) || {};
+        // llama.cpp may split a <think> block off into reasoning_content (it does
+        // for chat templates that know about thinking, like LFM2.5's).
+        if (delta.reasoning_content) { yield { thinking: delta.reasoning_content }; continue; }
+        const piece = delta.content;
         if (!piece) continue;
         out += piece;
         const parts = splitThinking(out);
