@@ -180,6 +180,21 @@ export function repeatedRun(text, n = LOOP_WORDS, times = LOOP_TIMES) {
   return '';
 }
 
+// The reply up to where the repeating started (cut back to the last sentence or
+// line end before it), or '' when too little came before the loop to keep.
+export function beforeLoop(raw, run) {
+  const words = String(run || '').split(' ').filter(Boolean);
+  if (!words.length) return '';
+  const re = new RegExp(words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(`[^a-z0-9_']+`), 'i');
+  const m = re.exec(raw);
+  if (!m) return '';
+  let cut = raw.slice(0, m.index);
+  const end = Math.max(cut.lastIndexOf('\n'), cut.search(/[.!?](?=[^.!?]*$)/) + 1);
+  if (end > 0) cut = cut.slice(0, end);
+  return cut.replace(/\s+$/, '').length >= 30 ? cut.replace(/\s+$/, '') : '';
+}
+export const MOVING_ON = '\n(I was repeating myself. Moving on.)\n';
+
 // Sent to the model after a loop is stopped, once per reply; it gets one more try.
 export const loopNote = (run) => `(Squiggle: your last reply got stuck repeating "${run}" and was stopped and dropped. ` +
   'Start over. In a short Check, say what you actually have so far, or that it doesn\'t answer the question. ' +
@@ -223,16 +238,20 @@ export class Conversation {
   // (a tool-call block is held back), then returns { calls, aborted, looped, run }.
   // With canRetry, a looping reply is dropped (not kept in history) so the caller
   // can tell the model and try again; `retry` raises the repetition penalty.
-  async *generate({ canRetry = false, retry = false } = {}) {
+  // `prefill` continues a reply already begun: the model writes on from it, and
+  // nothing of it is shown again.
+  async *generate({ canRetry = false, retry = false, prefill = '' } = {}) {
     const ctrl = this.ctrl = new AbortController();
-    let out = '', thinkShown = 0, shown = 0, inCall = false, looped = false, text = '', checked = 0, reasoning = '', rChecked = 0;
+    const pre = prefill ? splitThinking(prefill) : null;
+    let echo = prefill ? '' : null;   // llama.cpp streams the prefill back first; it's skipped
+    let out = prefill, thinkShown = pre ? pre.thinking.length : 0, shown = pre && !pre.open ? pre.text.length : 0, inCall = false, looped = false, text = '', checked = 0, reasoning = '', rChecked = 0;
     // Stop output that keeps repeating itself: checked at sentence ends, and at least
     // every 200 characters ("+ 2 + 2 + 2…" has no sentence ends).
     const loops = (buf, last, piece) => (/[.!?\n]/.test(piece) && buf.length - last > 40) || buf.length - last > 200;
     const tools = this.tools.length > 0;
     try {
       const stream = await this.w.createChatCompletion({
-        messages: gemmaMessages(this.messages, this.tools, this.active),
+        messages: [...gemmaMessages(this.messages, this.tools, this.active), ...(prefill ? [{ role: 'assistant', content: prefill }] : [])],
         stream: true,
         max_tokens: this.max,
         temperature: this.greedy ? 0 : 0.7,
@@ -255,8 +274,15 @@ export class Conversation {
           }
           continue;
         }
-        const piece = delta.content;
+        let piece = delta.content;
         if (!piece) continue;
+        if (echo !== null) {
+          echo += piece;
+          if (prefill.startsWith(echo) && echo.length < prefill.length) continue;
+          piece = echo.startsWith(prefill) ? echo.slice(prefill.length) : echo;
+          echo = null;
+          if (!piece) continue;
+        }
         out += piece;
         const parts = splitThinking(out);
         if (parts.thinking.length > thinkShown) { yield { thinking: parts.thinking.slice(thinkShown) }; thinkShown = parts.thinking.length; }
@@ -283,10 +309,14 @@ export class Conversation {
     text = parts.open ? '' : parts.text;
     if (parts.open && parts.thinking.length > thinkShown) yield { thinking: parts.thinking.slice(thinkShown) };
     if (looped && canRetry) {
-      const run = repeatedRun((reasoning || '') + ' ' + out) || repeatedRun(out) || '';
-      if (shown > 0) yield { content: '\n\n_(got stuck repeating itself; trying again)_\n\n' };
-      else yield { thinking: '\n\n[Stuck repeating itself. Squiggle stopped it and asked it to try again.]\n\n' };
-      return { calls: [], aborted: false, looped: true, run };
+      const raw = reasoning ? `<think>\n${reasoning}${out ? '\n</think>\n' + out.replace(/^\s*<\/think>\s*/, '') : ''}` : out;
+      const run = repeatedRun(raw);
+      const kept = beforeLoop(raw, run);
+      const inText = shown > 0 || (reasoning && out.trim());
+      const note = kept ? 'got stuck repeating itself; Squiggle cut the repeats and let it carry on from before them' : 'got stuck repeating itself; Squiggle stopped it and asked it to try again';
+      if (inText) yield { content: `\n\n_(${note})_\n\n` };
+      else yield { thinking: `\n\n[It ${note}.]\n\n` };
+      return { calls: [], aborted: false, looped: true, run, kept };
     }
     const calls = inCall ? parseToolCalls(text.slice(shown)) : [];
     if (text.length > shown && !calls.length) yield { content: text.slice(shown) };   // incl. an unparseable block
@@ -309,9 +339,14 @@ export class Conversation {
       }
     }
     let res = yield* this.generate({ canRetry: true });
-    if (res.looped) {
-      // Tell the model where it got stuck and give it one more try; the note
-      // leaves history afterwards so later turns don't see it.
+    if (res.looped && res.kept) {
+      // Keep what it wrote before the loop and let it carry on from there.
+      const kept = res.kept;
+      const prefill = kept + (/^<think>/.test(kept) && !kept.includes('</think>') ? MOVING_ON : '\n');
+      res = yield* this.generate({ retry: true, prefill });
+    } else if (res.looped) {
+      // Too little before the loop to keep: tell the model where it got stuck and
+      // let it start over; the note leaves history afterwards.
       const note = { role: 'user', content: loopNote(res.run) };
       this.messages.push(note);
       res = yield* this.generate({ retry: true });
