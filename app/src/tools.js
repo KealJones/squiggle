@@ -14,6 +14,7 @@ import * as grants from './grants.js';
 import { wrapUntrusted } from './untrusted.js';
 import { truncate } from './util.js';
 import { bm25 } from './search.js';
+import { calculate } from './calc.js';
 
 const MAX_READ = 12000;
 const REPOS = '/repos';
@@ -528,9 +529,18 @@ export const TOOLS = [
     },
   },
 
+  // Math
+  {
+    spec: { name: 'calculate', description: 'Calculate a math expression exactly: + - * / ^, parentheses, percentages (15% of 240), and sqrt, round(x, digits), min, max, abs, floor, ceil, pow, log, ln, exp. Use it for every sum, price, percentage or conversion; never do math in your head.', parameters: S({ expression: str('A math expression, e.g. "300 * 25% + (120 - 60)" or "round((72 - 32) * 5 / 9, 1)"') }, ['expression']) },
+    async run({ expression }) {
+      const r = calculate(expression);
+      return r.error ? { model: { expression, error: r.error } } : { model: { expression, result: r.result }, label: `calculated ${truncate(String(expression), 40)} = ${r.result}` };
+    },
+  },
+
   // Code
   {
-    spec: { name: 'run_js', description: 'Run JavaScript in an isolated sandbox (no access to the user\'s data or files). Use for math, data processing, or checking logic. Use console.log or return a value. Top-level await works.', parameters: S({ code: str('JavaScript code') }, ['code']) },
+    spec: { name: 'run_js', description: 'Run JavaScript in an isolated sandbox (no access to the user\'s data or files). Use for code, data processing, or checking logic, not for plain math (use calculate). Use console.log or return a value. Top-level await works.', parameters: S({ code: str('JavaScript code') }, ['code']) },
     async run({ code }) {
       const r = await getSandbox().run(String(code || ''));
       return { model: { stdout: truncate((r.logs || []).join('\n'), 6000), result: r.result != null ? truncate(r.result, 4000) : undefined, error: r.error || undefined }, label: 'ran JavaScript' };
