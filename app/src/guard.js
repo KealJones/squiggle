@@ -66,6 +66,7 @@ export function resolveAgentPath(p) {
   if (!parts.length) return { area: 'root', rel: '' };
   const [top, ...rest] = parts;
   if (top === 'home') return { area: 'home', rel: rest.join('/') };
+  if (top === 'web') return { area: 'web', rel: rest.join('/') };
   if (top === 'repos') {
     if (!rest.length) return { area: 'repos', repo: null, rel: '' };
     const [repo, ...inner] = rest;
@@ -78,6 +79,7 @@ export function resolveAgentPath(p) {
 export function agentPath(r) {
   if (r.area === 'root') return '/';
   if (r.area === 'home') return '/home' + (r.rel ? '/' + r.rel : '');
+  if (r.area === 'web') return '/web' + (r.rel ? '/' + r.rel : '');
   return '/repos' + (r.repo ? '/' + r.repo : '') + (r.rel ? '/' + r.rel : '');
 }
 

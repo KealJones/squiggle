@@ -167,3 +167,8 @@ test('junkCheck reads the model verdict on the last result from its Check line',
     '',
   ]) assert.equal(tasks.junkCheck(t), false, t);
 });
+
+test('checkLine returns what the model took from the last result', () => {
+  assert.equal(tasks.checkLine('Check: The page says season 2 premiered in Feb 2025.\nNext: answer'), 'The page says season 2 premiered in Feb 2025.');
+  assert.equal(tasks.checkLine('Request: x\nNext: y'), '');
+});

@@ -192,24 +192,35 @@ class Turn {
     this.ui.onThinking && this.ui.onThinking(this.thinking);
   }
 
-  // Smart context, small models: a tool result the model's own Check calls useless
-  // ("no results", "unrelated", "doesn't mention…") is swapped for a one-line note,
-  // so later calls carry less to re-read and it knows not to repeat the call. A
-  // result the model is acting on (its next call uses a URL or path from it) stays.
+  // Smart context, small models: once the model has written its Check on a tool
+  // result, the raw result leaves its context. A result its Check calls useless
+  // ("no results", "unrelated", "doesn't mention…") becomes a one-line note so it
+  // won't repeat the call; any other becomes what its Check took from it (plus the
+  // result's links and saved page path, so it can still open or grep them). The
+  // full result stays in the task log and the chat's observations.
   trimJunk(input, r) {
     if (!lite() || settings.contextMode !== 'smart' || !Array.isArray(input) || !input.length) return 0;
     if (!this.conv || typeof this.conv.replaceResult !== 'function') return 0;
-    if (!tasks.junkCheck(r.thinking)) return 0;
-    const next = JSON.stringify((r.toolCalls || []).map(c => c.function && c.function.arguments));
+    const check = tasks.checkLine(r.thinking);
+    if (!check) return 0;
+    const junk = tasks.junkCheck(r.thinking);
     let saved = 0;
     for (const msg of input) {
       const part = Array.isArray(msg.content) && msg.content[0];
-      if (!part || !part.response || part.response.error || part.response.left_out) continue;
+      if (!part || !part.response || part.response.error || part.response.left_out || part.response.kept) continue;
       const before = JSON.stringify(part.response);
       if (before.length < 300) continue;
-      const urls = before.match(/https?:\/\/[^\s"\\<>]+|\/(?:repos|home)\/[^\s"\\<>]+/g) || [];
-      if (urls.some(u => next.includes(u))) continue;
-      const response = { left_out: `You judged this ${part.name} result not useful, so Squiggle removed it to save room. Don't make the same call again.` };
+      let response;
+      if (junk) response = { left_out: `You judged this ${part.name} result not useful, so Squiggle removed it to save room. Don't make the same call again.` };
+      else {
+        const urls = [...new Set(before.match(/https?:\/\/[^\s"\\<>]+/g) || [])].slice(0, 6);
+        response = {
+          kept: check,
+          ...(part.response.saved ? { saved: part.response.saved } : {}),
+          ...(urls.length && !part.response.saved ? { links: urls } : {}),
+          note: 'The full result was removed to save room; this is what you took from it.' + (part.response.saved ? ` The page is still in ${part.response.saved}.` : ''),
+        };
+      }
       if (this.conv.replaceResult(msg, response)) saved += estTokens(before) - estTokens(JSON.stringify(response));
     }
     return saved;
@@ -537,7 +548,7 @@ class Turn {
       return { response: { found: text, ...(tools.length ? { tools } : {}) } };
     }
     if (name === 'done') return { response: { error: 'There is no step to finish yet. Call plan first, or just answer.' } };
-    const res = await runTool(call, { session: this.session, threadId: this.threadId, room, approve: (req) => askApproval(req, this.ui, this.signal) });
+    const res = await runTool(call, { session: this.session, threadId: this.threadId, room, pageCards: lite() && !plain(), approve: (req) => askApproval(req, this.ui, this.signal) });
     this.toolEvent({ name: res.name, label: res.label, ok: res.ok });
     if (res.observation) sessions.addObservation(this.session, { ...res.observation, thread: this.threadId });
     let response = res.model && typeof res.model === 'object' ? res.model : { value: res.model };
