@@ -888,7 +888,7 @@ function naturalVoiceFellBack(reason, detail) {
     nv.tts.terminate();
     const next = createNaturalVoice({ model: 'kitten', player: nv.player });
     call.nv = next;
-    next.loaded.then(() => { if (call && call.nv === next) { call.ctl.setSpeaker(next.speaker); bar.note('Light natural voice ready.', 4000); } },
+    next.loaded.then(() => { if (call && call.nv === next) { call.ctl.setSpeaker(next.speaker); bar.note('Light natural voice ready; it speaks from the next reply.', 6000); } },
       (e) => { if (call && call.nv === next) bar.note(`Couldn't load the light natural voice: ${e.message}. This call uses the system voice.`); });
     return;
   }
