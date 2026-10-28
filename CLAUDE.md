@@ -136,7 +136,10 @@ Gemma 3, SmolLM, a QAT E2B build on onnxruntime-web) failed on WebGPU readback. 
 Gemma 3 270M (`G3`): unsloth's Q4_0 GGUF (242 MB) on wllama 3.8.1, CPU only (`n_gpu_layers: 0`),
 in `engine-wllama.js`; wllama caches the file itself. Also the fallback on computers without WebGPU.
 (ONNX on WASM failed too: the 4-bit export packs embeddings with GatherBlockQuantized, which the
-WASM build lacks, and the older full-precision export got the tab killed.) Gemma 3 has no tool
+WASM build lacks, and the older full-precision export got the tab killed.) Stock Gemma 3 270M runs as
+plain chat (`engine.chatOnly`): any system prompt made it answer the instructions instead of the person,
+so it gets no system prompt, no tools and no background title/fact/summary jobs. A fine-tuned build sets
+`tools: true` in MODELS and gets the harness. Gemma 3 has no tool
 format, so tools are prompt-based ```tool_call JSON blocks (docs/harness.md, "Small-model format";
 the fine-tune in tp-parse trains on that exact text). No tool names go in prose: the model looks
 tools up with `find` (answered by the agent) and sees details only for tools it found. The cloud model stays

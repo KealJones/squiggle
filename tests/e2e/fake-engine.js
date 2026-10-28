@@ -15,6 +15,7 @@ const lock = (fn) => { const r = chain.then(fn, fn); chain = r.catch(() => {}); 
 export const engineReady = () => ready;
 export const currentModel = () => 'E2B';
 export const isLite = (id) => Boolean(MODELS[id] && MODELS[id].runtime === 'wllama');
+export const chatOnly = (id) => isLite(id) && !(MODELS[id] && MODELS[id].tools);
 export const webgpuStatus = async () => ({ ok: true });
 export const suggestModel = () => 'E2B';
 export const deviceModel = () => (/iPhone|Android/.test(navigator.userAgent) ? 'G3' : 'E4B');

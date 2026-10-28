@@ -14,7 +14,7 @@ export const MODELS = {
     url: HF + 'litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-web.litertlm' },
   E2B: { label: 'Gemma 4 E2B', size: '2.0 GB', note: 'faster, still good with tools', phone: false, runtime: 'litert',
     url: HF + 'litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.litertlm' },
-  G3: { label: 'Gemma 3 270M', size: '242 MB', note: 'tiny and fast; runs on a phone\'s CPU, no WebGPU needed. Has tools, but far less reliable with them than Gemma 4', phone: true, runtime: 'wllama',
+  G3: { label: 'Gemma 3 270M', size: '242 MB', note: 'tiny and fast; runs on a phone\'s CPU, no WebGPU needed. Chat only: no tools or web lookups, and it often gets facts wrong', phone: true, runtime: 'wllama',
     url: HF + 'unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q4_0.gguf', bytes: 241574944 },
   // Not on this device: runs on the relay (only listed when the relay offers it).
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true },
@@ -42,6 +42,11 @@ export const engineReady = () => Boolean(engine);
 export const currentModel = () => loadedModel;
 // The small CPU model (prompt-based tools, short system prompt).
 export const isLite = (id = loadedModel) => Boolean(MODELS[id] && MODELS[id].runtime === 'wllama');
+// A small model with no tool training (stock Gemma 3 270M) can't follow the
+// harness: any system prompt makes it answer the instructions instead of the
+// person ("Okay, I'm ready to be Squiggle!"). It runs as plain chat: no system
+// prompt, no tools, no background summaries. A fine-tuned build sets `tools: true`.
+export const chatOnly = (id = loadedModel) => isLite(id) && !(MODELS[id] && MODELS[id].tools);
 
 export async function webgpuStatus() {
   if (!('gpu' in navigator)) return { ok: false, reason: 'This browser has no WebGPU. Use a recent Chrome, Edge, or Safari (iOS/macOS 26+).' };
