@@ -152,3 +152,18 @@ test('harness tool specs are well formed', () => {
     assert.ok(s.parameters.required.length >= 1);
   }
 });
+
+test('junkCheck reads the model verdict on the last result from its Check line', () => {
+  for (const t of [
+    'Check: Results are about Rennes city, a suburb, and a Paris store; none of them mention a famous building.\nNext: search again',
+    'Check: The web_search returned no results about the book\'s setting.',
+    'Check: these pages are unrelated to the question.',
+    'Check: the snippet doesn\'t mention the year.',
+  ]) assert.equal(tasks.junkCheck(t), true, t);
+  for (const t of [
+    'Check: the fetched page states Elvis Presley recorded it.',
+    'Check: find confirmed web_search is available.',
+    'Request: nothing useful here\nNext: look it up',        // only the Check line counts
+    '',
+  ]) assert.equal(tasks.junkCheck(t), false, t);
+});

@@ -47,6 +47,7 @@ export const LITE_SYSTEM = [
 ].join('\n');
 
 const lite = () => engine.isLite(settings.model);
+
 // Plain chat for small models without tool training (engine.chatOnly).
 const plain = () => Boolean(engine.chatOnly && engine.chatOnly(settings.model));
 
@@ -191,6 +192,29 @@ class Turn {
     this.ui.onThinking && this.ui.onThinking(this.thinking);
   }
 
+  // Smart context, small models: a tool result the model's own Check calls useless
+  // ("no results", "unrelated", "doesn't mention…") is swapped for a one-line note,
+  // so later calls carry less to re-read and it knows not to repeat the call. A
+  // result the model is acting on (its next call uses a URL or path from it) stays.
+  trimJunk(input, r) {
+    if (!lite() || settings.contextMode !== 'smart' || !Array.isArray(input) || !input.length) return 0;
+    if (!this.conv || typeof this.conv.replaceResult !== 'function') return 0;
+    if (!tasks.junkCheck(r.thinking)) return 0;
+    const next = JSON.stringify((r.toolCalls || []).map(c => c.function && c.function.arguments));
+    let saved = 0;
+    for (const msg of input) {
+      const part = Array.isArray(msg.content) && msg.content[0];
+      if (!part || !part.response || part.response.error || part.response.left_out) continue;
+      const before = JSON.stringify(part.response);
+      if (before.length < 300) continue;
+      const urls = before.match(/https?:\/\/[^\s"\\<>]+|\/(?:repos|home)\/[^\s"\\<>]+/g) || [];
+      if (urls.some(u => next.includes(u))) continue;
+      const response = { left_out: `You judged this ${part.name} result not useful, so Squiggle removed it to save room. Don't make the same call again.` };
+      if (this.conv.replaceResult(msg, response)) saved += estTokens(before) - estTokens(JSON.stringify(response));
+    }
+    return saved;
+  }
+
   async respond(input, { show = true } = {}) {
     const base = this.thinking;
     const r = await engine.respond(this.conv, input, {
@@ -199,6 +223,7 @@ class Turn {
       onThinking: (t) => this.ui.onThinking && this.ui.onThinking((base ? base + '\n\n' : '') + t),
     });
     if (r.thinking && r.thinking.trim()) this.thinking = (base ? base + '\n\n' : '') + r.thinking.trim();
+    r.saved = this.trimJunk(input, r);
     return r;
   }
 
@@ -269,7 +294,7 @@ class Turn {
     for (;;) {
       const r = await this.respond(pending);
       if (r.text) this.prefix += r.text + (r.toolCalls.length ? '\n\n' : '');
-      used += estTokens((r.text || '') + (r.thinking || '') + JSON.stringify(r.toolCalls || []));
+      used += estTokens((r.text || '') + (r.thinking || '') + JSON.stringify(r.toolCalls || [])) - (r.saved || 0);
       if (!r.toolCalls.length || this.aborted) return null;
       // A plan switches to step mode (anything else in the same reply waits for its step).
       const planCall = r.toolCalls.find(c => c.function && c.function.name === 'plan');
