@@ -127,7 +127,7 @@ test('a reply that repeats itself is cut off', async () => {
   assert.ok(!isLooping('A normal reply with different sentences. Each one says something new. Nothing repeats here at all.'));
   // It loops on both tries: stopped, retried once with a note, then stopped for good.
   const r = await run(new Conversation(fakeW([loop, loop]), cfg()), 'hi');
-  assert.match(r.text, /trying again[\s\S]*stopped: the model was repeating itself/);
+  assert.match(r.text, /asked it to try again[\s\S]*stopped: the model was repeating itself/);
   assert.ok(r.text.length < 2 * loop.length, 'stopped before the end');
 });
 
@@ -223,4 +223,39 @@ test('replaceResult swaps a tool result already in history for a short note', as
   const swapped = conv.messages.find(m => m.role === 'tool');
   assert.deepEqual(swapped.content, [{ name: 'web_search', response: { left_out: 'not useful' } }]);
   assert.equal(conv.replaceResult({ role: 'tool', content: [] }, {}), false, 'unknown messages are left alone');
+});
+
+test('after a loop, what came before it is kept and the model carries on from there', async () => {
+  const seen = [];
+  let call = 0;
+  const good = 'Request: how many birds make a flock.\nKnow: the search found a photo caption, no number.';
+  const w = { async createChatCompletion({ messages, abortSignal }) {
+    seen.push(JSON.parse(JSON.stringify(messages)));
+    const n = call++;
+    return (async function* () {
+      if (n === 0) {
+        yield { choices: [{ delta: { reasoning_content: good + '\nCheck: so total = 2' } }] };
+        for (let i = 0; i < 2000 && !abortSignal.aborted; i++) yield { choices: [{ delta: { reasoning_content: ' + 2' } }] };
+      } else {
+        const prefill = messages[messages.length - 1].content;
+        for (let i = 0; i < prefill.length; i += 7) yield { choices: [{ delta: { content: prefill.slice(i, i + 7) } }] };   // echoed back
+        yield { choices: [{ delta: { content: 'Check: the page has no set number.\n</think>\nThere is no set number of birds in a flock.' } }] };
+      }
+    })();
+  } };
+  const conv = new Conversation(w, cfg());
+  const r = await runAll(conv, 'how many birds are a flock?');
+  const last = seen[1][seen[1].length - 1];
+  assert.equal(last.role, 'assistant');
+  assert.equal(last.content, '<think>\n' + good + '\n(I was repeating myself. Moving on.)\n', 'kept up to the loop, plus a nudge');
+  assert.ok(!seen[1].some(m => /Squiggle: your last reply/.test(m.content)), 'no start-over note');
+  assert.equal(r.text, 'There is no set number of birds in a flock.');
+  assert.match(r.thinking, /carry on from before them\.\]\n\nCheck: the page has no set number\.\s*$/);
+  assert.equal((r.thinking.match(/Request: how many birds/g) || []).length, 1, 'the kept part is not shown twice');
+});
+
+test('beforeLoop cuts at the sentence before the repeats and keeps nothing when too little came first', async () => {
+  const { beforeLoop } = await import('../app/src/engine-wllama.js');
+  assert.equal(beforeLoop('<think>\nRequest: a thing to find.\nCheck: total = 2 + 2 + 2 + 2', '2 2 2 2'), '<think>\nRequest: a thing to find.');
+  assert.equal(beforeLoop('2 + 2 + 2 + 2', '2 2 2 2'), '');
 });
