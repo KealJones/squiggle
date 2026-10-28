@@ -197,7 +197,10 @@ export class Conversation {
   // (a tool-call block is held back), then returns { calls, aborted }.
   async *generate() {
     const ctrl = this.ctrl = new AbortController();
-    let out = '', thinkShown = 0, shown = 0, inCall = false, looped = false, text = '', checked = 0;
+    let out = '', thinkShown = 0, shown = 0, inCall = false, looped = false, text = '', checked = 0, reasoning = '', rChecked = 0;
+    // Stop output that keeps repeating itself: checked at sentence ends, and at least
+    // every 200 characters ("+ 2 + 2 + 2…" has no sentence ends).
+    const loops = (buf, last, piece) => (/[.!?\n]/.test(piece) && buf.length - last > 40) || buf.length - last > 200;
     const tools = this.tools.length > 0;
     try {
       const stream = await this.w.createChatCompletion({
@@ -215,15 +218,22 @@ export class Conversation {
         const delta = (chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta) || {};
         // llama.cpp may split a <think> block off into reasoning_content (it does
         // for chat templates that know about thinking, like LFM2.5's).
-        if (delta.reasoning_content) { yield { thinking: delta.reasoning_content }; continue; }
+        if (delta.reasoning_content) {
+          reasoning += delta.reasoning_content;
+          yield { thinking: delta.reasoning_content };
+          if (loops(reasoning, rChecked, delta.reasoning_content)) {
+            rChecked = reasoning.length;
+            if (isLooping(reasoning.slice(-3000))) { looped = true; ctrl.abort(); break; }
+          }
+          continue;
+        }
         const piece = delta.content;
         if (!piece) continue;
         out += piece;
         const parts = splitThinking(out);
         if (parts.thinking.length > thinkShown) { yield { thinking: parts.thinking.slice(thinkShown) }; thinkShown = parts.thinking.length; }
         text = parts.text;
-        // Stop a reply that keeps repeating itself (checked at sentence ends).
-        if (/[.!?\n]/.test(piece) && out.length - checked > 40) {
+        if (loops(out, checked, piece)) {
           checked = out.length;
           if (isLooping(out.slice(-3000))) { looped = true; ctrl.abort(); break; }
         }

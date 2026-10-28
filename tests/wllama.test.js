@@ -168,3 +168,19 @@ test('a closing </think> left in the content after reasoning_content is dropped'
   assert.equal(r.thinking, 'A casual hello.');
   assert.equal(r.text, 'Hey! What can I do for you?');
 });
+
+test('a loop with no sentence ends is stopped, in reasoning_content too', async () => {
+  for (const key of ['content', 'reasoning_content']) {
+    let sent = 0;
+    const w = { async createChatCompletion({ abortSignal }) {
+      return (async function* () {
+        if (key === 'content') yield { choices: [{ delta: { content: '<think>\nCheck: total = 2' } }] };
+        else yield { choices: [{ delta: { reasoning_content: 'Check: total = 2' } }] };
+        for (let i = 0; i < 2000 && !abortSignal.aborted; i++) { sent++; yield { choices: [{ delta: { [key]: ' + 2' } }] }; }
+      })();
+    } };
+    const r = await runAll(new Conversation(w, cfg()), 'how many birds are a flock?');
+    assert.ok(sent < 200, `${key}: stopped after ${sent} pieces`);
+    assert.match(r.text, /repeating itself/);
+  }
+});
