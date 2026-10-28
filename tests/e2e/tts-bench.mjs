@@ -1,7 +1,7 @@
 // Real neural voice in headless Chromium: loads app/src/tts-worker.js under the
 // app's CSP, downloads the real model from Hugging Face, and measures load time,
-// real-time factor and browser memory (RSS of all Chromium processes).
-// Not part of the e2e suite (it downloads ~90 MB).
+// real-time factor and memory (RSS of the tab's renderer process, and of all
+// Chromium processes). Not part of the e2e suite (it downloads the model).
 //
 //   node tests/e2e/tts-bench.mjs [--model kokoro|kitten] [--voice af_heart] [--wav out-dir]
 import http from 'node:http';
@@ -29,7 +29,7 @@ const BENCH_JS = `
   window.bench = (model, voice, sentences) => new Promise((resolve, reject) => {
     const w = new Worker('/src/tts-worker.js', { type: 'module' });
     window.w = w;
-    const t0 = performance.now(), log = [], res = { stages: [], speak: [] };
+    const t0 = performance.now(), res = { stages: [], speak: [] };
     let id = 0, last = 0;
     w.onerror = (e) => reject(new Error('worker error: ' + (e.message || 'load failed')));
     w.onmessage = (e) => {
@@ -64,6 +64,17 @@ const server = http.createServer((req, res) => {
 await new Promise(r => server.listen(0, '127.0.0.1', r));
 const url = `http://127.0.0.1:${server.address().port}/bench.html`;
 
+// Resident memory of the tab's renderer process (the one a phone kills), in MB.
+function rendererMB(pid) {
+  const out = execFileSync('ps', ['-eo', 'pid=,ppid=,rss=,args=']).toString().trim().split('\n').map(l => l.trim().split(/\s+/));
+  const kids = new Map();
+  for (const [p, pp] of out) { if (!kids.has(+pp)) kids.set(+pp, []); kids.get(+pp).push(+p); }
+  const info = new Map(out.map(([p, , r, ...a]) => [+p, { rss: +r, args: a.join(' ') }]));
+  let best = 0; const stack = [...(kids.get(pid) || [])];
+  while (stack.length) { const p = stack.pop(); const i = info.get(p); if (i && /--type=renderer/.test(i.args) && !/extension/.test(i.args)) best = Math.max(best, i.rss); stack.push(...(kids.get(p) || [])); }
+  return Math.round(best / 1024);
+}
+
 // Sum of resident memory of the browser and all its child processes, in MB.
 function rssMB(pid) {
   const out = execFileSync('ps', ['-eo', 'pid=,ppid=,rss=']).toString().trim().split('\n').map(l => l.trim().split(/\s+/).map(Number));
@@ -86,18 +97,20 @@ const SENTENCES = [
 const browser = await chromium.launch();
 const pid = process.pid; // Chromium runs as children of this process; its own RSS is subtracted below
 const results = [];
+// One context for both runs, so the second load comes from Cache Storage.
+const ctx = await browser.newContext();
 for (const run of ['cold', 'warm']) {
-  const ctx = await browser.newContext();
   const page = await ctx.newPage();
   page.on('console', m => { if (/progress/.test(m.text())) process.stdout.write('  ' + m.text() + '\r'); else if (m.type() === 'error' || m.type() === 'warning') console.log('  [console]', m.text().slice(0, 300)); });
   page.on('pageerror', e => console.log('  [pageerror]', String(e).slice(0, 300)));
   await page.goto(url);
   await page.waitForTimeout(500);
-  const before = rssMB(pid);
-  let peakLoad = before, peakSpeak = before;
+  const before = rssMB(pid), rBefore = rendererMB(pid);
+  let peakLoad = before, peakSpeak = before, rPeak = rBefore;
   const sampler = setInterval(async () => {
     try {
       const m = rssMB(pid);
+      rPeak = Math.max(rPeak, rendererMB(pid));
       const st = await page.evaluate(() => ({ ready: Boolean(window.__ready), speaking: Boolean(window.__speaking) })).catch(() => ({}));
       if (!st.ready) peakLoad = Math.max(peakLoad, m); else peakSpeak = Math.max(peakSpeak, m);
     } catch {}
@@ -111,11 +124,10 @@ for (const run of ['cold', 'warm']) {
     console.log(`\n${run}: FAILED after ${Date.now() - t0} ms: ${e.message}`);
     console.log('CSP violations:', await page.evaluate(() => window.violations));
     process.exitCode = 1;
-    await ctx.close();
     break;
   }
   clearInterval(sampler);
-  const afterSpeak = rssMB(pid);
+  const afterSpeak = rssMB(pid), rAfter = rendererMB(pid);
   const violations = await page.evaluate(() => window.violations);
   if (WAV && run === 'warm') {
     mkdirSync(WAV, { recursive: true });
@@ -125,10 +137,10 @@ for (const run of ['cold', 'warm']) {
   await page.evaluate(() => { window.w.terminate(); });
   await page.waitForTimeout(1500);
   const afterTerminate = rssMB(pid);
-  await ctx.close();
+  await page.close();
   const audioMs = r.speak.reduce((n, x) => n + x.audioMs, 0), synthMs = r.speak.reduce((n, x) => n + x.synthMs, 0);
-  results.push({ run, ...r, mem: { beforeMB: before, peakDuringLoadMB: peakLoad, peakWhileSpeakingMB: peakSpeak, afterSpeakMB: afterSpeak, afterTerminateMB: afterTerminate }, totalRtf: +(synthMs / audioMs).toFixed(3), violations });
-  console.log(`\n${run}: load ${r.loadMs} ms (cached: ${r.cached}), RTF ${(synthMs / audioMs).toFixed(2)} over ${(audioMs / 1000).toFixed(1)} s of audio; memory ${before} → peak ${Math.max(peakLoad, peakSpeak)} MB (load peak ${peakLoad}, speaking ${peakSpeak}), after terminate ${afterTerminate} MB; CSP violations: ${violations.length}`);
+  results.push({ run, ...r, mem: { beforeMB: before, peakDuringLoadMB: peakLoad, peakWhileSpeakingMB: peakSpeak, afterSpeakMB: afterSpeak, afterTerminateMB: afterTerminate, rendererBeforeMB: rBefore, rendererPeakMB: rPeak, rendererAfterSpeakMB: rAfter, rendererAfterTerminateMB: rendererMB(pid) }, totalRtf: +(synthMs / audioMs).toFixed(3), violations });
+  console.log(`\n${run}: load ${r.loadMs} ms (cached: ${r.cached}), RTF ${(synthMs / audioMs).toFixed(2)} over ${(audioMs / 1000).toFixed(1)} s of audio; memory ${before} → peak ${Math.max(peakLoad, peakSpeak)} MB (load peak ${peakLoad}, speaking ${peakSpeak}), after terminate ${afterTerminate} MB; tab renderer ${rBefore} → peak ${rPeak} MB, ${rAfter} MB after speaking; CSP violations: ${violations.length}`);
 }
 console.log(JSON.stringify({ model: MODEL, voice: VOICE || '(default)', cpu: execFileSync('nproc').toString().trim() + ' cores', results }, null, 1));
 await browser.close();

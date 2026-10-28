@@ -681,6 +681,7 @@ await check('natural voice (computer default): loads on the call tap, speaks rep
   assert.ok(start.primed, 'system speech primed too (the fallback)');
   assert.equal(start.marker.phase, 'load', 'crash marker while loading');
   await page.waitForFunction(() => /Natural voice ready \(Kokoro 82M\)/.test(document.querySelector('.call .call-note').textContent));
+  if (shotsDir) await page.screenshot({ path: `${shotsDir}/desktop-call-natural.png` });
   assert.equal(await page.evaluate(() => localStorage.getItem('squiggle-voice-loading')), null, 'marker cleared once loaded');
 
   await saidInCall(page, 'markdown reply please', 3);
@@ -821,6 +822,7 @@ await check('settings: Natural/System and Best/Light choices; Test voice loads, 
   const t = await page.evaluate(() => ({ load: window.__tts.find(x => x.ev === 'load'), speak: window.__tts.find(x => x.ev === 'speak'), plays: window.__audio.plays.length, workers: window.__workers.map(w => w.terminated), closed: window.__audio.closed }));
   assert.deepEqual([t.load.model, t.load.voice, t.speak.text], ['kokoro', 'bf_emma', 'Hi, this is how I sound on a call.']);
   assert.deepEqual([t.plays, t.workers, t.closed], [1, [true], 1], 'played once, then freed');
+  if (shotsDir) await page.locator('#voice-select').locator('xpath=ancestor::div[contains(@class,"field")]').screenshot({ path: `${shotsDir}/desktop-voice-settings.png` });
   await page.click('#drawer .seg button:has-text("Light (")');
   f = await field();
   assert.deepEqual(f.pressed, ['Natural', 'Light (~28 MB)', 'Normal']);
@@ -830,7 +832,6 @@ await check('settings: Natural/System and Best/Light choices; Test voice loads, 
   assert.deepEqual(f.pressed, ['System voices', 'Normal']);
   assert.match(f.options[0], /^Automatic/);
   assert.equal(JSON.parse(await page.evaluate(() => localStorage.getItem('squiggle-settings'))).voiceEngine, 'system');
-  if (shotsDir) await page.screenshot({ path: `${shotsDir}/desktop-voice-settings.png` });
   assert.deepEqual(page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
   await D.ctx.close();
 });

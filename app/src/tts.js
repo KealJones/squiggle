@@ -20,7 +20,7 @@ export function createTTS({
   model = 'kokoro', voice, url = new URL('./tts-worker.js', import.meta.url), WorkerCtor = globalThis.Worker,
   onStage = () => {}, onProgress = () => {}, onBusy = () => {}, stallMs = 30000, startMs = 60000,
 } = {}) {
-  let worker = null, state = 'idle', loading = null, nextId = 1, failure = null;
+  let worker = null, state = 'idle', loading = null, nextId = 1, failure = null, abortLoad = null;
   const pending = new Map();
 
   function settleAll(err) {
@@ -32,6 +32,7 @@ export function createTTS({
   function terminate() {
     if (worker) { try { worker.terminate(); } catch {} }
     worker = null;
+    if (abortLoad) abortLoad(cancelled());
     if (state !== 'failed') state = 'closed';
     settleAll(cancelled());
   }
@@ -44,12 +45,15 @@ export function createTTS({
       const fail = (e) => {
         clearTimeout(timer);
         failure = e;
+        abortLoad = null;
         const wasReady = state === 'ready';
         state = 'failed';
         if (worker) { try { worker.terminate(); } catch {} worker = null; }
         settleAll(e);
         if (!wasReady) reject(e);
       };
+      // Ended from outside (the call hung up) before it was ready.
+      abortLoad = (e) => { clearTimeout(timer); abortLoad = null; reject(e); };
       try {
         worker = new WorkerCtor(url, { type: 'module', name: 'squiggle-voice' });
       } catch (e) { fail(e); return; }
@@ -70,6 +74,7 @@ export function createTTS({
           arm(stallMs, 'the voice download stalled');
         } else if (m.type === 'ready') {
           clearTimeout(timer);
+          abortLoad = null;
           state = 'ready';
           resolve(m);
         } else if (m.type === 'audio' || m.type === 'cancelled' || (m.type === 'error' && m.id != null)) {

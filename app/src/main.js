@@ -881,7 +881,7 @@ function naturalVoiceFellBack(reason, detail) {
   if (!call) return;
   const { bar, nv } = call;
   const model = nv ? nv.model : voiceModel();
-  if (reason === 'slow' && model === 'kokoro' && tts.TTS_MODELS.kitten) {
+  if (reason === 'slow' && nv && model === 'kokoro' && tts.TTS_MODELS.kitten) {
     agent.settings.voiceModel = 'kitten'; saveSettings();
     bar.note(`${tts.TTS_MODELS.kokoro.label} is too slow on this device (${Number(detail).toFixed(1)}× slower than speech), so Squiggle switched to the light natural voice (Settings → Voice calls). Using the system voice while it loads.`);
     // Reuse the unlocked player: we're not inside a tap any more.

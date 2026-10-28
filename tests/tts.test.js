@@ -149,6 +149,14 @@ test('createTTS: a load error, a stalled download and a worker crash all fail cl
   await assert.rejects(t2.load(), /download stalled/);
   assert.equal(made[0].terminated, true, 'a failed load frees the worker');
 
+  // Hung up while loading: the load settles (cancelled) instead of hanging.
+  const { W: W4 } = fakeWorkerClass(() => {});
+  const t4 = createTTS({ url: 'w.js', WorkerCtor: W4 });
+  const p4 = t4.load();
+  t4.terminate();
+  await assert.rejects(p4, (e) => e.cancelled === true);
+  assert.equal(t4.state, 'closed');
+
   const { W: W3, made: m3 } = fakeWorkerClass((w, m) => { if (m.type === 'load') w.reply({ type: 'ready', ms: 1 }); });
   const t3 = createTTS({ url: 'w.js', WorkerCtor: W3 });
   await t3.load();
