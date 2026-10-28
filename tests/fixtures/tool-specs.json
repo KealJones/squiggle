@@ -341,7 +341,7 @@
  },
  {
   "name": "remember",
-  "description": "Save a lasting fact about the user or their projects (preferences, decisions, names, how things work). Saved as subject → relation → object.",
+  "description": "Save a lasting fact about the user or their projects (preferences, decisions, names, how things work). Saved as subject \u2192 relation \u2192 object.",
   "parameters": {
    "type": "object",
    "properties": {
@@ -418,8 +418,24 @@
   }
  },
  {
+  "name": "calculate",
+  "description": "Calculate a math expression exactly: + - * / ^, parentheses, percentages (15% of 240), and sqrt, round(x, digits), min, max, abs, floor, ceil, pow, log, ln, exp. Use it for every sum, price, percentage or conversion; never do math in your head.",
+  "parameters": {
+   "type": "object",
+   "properties": {
+    "expression": {
+     "type": "string",
+     "description": "A math expression, e.g. \"300 * 25% + (120 - 60)\" or \"round((72 - 32) * 5 / 9, 1)\""
+    }
+   },
+   "required": [
+    "expression"
+   ]
+  }
+ },
+ {
   "name": "run_js",
-  "description": "Run JavaScript in an isolated sandbox (no access to the user's data or files). Use for math, data processing, or checking logic. Use console.log or return a value. Top-level await works.",
+  "description": "Run JavaScript in an isolated sandbox (no access to the user's data or files). Use for code, data processing, or checking logic, not for plain math (use calculate). Use console.log or return a value. Top-level await works.",
   "parameters": {
    "type": "object",
    "properties": {

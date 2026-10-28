@@ -26,6 +26,7 @@ app/                    static app, plain ES modules, no build step
     context.js          context assembly: smart (default; retrieval incl. other chats) / compact / full; report
     search.js           BM25 + blend with optional embeddings (embed.js, MiniLM on CPU)
     tools.js            agent tools; run_js sandbox host
+    calc.js             `calculate` tool: safe math expression parser (no eval), % and money-friendly
     guard.js            hard limits: push policy, workflow-file check, workspace path resolution
     grants.js           remembered "always allow" push grants (synced)
     untrusted.js        <untrusted key=…> wrapping for outside content
