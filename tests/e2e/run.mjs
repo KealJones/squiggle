@@ -1283,6 +1283,41 @@ await check('Squiggle Small (fine-tuned) gets the harness: system prompt and too
   assert.equal(await D.page.evaluate(() => window.__engineLog.filter(e => e.type === 'complete').length), 0, 'no titles, facts or summaries from a small model');
 });
 
+await check('small models: a long page comes back as a card saved in /web, grep finds the answer, and used results shrink to what the model took', async () => {
+  const D = await device('cards');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  const para = (t) => `<p>${t}</p>`;
+  const html = '<!doctype html><html><head><title>Gemma 3 - Models</title></head><body><nav>Jump to content</nav><h1>Gemma 3</h1>' +
+    para('Gemma 3 is a family of open models from Google, released in March 2025 in sizes from 270M to 27B parameters.') +
+    '<h2>Model details</h2>' + para('Filler about training data and evaluations, long enough to make this a real page. '.repeat(20)) +
+    '<h2>Files</h2>' + para('The Q4_0 GGUF of the 270M model is 242 MB.') + '</body></html>';
+  await D.ctx.route('https://models.example.test/gemma3', r => r.fulfill({ status: 200, contentType: 'text/html', headers: { 'Access-Control-Allow-Origin': '*' }, body: html }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'SQ'; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  await D.page.fill('#input', 'how big is it? https://models.example.test/gemma3');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => /242 MB/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 20000 });
+  const log = await D.page.evaluate(() => window.__engineLog);
+  const results = log.filter(e => e.type === 'respond' && Array.isArray(e.input)).map(e => e.input[0].content[0]);
+  const card = results.find(r => r.name === 'fetch_url').response;
+  assert.equal(card.saved, '/web/1.txt');
+  assert.match(card.opening, /Gemma 3 is a family of open models/);
+  assert.doesNotMatch(card.opening, /Jump to content/);
+  assert.match(card.sections, /^\d+ Gemma 3 · \d+ Model details · \d+ Files$/);
+  assert.equal(card.text, undefined, 'no full page text for small models');
+  const grep = results.find(r => r.name === 'grep').response;
+  assert.match(grep.matches, /\/web\/1\.txt:\d+: The Q4_0 GGUF of the 270M model is 242 MB\./);
+  assert.match(grep.matches, /<untrusted/, 'page text is marked untrusted');
+  const replaced = log.filter(e => e.type === 'replace');
+  assert.deepEqual(replaced.map(r => r.name), ['fetch_url', 'grep'].slice(0, replaced.length));
+  assert.equal(replaced[0].response.kept, 'the card says the page is about Gemma 3 model sizes.');
+  assert.equal(replaced[0].response.saved, '/web/1.txt');
+});
+
 await browser.close();
 close();
 const failed = results.filter(r => r[0] === 'FAIL');

@@ -221,6 +221,12 @@ export function resumable(session, threadId, text, lastTaskId) {
 
 // The model's own verdict on the last result, from the Check line of its thinking.
 const JUNK = /\b(no (useful |relevant )?(results?|info(rmation)?|answer)|nothing (useful|relevant|about)|not (useful|relevant|helpful)|unrelated|irrelevant|off[- ]topic|(did ?n[o']t|does ?n[o']t|do ?n[o']t|none of (them|these|the results)) (find|mention|answer|say|give|contain|name|list|include|match))\b/i;
+// The Check line of the model's thinking ('' when it wrote none), without the label.
+export function checkLine(thinking) {
+  const line = String(thinking || '').split('\n').find(l => /^\s*check\s*:/i.test(l));
+  return line ? line.replace(/^\s*check\s*:\s*/i, '').trim().slice(0, 500) : '';
+}
+
 export function junkCheck(thinking) {
   const line = String(thinking || '').split('\n').find(l => /^\s*check\s*:/i.test(l));
   return Boolean(line && JUNK.test(line));

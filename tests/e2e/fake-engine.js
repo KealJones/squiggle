@@ -40,7 +40,7 @@ export const background = (fn) => lock(fn);
 
 export async function conversation(cfg) {
   log.push({ type: 'conversation', system: cfg.system, messages: cfg.messages, tools: cfg.tools.map(t => t.name), known: cfg.known || [] });
-  return { cfg, delete: async () => {}, cancel() {} };
+  return { cfg, delete: async () => {}, cancel() {}, replaceResult(msg, response) { log.push({ type: 'replace', name: msg.content[0].name, response }); return true; } };
 }
 
 const call = (name, args) => ({ text: '', thinking: '', toolCalls: [{ type: 'function', function: { name, arguments: args } }] });
@@ -85,6 +85,16 @@ export async function respond(conv, input, { onText } = {}) {
     return { text: t, thinking: '', toolCalls: [] };
   }
   const names = input.map(m => m.content[0].name);
+  // CARDTEST: a page card, then grep in the saved page, then an answer.
+  const first = input[0].content[0].response || {};
+  if (names[0] === 'fetch_url' && first.saved) {
+    return { text: '', thinking: 'Check: the card says the page is about Gemma 3 model sizes.\nNext: grep for the file size.', toolCalls: [{ type: 'function', function: { name: 'grep', arguments: { pattern: 'GB|MB', path: first.saved } } }] };
+  }
+  if (names[0] === 'grep' && /\/web\//.test(first.path || '')) {
+    const t = 'The Q4_0 GGUF is 242 MB (from the page).';
+    onText && onText(t);
+    return { text: t, thinking: 'Check: grep found "The Q4_0 GGUF of the 270M model is 242 MB."', toolCalls: [] };
+  }
   if (names.includes('git_push')) {
     const r = input[0].content[0].response;
     const t = r.ok ? `Pushed ${r.branch}.` : `Push failed: ${r.error}`;

@@ -15,6 +15,7 @@ import { wrapUntrusted } from './untrusted.js';
 import { truncate } from './util.js';
 import { bm25 } from './search.js';
 import { calculate } from './calc.js';
+import { pageCard, pageText } from './webpage.js';
 
 const MAX_READ = 12000;
 const REPOS = '/repos';
@@ -30,8 +31,23 @@ function realPath(r) {
 // Attached documents are outside content even though they live under /home.
 const isAttachmentPath = (p) => /^\/home\/attachments(\/|$)/.test(agentPath(resolveAgentPath(p)));
 
+// Web pages fetched in card mode (small models): /web/<n>.txt, in memory only,
+// never synced. The newest WEB_KEEP pages are kept.
+const WEB_KEEP = 12;
+const webPages = new Map();   // '1.txt' → { url, title, text }
+let webSeq = 0;
+export function saveWebPage(url, title, text) {
+  for (const [k, v] of webPages) if (v.url === url) webPages.delete(k);
+  const name = `${++webSeq}.txt`;
+  webPages.set(name, { url, title, text });
+  while (webPages.size > WEB_KEEP) webPages.delete(webPages.keys().next().value);
+  return '/web/' + name;
+}
+const isWebPath = (p) => { try { return resolveAgentPath(p).area === 'web'; } catch { return false; } };
+
 async function readAgentFile(p) {
   const r = resolveAgentPath(p);
+  if (r.area === 'web') { const page = webPages.get(r.rel); return page ? page.text : null; }
   const rp = realPath(r);
   if (rp.kind === 'home') return storage.read(rp.rel);
   if (rp.kind === 'fs') { try { return await pfs.readFile(rp.path, 'utf8'); } catch { return null; } }
@@ -40,7 +56,8 @@ async function readAgentFile(p) {
 
 async function listAgentDir(p) {
   const r = resolveAgentPath(p);
-  if (r.area === 'root') return ['home/', 'repos/'];
+  if (r.area === 'root') return ['home/', 'repos/', ...(webPages.size ? ['web/'] : [])];
+  if (r.area === 'web') return r.rel ? [] : [...webPages].map(([k, v]) => `${k}  (${v.text.length} B)`);
   if (r.area === 'repos' && !r.repo) return (await safeReaddir(REPOS)).map(n => n + '/');
   const rp = realPath(r);
   const files = rp.kind === 'home' ? await storage.list(rp.rel) : await walk(rp.path);
@@ -183,7 +200,7 @@ export const TOOLS = [
       }
       const fromRepo = resolveAgentPath(path).area === 'repos';
       return {
-        model: { path, total_lines: lines.length, start_line: start, end_line: end, content: fromRepo || isAttachmentPath(path) ? wrapUntrusted('file ' + path, out) : out, ...(end < lines.length ? { more: `lines ${end + 1}-${lines.length} not shown; read them with start_line, or grep for what you need` } : {}) },
+        model: { path, total_lines: lines.length, start_line: start, end_line: end, content: fromRepo || isAttachmentPath(path) || isWebPath(path) ? wrapUntrusted('file ' + path, out) : out, ...(end < lines.length ? { more: `lines ${end + 1}-${lines.length} not shown; read them with start_line, or grep for what you need` } : {}) },
         label: `read ${path}${start > 1 || end < lines.length ? ` lines ${start}-${end}` : ''}`,
         observation: fromRepo ? { source: 'read_file', title: path, text: text.slice(0, 20000) } : null,
       };
@@ -219,7 +236,7 @@ export const TOOLS = [
       const fromRepo = resolveAgentPath(base).area === 'repos';
       const body = hits.join('\n') || '(no matches)';
       return {
-        model: { pattern, path: base, files_searched: scanned, matches: fromRepo || hits.some(h => h.startsWith('/home/attachments/')) ? wrapUntrusted('grep ' + base, body) : body, ...(more ? { more: `more matches not shown; call again with skip: ${skip + hits.length}, or narrow the pattern or path` } : {}) },
+        model: { pattern, path: base, files_searched: scanned, matches: fromRepo || isWebPath(base) || hits.some(h => h.startsWith('/home/attachments/')) ? wrapUntrusted('grep ' + base, body) : body, ...(more ? { more: `more matches not shown; call again with skip: ${skip + hits.length}, or narrow the pattern or path` } : {}) },
         label: `grep "${truncate(String(pattern), 40)}" in ${base} (${hits.length}${more ? '+' : ''})`,
       };
     },
@@ -437,7 +454,7 @@ export const TOOLS = [
   // Web
   {
     spec: { name: 'fetch_url', description: 'Read a web page by its full URL. Returns readable text. Not a search engine.', parameters: S({ url: str('Complete http(s) URL') }, ['url']) },
-    async run({ url }) {
+    async run({ url }, ctx = {}) {
       let u;
       try { u = new URL(/^https?:\/\//i.test(url) ? url : 'https://' + url); } catch { return { model: { error: 'Pass one full URL, e.g. https://example.com/page.' } }; }
       let resp, via = 'direct';
@@ -449,15 +466,26 @@ export const TOOLS = [
       }
       const ct = resp.headers.get('content-type') || '';
       const raw = await resp.text();
-      let text = raw, title = u.href;
+      let text = raw, title = u.href, headings = [];
       if (/html/i.test(ct) || /^\s*<(!doctype|html)/i.test(raw)) {
         const doc = new DOMParser().parseFromString(raw, 'text/html');
         title = (doc.title || u.href).trim();
+        headings = [...doc.querySelectorAll('h1,h2,h3')].map(h => (h.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
         doc.querySelectorAll('script,style,noscript,svg,iframe,template,[hidden],[aria-hidden="true"]').forEach(n => n.remove());
-        text = (doc.body ? doc.body.innerText || doc.body.textContent : doc.documentElement.textContent || '')
-          .replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+        text = pageText(doc);
       }
       const status = via === 'relay' ? +(resp.headers.get('x-upstream-status') || resp.status) : resp.status;
+      // Small models: the page is saved as a file and they get a short card
+      // (opening, sections with line numbers) and grep or read_file for the rest.
+      if (ctx.pageCards && text.length > 1500) {
+        const path = saveWebPage(u.href, title, text);
+        const card = pageCard(text, headings);
+        return {
+          model: { url: u.href, status, title, saved: path, lines: card.lines, opening: wrapUntrusted('web ' + u.hostname, card.opening), sections: card.sections, more: `The whole page is in ${path}. To find something, grep a pattern in ${path}; to read a part, read_file it with a line range.` },
+          label: `read ${u.href} (saved as ${path})`,
+          observation: { source: 'web', title: `${title} (${u.href})`, text: text.slice(0, 30000) },
+        };
+      }
       return {
         model: { url: u.href, status, title, text: wrapUntrusted('web ' + u.hostname, truncate(text, MAX_READ)) },
         label: `read ${u.href}`,
