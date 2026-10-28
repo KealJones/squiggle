@@ -125,9 +125,10 @@ test('a reply that repeats itself is cut off', async () => {
   const loop = 'I will use the web search tool to find the answer for you. '.repeat(6);
   assert.ok(isLooping(loop));
   assert.ok(!isLooping('A normal reply with different sentences. Each one says something new. Nothing repeats here at all.'));
-  const r = await run(new Conversation(fakeW([loop]), cfg()), 'hi');
-  assert.match(r.text, /stopped: the model was repeating itself/);
-  assert.ok(r.text.length < loop.length, 'stopped before the end');
+  // It loops on both tries: stopped, retried once with a note, then stopped for good.
+  const r = await run(new Conversation(fakeW([loop, loop]), cfg()), 'hi');
+  assert.match(r.text, /trying again[\s\S]*stopped: the model was repeating itself/);
+  assert.ok(r.text.length < 2 * loop.length, 'stopped before the end');
 });
 
 test('an unparseable tool block is shown rather than lost', async () => {
@@ -180,7 +181,35 @@ test('a loop with no sentence ends is stopped, in reasoning_content too', async 
       })();
     } };
     const r = await runAll(new Conversation(w, cfg()), 'how many birds are a flock?');
-    assert.ok(sent < 200, `${key}: stopped after ${sent} pieces`);
+    assert.ok(sent < 400, `${key}: stopped after ${sent} pieces (two tries)`);
     assert.match(r.text, /repeating itself/);
   }
+});
+
+test('a loop is stopped, the model is told where it got stuck, and its second try is used', async () => {
+  const seen = [];
+  let call = 0;
+  const w = { async createChatCompletion({ messages, penalty_repeat, abortSignal }) {
+    seen.push({ messages: JSON.parse(JSON.stringify(messages)), penalty_repeat });
+    const n = call++;
+    return (async function* () {
+      if (n === 0) {
+        yield { choices: [{ delta: { reasoning_content: 'Check: so total = 2' } }] };
+        for (let i = 0; i < 2000 && !abortSignal.aborted; i++) yield { choices: [{ delta: { reasoning_content: ' + 2' } }] };
+      } else {
+        yield { choices: [{ delta: { reasoning_content: 'Check: the page gives no number.' } }] };
+        yield { choices: [{ delta: { content: 'There is no set number of birds in a flock.' } }] };
+      }
+    })();
+  } };
+  const conv = new Conversation(w, cfg());
+  const r = await runAll(conv, 'how many birds are a flock?');
+  assert.equal(seen.length, 2);
+  const note = seen[1].messages[seen[1].messages.length - 1].content;
+  assert.match(note, /stuck repeating "2 2 2 2 2 2 2 2"/);
+  assert.equal(seen[1].penalty_repeat, 1.3);
+  assert.match(r.thinking, /Squiggle stopped it and asked it to try again/);
+  assert.equal(r.text, 'There is no set number of birds in a flock.');
+  assert.ok(!conv.messages.some(m => /Squiggle: your last reply/.test(m.content)), 'the note leaves history');
+  assert.equal(conv.messages[conv.messages.length - 1].content, 'There is no set number of birds in a flock.');
 });
