@@ -617,8 +617,9 @@ function checkInCard(task, calls, decide) {
 }
 
 function toolTrail(tools) {
-  return h('div', { class: 'tool-trail' }, tools.map(t => h('div', { class: 'tool' + (t.ok === false ? ' fail' : '') },
-    t.running ? squiggleWait() : h('span', { 'aria-hidden': 'true' }, t.ok === false ? '✕' : '✓'), h('span', {}, t.label || t.name))));
+  return h('div', { class: 'tool-trail' }, tools.map(t => h('div', { class: 'tool' + (t.ok === false ? ' fail' : ''), title: t.args ? `${t.name}(${JSON.stringify(t.args)})` : null },
+    t.running ? squiggleWait() : h('span', { 'aria-hidden': 'true' }, t.ok === false ? '✕' : '✓'),
+    h('span', {}, t.label || t.name, t.error ? h('span', { class: 'tool-error' }, t.error) : null))));
 }
 
 function iconButton(id, label, onclick, pressed) {
