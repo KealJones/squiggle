@@ -4,8 +4,10 @@
 //   always:   system prompt, the most recent turns, pinned messages,
 //             a rolling summary of older turns (the "backbone"),
 //             and relevant memory facts
-//   smart:    + older messages, saved tool output (web pages, files) and
-//             thread outcomes, ranked by relevance to the new message
+//   smart:    + older messages, saved tool output (web pages, files),
+//             thread outcomes and other chats, ranked by relevance to the new
+//             message plus the active goal and step (docs/harness.md,
+//             "Smart context v2"); other chats need a stronger match
 //   compact:  summary + recent only (classic compaction)
 //   full:     as many recent turns as fit, nothing retrieved
 //
@@ -20,6 +22,8 @@ const RECENT_SHARE = { smart: 0.45, compact: 0.6, full: 1 };
 const MIN_RECENT = 2;
 const OBS_MIN_SCORE = 0.9;
 const MIN_SCORE = 0.18;
+const CHAT_MIN_SCORE = 0.5;   // other chats only come back on a strong match
+const MAX_OTHER_SESSIONS = 40;
 const CHUNK_TOKENS = 700;
 
 const day = (ts) => new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
@@ -72,6 +76,9 @@ export function chunk(text, maxTokens = CHUNK_TOKENS) {
  * @param {Function} [o.recall]    async (query, k) => [{ fact, score }]
  * @param {Function} [o.embed]     async (texts) => Float32Array[] | null
  * @param {Function} [o.factText]
+ * @param {string}   [o.focus]     the active goal and step, added to the retrieval query
+ * @param {object[]} [o.extra]     sections from the harness, shown first: [{ kind, title, text, label }]
+ * @param {object[]} [o.others]    other sessions to search (smart mode)
  */
 export async function assembleContext(o) {
   const { line, session, threadId = null, query, budget, mode = 'smart', system } = o;
@@ -106,6 +113,15 @@ export async function assembleContext(o) {
   if (recent.length) report.items.push({ kind: 'recent', label: `Last ${recent.length} message${recent.length === 1 ? '' : 's'}`, tokens: recentTokens, ids: [...recentIds] });
 
   const sections = [];
+
+  // Harness sections (resolved references, a recipe for a similar task).
+  for (const x of o.extra || []) {
+    if (!x || !x.text || !String(x.text).trim()) continue;
+    const body = `## ${x.title}\n${String(x.text).trim()}`;
+    sections.push(body);
+    used += estTokens(body);
+    report.items.push({ kind: x.kind || 'harness', label: x.label || x.title, tokens: estTokens(body) });
+  }
 
   // What the agent actually did with tools in the replayed turns.
   const actions = recent.filter(m => m.role === 'assistant' && m.tools && m.tools.length)
@@ -163,7 +179,7 @@ export async function assembleContext(o) {
 
   // 4. Memory facts (all modes; they're small and about the person).
   if (o.recall) {
-    const facts = (await o.recall(query, 10)).filter(r => r.score >= 0.25);
+    const facts = (await o.recall(o.focus ? `${query}\n${o.focus}` : query, 10)).filter(r => r.score >= 0.25);
     const cap = Math.floor(budget * 0.12);
     const lines = [];
     let t = 0;
@@ -197,9 +213,19 @@ export async function assembleContext(o) {
         cands.push({ id: 't:' + t.id, kind: 'thread', ts: t.updated, text: `${t.title}\n${t.summary}`, render: (x) => `(side thread "${t.title}") ${x}`, label: `Thread: ${t.title}`, ref: t.id });
       }
     }
+    // Other chats: their messages, searched like this one's but with a higher bar.
+    const others = (o.others || []).filter(x => x && x.id !== session.id && !x.deleted)
+      .sort((a, b) => (b.updated || 0) - (a.updated || 0)).slice(0, MAX_OTHER_SESSIONS);
+    for (const x of others) {
+      for (const m of x.messages || []) {
+        if (!m.content || (m.role !== 'user' && m.role !== 'assistant')) continue;
+        const text = truncate(messageText(m), 1500);
+        cands.push({ id: `c:${x.id}:${m.id}`, kind: 'chat', ts: m.ts, text, render: (y) => `(from the chat "${truncate(x.title || '', 50)}", ${day(m.ts)}, ${m.role === 'user' ? 'user said' : 'you said'}) ${y}`, label: `${x.title || 'Chat'}: ${snippet(m.content)}`, ref: m.id });
+      }
+    }
     if (cands.length) {
       const prevUser = [...recent].reverse().find(m => m.role === 'user');
-      const q = query + (prevUser ? '\n' + prevUser.content : '');
+      const q = query + (o.focus ? '\n' + o.focus : '') + (prevUser ? '\n' + prevUser.content : '');
       const kw = bm25(cands)(q);
       let sem = null;
       const vecs = o.embed ? await o.embed([q, ...cands.map(c => c.text)]).catch(() => null) : null;
@@ -215,16 +241,19 @@ export async function assembleContext(o) {
         : s >= OBS_MIN_SCORE);
       const ranked = cands
         .map(c => ({ c, s: (scores.get(c.id) || 0) + 0.05 * recency(c.ts, newest) }))
-        .filter(x => x.s >= MIN_SCORE && obsOk(x.c, x.s))
+        .filter(x => x.s >= (x.c.kind === 'chat' ? CHAT_MIN_SCORE : MIN_SCORE) && obsOk(x.c, x.s))
         .sort((a, b) => b.s - a.s);
       const obsCap = Math.floor(budget * 0.25);
       let obsUsed = 0;
+      const chatCap = Math.floor(budget * 0.15);
+      let chatUsed = 0;
       const picked = [];
       for (const { c, s } of ranked) {
         const body = c.render(truncate(c.text, 4000));
         const t = estTokens(body) + 4;
         if (used + t > budget) continue;
         if (c.kind === 'observation') { if (obsUsed + t > obsCap) continue; obsUsed += t; }
+        if (c.kind === 'chat') { if (chatUsed + t > chatCap) continue; chatUsed += t; }
         picked.push({ c, body, s });
         used += t;
         report.items.push({ kind: c.kind, id: c.id, ref: c.ref, label: c.label, tokens: t, score: round(s) });

@@ -285,3 +285,36 @@ a { color: var(--action); }
 
 /* Agent notes panel */
 .notes-list .note-text { white-space: pre-wrap; margin-top: 2px; }
+
+/* Plan checklist (step mode): live above the reply, a chip on finished replies */
+.plan { font-size: 0.88rem; margin: 4px 0 8px; }
+.plan.live { border: 1px solid var(--rule); border-left: 4px solid var(--marker); border-radius: var(--radius-m); background: var(--sheet); padding: 10px 12px; }
+.plan .plan-head { margin-bottom: 6px; line-height: 1.35; }
+.plan.chip summary { cursor: pointer; color: var(--ink-soft); width: fit-content; }
+.plan.chip summary strong, .plan.chip summary { font-weight: 600; }
+.plan.chip summary .muted { font-weight: 400; }
+.plan.chip[open] .plan-steps { border-left: 2px solid var(--rule); padding-left: 12px; margin-top: 6px; }
+.plan-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.plan-steps .step { display: flex; gap: 8px; align-items: baseline; color: var(--ink-soft); }
+.plan-steps .step .mark { width: 1em; flex: none; text-align: center; }
+.plan-steps .step .text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.plan-steps .step.now { color: var(--ink); font-weight: 600; }
+.plan-steps .step.done .text { color: var(--ink); }
+.plan-steps .step.blocked { color: var(--danger); }
+.plan-steps .step .result { display: block; font-size: 0.8rem; font-weight: 400; color: var(--ink-soft); margin-top: 1px; }
+.plan-steps .squiggle-wait { width: 22px; height: 9px; flex: none; }
+.approval.checkin .plan { margin: 4px 0 10px; }
+
+/* Recipes (Memory panel) */
+.recipes { margin-top: 22px; }
+.recipes h3 { margin: 0 0 4px; font-size: 1rem; }
+.recipe-list li { align-items: flex-start; }
+.recipe-list .recipe { flex: 1; min-width: 0; }
+.recipe-list .recipe summary { cursor: pointer; }
+.recipe-list .recipe summary .muted { font-size: 0.8rem; }
+.recipe-list .recipe-steps { margin: 6px 0; padding-left: 20px; font-size: 0.9rem; }
+.recipe-list .recipe p { margin: 4px 0; font-size: 0.85rem; overflow-wrap: anywhere; }
+.recipe-actions { display: flex; gap: 2px; align-items: center; flex: none; }
+.btn.small { padding: 2px 8px; font-size: 0.8rem; min-height: 0; }
+.recipe-form { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.recipe-edit { width: 100%; font: inherit; font-size: 0.9rem; border: 1px solid var(--rule); border-radius: var(--radius-s, 6px); padding: 6px 8px; background: var(--paper, transparent); color: var(--ink); box-sizing: border-box; }

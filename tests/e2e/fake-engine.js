@@ -14,6 +14,7 @@ const lock = (fn) => { const r = chain.then(fn, fn); chain = r.catch(() => {}); 
 
 export const engineReady = () => ready;
 export const currentModel = () => 'E2B';
+export const isLite = (id) => Boolean(MODELS[id] && MODELS[id].runtime === 'wllama');
 export const webgpuStatus = async () => ({ ok: true });
 export const suggestModel = () => 'E2B';
 export const deviceModel = () => (/iPhone|Android/.test(navigator.userAgent) ? 'G3' : 'E4B');
@@ -36,12 +37,37 @@ export const foreground = (fn) => lock(fn);
 export const background = (fn) => lock(fn);
 
 export async function conversation(cfg) {
-  log.push({ type: 'conversation', system: cfg.system, messages: cfg.messages, tools: cfg.tools.map(t => t.name) });
-  return { delete: async () => {}, cancel() {} };
+  log.push({ type: 'conversation', system: cfg.system, messages: cfg.messages, tools: cfg.tools.map(t => t.name), known: cfg.known || [] });
+  return { cfg, delete: async () => {}, cancel() {} };
+}
+
+const call = (name, args) => ({ text: '', thinking: '', toolCalls: [{ type: 'function', function: { name, arguments: args } }] });
+const say = (t, onText, thinking = '') => { onText && onText(t); return { text: t, thinking, toolCalls: [] }; };
+
+// Step mode (docs/harness.md): PLANTEST plans two steps (find, then done; then
+// an answer without done), NEEDTEST asks the user through `need`, and the final
+// prompt gets a summary reply.
+function stepScript(conv, input, onText) {
+  const sys = (conv.cfg && conv.cfg.system) || '';
+  if (typeof input === 'string') {
+    if (/Every step is done/.test(input)) return say(/NEEDTEST/.test(input) ? 'Used the app repo, as you said.' : 'Port 8080 had node (pid 4242); it is free now.', onText);
+    if (/PLANTEST|NEEDTEST/.test(input) && /Work on step 1 now/.test(input)) {
+      if (/NEEDTEST/.test(input)) return /The user answered/.test(sys) ? call('done', { result: 'Use the app repo' }) : call('need', { what: 'Which repo should I use?' });
+      return { ...call('find', { query: 'what is listening on port 8080' }), thinking: 'Look it up first.' };
+    }
+    if (/PLANTEST/.test(input) && /Work on step 2 now/.test(input)) return say('Stopped node (pid 4242).', onText);
+    if (/^PLANTEST/.test(input)) return call('plan', { goal: 'Free port 8080', steps: ['Find what is listening on 8080', 'Stop it'] });
+    if (/^NEEDTEST/.test(input)) return call('plan', { goal: 'Set up the repo', steps: ['Pick the repo'] });
+    return null;
+  }
+  if (input[0] && input[0].content[0].name === 'find') return call('done', { result: 'node (pid 4242) is on 8080' });
+  return null;
 }
 
 export async function respond(conv, input, { onText } = {}) {
-  log.push({ type: 'respond', input });
+  log.push({ type: 'respond', input, system: conv.cfg && conv.cfg.system });
+  const scripted = stepScript(conv, input, onText);
+  if (scripted) return scripted;
   if (typeof input === 'string') {
     const push = input.match(/push (?:the )?(\S+) branch/i);
     if (push) return { text: '', thinking: '', toolCalls: [{ type: 'function', function: { name: 'git_push', arguments: { repo: 'app' } } }] };

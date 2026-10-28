@@ -10,6 +10,7 @@
 //   observations: [{ id, ts, thread, source, title, text }],   // tool output kept for retrieval
 //   summaries:    { [ 'main' | threadId ]: { text, upTo, ts } } // rolling context summaries
 //   notes:        { [noteId]: { id, text, ts, mts, deleted? } }   // the agent's own notepad
+//   tasks:        { [taskId]: { id, goal, status, steps[], … } }  // step-mode plans (tasks.js)
 // }
 
 const mtime = (x) => (x && (x.mts || x.updated || x.ts)) || 0;
@@ -48,6 +49,7 @@ export function mergeSession(a, b) {
     observations: unionById(a.observations, b.observations).sort(byTime),
     summaries: mergeRecord(a.summaries, b.summaries),
     notes: mergeRecord(a.notes, b.notes), // the agent's notepad; deleted notes stay as tombstones
+    tasks: mergeRecord(a.tasks, b.tasks), // step-mode plans, newest version of each
   };
   // A delete wins only if it's the latest change; edits made after a delete
   // on another device resurrect the session.

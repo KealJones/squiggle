@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { gemmaMessages, parseToolCalls, findTools, toolPrompt, Conversation, FIND_TOOLS } from '../app/src/engine-wllama.js';
+import { gemmaMessages, parseToolCalls, findTools, toolPrompt, Conversation, splitThinking, isLooping } from '../app/src/engine-wllama.js';
 
 const TOOLS = [
   { type: 'function', function: { name: 'web_search', description: 'Search the web for current information. Returns titles and URLs.', parameters: { properties: { query: {} }, required: ['query'] } } },
@@ -25,11 +25,11 @@ test('gemmaMessages folds history into system + alternating turns', () => {
   assert.match(out[3].content, /Result of read_file/);
 });
 
-test('tool prompt lists names only until tools are looked up', () => {
-  const p = toolPrompt(TOOLS, new Set());
-  assert.match(p, /web_search, read_file, remember/);
-  assert.doesNotMatch(p, /Search the web/);
-  assert.match(toolPrompt(TOOLS, new Set(['web_search'])), /web_search\(query\): Search the web for current information\./);
+test('tool prompt names no tools until they are looked up', () => {
+  assert.equal(toolPrompt(TOOLS, new Set()), '');
+  const p = toolPrompt(TOOLS, new Set(['web_search']));
+  assert.match(p, /web_search\(query\): Search the web for current information\./);
+  assert.doesNotMatch(p, /read_file|remember/);
 });
 
 test('findTools ranks by name and description', () => {
@@ -67,25 +67,67 @@ test('plain replies stream through untouched', async () => {
   assert.equal(r.calls.length, 0);
 });
 
-test('find_tools is answered inside the engine, then the real call goes to the agent', async () => {
+async function runAll(conv, input) {
+  let text = '', thinking = ''; const calls = [];
+  for await (const ch of conv.sendMessageStreaming(input)) { if (ch.content) text += ch.content; if (ch.thinking) thinking += ch.thinking; if (ch.tool_calls) calls.push(...ch.tool_calls); }
+  return { text, thinking, calls };
+}
+
+test('find goes to the agent; tools it returns are described from then on', async () => {
   const seen = [];
   const conv = new Conversation(fakeW([
-    'Let me look. ```tool_call\n{"name": "find_tools", "arguments": {"query": "search web"}}\n```',
+    'Let me look. ```tool_call\n{"name": "find", "arguments": {"query": "search web"}}\n```',
     '```tool_call\n{"name": "web_search", "arguments": {"query": "phoenix weather"}}\n```',
+    'It is sunny.',
   ], seen), cfg());
   const r = await run(conv, 'weather in phoenix?');
   assert.equal(r.text, 'Let me look. ');
-  assert.equal(r.calls.length, 1);
-  assert.equal(r.calls[0].function.name, 'web_search');
-  assert.ok(!r.calls.some(c => c.function.name === FIND_TOOLS));
-  // Second prompt carries the lookup result and the tool's details.
-  const second = seen[1];
-  assert.match(second[0].content, /web_search\(query\)/);
-  assert.match(second.at(-1).content, /Result of find_tools/);
-  // Tool results from the agent continue the conversation.
-  conv.w = fakeW(['It is sunny.']);
-  const r2 = await run(conv, [{ role: 'tool', content: [{ name: 'web_search', response: { results: ['sunny'] } }] }]);
-  assert.equal(r2.text, 'It is sunny.');
+  assert.equal(r.calls[0].function.name, 'find');
+  assert.doesNotMatch(seen[0][0].content, /web_search/, 'no tool names in the first prompt');
+  const r2 = await run(conv, [{ role: 'tool', content: [{ name: 'find', response: { found: 'Tools:\n- web_search(query): …', tools: ['web_search'] } }] }]);
+  assert.equal(r2.calls[0].function.name, 'web_search');
+  assert.match(seen[1][0].content, /Tools you have looked up:\n- web_search\(query\)/);
+  assert.match(seen[1].at(-1).content, /Result of find/);
+  const r3 = await run(conv, [{ role: 'tool', content: [{ name: 'web_search', response: { results: ['sunny'] } }] }]);
+  assert.equal(r3.text, 'It is sunny.');
+});
+
+test('the old find_tools name is treated as find', async () => {
+  const r = await run(new Conversation(fakeW(['```tool_call\n{"name": "find_tools", "arguments": {"query": "x"}}\n```']), cfg()), 'hi');
+  assert.equal(r.calls[0].function.name, 'find');
+});
+
+test('tools looked up in an earlier step carry over through preface.known', async () => {
+  const seen = [];
+  const c = cfg(); c.preface.known = ['read_file'];
+  await run(new Conversation(fakeW(['ok'], seen), c), 'hi');
+  assert.match(seen[0][0].content, /read_file\(path, start\?\)/);
+});
+
+test('splitThinking separates a leading think block', () => {
+  assert.deepEqual(splitThinking('  <thi'), { thinking: '', text: '', pending: true });
+  assert.equal(splitThinking('<think>hmm </thi').thinking, 'hmm ');
+  assert.equal(splitThinking('<think>hmm </thi').open, true);
+  assert.deepEqual(splitThinking('<think>a plan</think>\n\nThe answer.'), { thinking: 'a plan', text: 'The answer.' });
+  assert.deepEqual(splitThinking('No thinking here.'), { thinking: '', text: 'No thinking here.' });
+});
+
+test('thinking streams separately and is not replayed into history', async () => {
+  const conv = new Conversation(fakeW(['<think>I should look it up first.</think>\n```tool_call\n{"name": "find", "arguments": {"query": "weather"}}\n```']), cfg());
+  const r = await runAll(conv, 'weather?');
+  assert.equal(r.thinking, 'I should look it up first.');
+  assert.equal(r.text, '');
+  assert.equal(r.calls[0].function.name, 'find');
+  assert.doesNotMatch(conv.messages.at(-1).content, /look it up first/);
+});
+
+test('a reply that repeats itself is cut off', async () => {
+  const loop = 'I will use the web search tool to find the answer for you. '.repeat(6);
+  assert.ok(isLooping(loop));
+  assert.ok(!isLooping('A normal reply with different sentences. Each one says something new. Nothing repeats here at all.'));
+  const r = await run(new Conversation(fakeW([loop]), cfg()), 'hi');
+  assert.match(r.text, /stopped: the model was repeating itself/);
+  assert.ok(r.text.length < loop.length, 'stopped before the end');
 });
 
 test('an unparseable tool block is shown rather than lost', async () => {

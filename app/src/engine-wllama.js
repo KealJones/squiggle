@@ -3,16 +3,18 @@
 // GB of memory, so it fits a phone browser tab where the Gemma 4 models don't.
 // Same conversation interface as the other engines.
 //
-// Tools: Gemma 3 has no tool-calling format of its own, so tools are described
-// compactly in the system prompt and the model calls one by writing a
-// ```tool_call fenced JSON block (the prompt-based approach Google suggests
-// for Gemma 3). The block is hidden from the reply and parsed into a call.
-// Tool results go back as a user turn. A 270M model will often get this wrong;
-// bad calls come back to it as tool errors, like with any model.
+// Format (docs/harness.md, "Small-model format"; the fine-tune trains on it):
+// the model may open with <think>…</think> (streamed to the thinking view, not
+// replayed), calls a tool with a ```tool_call fenced JSON block (hidden from
+// the reply and parsed into a call), and gets results back as a user turn
+// "Result of <tool>:\n<json>". Bad calls come back to it as tool errors.
 const VERSION = '3.8.1';
 const LIB = `https://cdn.jsdelivr.net/npm/@wllama/wllama@${VERSION}/esm/index.min.js`;
 const WASM = `https://cdn.jsdelivr.net/npm/@wllama/wllama@${VERSION}/esm/wasm/wllama.wasm`;
-const MAX_OUTPUT = 768;
+const MAX_OUTPUT = 1024;
+const REPEAT_PENALTY = 1.15;
+const LOOP_WORDS = 8;     // a run of this many words…
+const LOOP_TIMES = 3;     // …written this many times stops the reply
 const FENCE = '```tool_call';
 
 let lib = null;
@@ -45,12 +47,10 @@ const textOf = (c) => typeof c === 'string' ? c
   : Array.isArray(c) ? c.map(p => (p && typeof p.text === 'string' ? p.text : '')).join('')
   : c == null ? '' : String(c);
 
-// Tool search: listing every tool's description up front costs a 270M model
-// thousands of prompt tokens on a phone CPU. Instead the prompt names the tools
-// and offers find_tools; the engine answers find_tools itself (the agent never
-// sees it) and adds the matching tools' details to the prompt.
-export const FIND_TOOLS = 'find_tools';
-
+// Tools: the prompt never lists tool names in prose (a 270M model copies
+// them back). The system prompt (agent.js) names the harness tools; the model
+// looks real tools up with `find`, which the agent answers, and the tools it
+// found are described here from then on (docs/harness.md, "Small-model format").
 const toolLine = (t) => {
   const f = t.function || t;
   const props = (f.parameters && f.parameters.properties) || {};
@@ -61,7 +61,8 @@ const toolLine = (t) => {
 };
 const nameOf = (t) => (t.function || t).name;
 
-// Ranks tools against a query by word overlap with name and description.
+// Ranks tools against a query by word overlap with name and description
+// (the old find_tools; find.js's rankTools is what `find` uses now).
 export function findTools(tools, query, k = 3) {
   const words = String(query || '').toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 1);
   const scored = tools.map((t) => {
@@ -79,15 +80,11 @@ export function findTools(tools, query, k = 3) {
   return scored.slice(0, k).map(x => x.t);
 }
 
+// Details of the tools the model has looked up (the harness tools are in the system prompt).
+const HARNESS = new Set(['plan', 'done', 'need', 'find']);
 export function toolPrompt(tools, active) {
-  if (!tools.length) return '';
-  const known = tools.filter(t => active.has(nameOf(t)));
-  return [
-    `Tools exist for: ${tools.map(nameOf).join(', ')}.`,
-    `To use one, first look it up: ${FENCE}\n{"name": "${FIND_TOOLS}", "arguments": {"query": "what you need to do"}}\n\`\`\``,
-    known.length ? 'Tools you have looked up:\n' + known.map(toolLine).join('\n') : '',
-    `To call a tool, reply with only a block like that and nothing after it: ${FENCE} then {"name": …, "arguments": {…}} then \`\`\`. You get the result in the next message. If no tool is needed, just answer.`,
-  ].filter(Boolean).join('\n');
+  const known = tools.filter(t => active.has(nameOf(t)) && !HARNESS.has(nameOf(t)));
+  return known.length ? 'Tools you have looked up:\n' + known.map(toolLine).join('\n') : '';
 }
 
 // Gemma's chat template takes one system message, then strict user/assistant
@@ -144,10 +141,40 @@ export function parseToolCalls(text) {
 // ── Engine ────────────────────────────────────────────────────────────────
 
 const MARK = '```tool';
-// How many characters at the end of `text` could be the start of MARK.
-function heldBack(text) {
-  for (let k = Math.min(MARK.length - 1, text.length); k > 0; k--) if (MARK.startsWith(text.slice(-k))) return k;
+const OPEN = '<think>', CLOSE = '</think>';
+// How many characters at the end of `text` could be the start of `mark`.
+function heldBack(text, mark = MARK) {
+  for (let k = Math.min(mark.length - 1, text.length); k > 0; k--) if (mark.startsWith(text.slice(-k))) return k;
   return 0;
+}
+
+// Splits raw output into thinking and reply text. `open` is true while the
+// thinking block hasn't closed yet.
+export function splitThinking(raw) {
+  const lead = raw.length - raw.trimStart().length;
+  const rest = raw.slice(lead);
+  if (!rest) return { thinking: '', text: '', pending: true };
+  if (OPEN.startsWith(rest)) return { thinking: '', text: '', pending: true };   // "<thi" so far
+  if (!rest.startsWith(OPEN)) return { thinking: '', text: raw };
+  const body = rest.slice(OPEN.length);
+  const end = body.indexOf(CLOSE);
+  if (end < 0) return { thinking: body.slice(0, body.length - heldBack(body, CLOSE)), text: '', open: true };
+  return { thinking: body.slice(0, end), text: body.slice(end + CLOSE.length).replace(/^\s+/, '') };
+}
+
+// True when some run of LOOP_WORDS words appears LOOP_TIMES times: the small
+// model is repeating itself and won't stop on its own.
+export function isLooping(text, n = LOOP_WORDS, times = LOOP_TIMES) {
+  const words = String(text).toLowerCase().match(/[a-z0-9_']+/g) || [];
+  if (words.length < n * times) return false;
+  const seen = new Map();
+  for (let i = 0; i + n <= words.length; i++) {
+    const key = words.slice(i, i + n).join(' ');
+    const c = (seen.get(key) || 0) + 1;
+    if (c >= times) return true;
+    seen.set(key, c);
+  }
+  return false;
 }
 
 export class Conversation {
@@ -155,7 +182,7 @@ export class Conversation {
     this.w = w;
     this.messages = [...preface.messages];
     this.tools = preface.tools || [];
-    this.active = new Set();             // tools looked up with find_tools
+    this.active = new Set(preface.known || []);   // tools looked up with find (or already called)
     this.max = Math.min(sessionConfig.maxOutputTokens || MAX_OUTPUT, MAX_OUTPUT);
     this.greedy = Boolean(sessionConfig.samplerParams && sessionConfig.samplerParams.type === 3);
     this.ctrl = null;
@@ -163,11 +190,12 @@ export class Conversation {
   cancel() { try { this.ctrl && this.ctrl.abort(); } catch {} }
   async delete() {}
 
-  // One model reply. Yields { content } pieces as they come (a tool-call block
-  // is held back), then returns { out, calls }.
+  // One model reply. Yields { thinking } and { content } pieces as they come
+  // (a tool-call block is held back), then returns { calls, aborted }.
   async *generate() {
     const ctrl = this.ctrl = new AbortController();
-    let out = '', shown = 0, inCall = false;
+    let out = '', thinkShown = 0, shown = 0, inCall = false, looped = false, text = '', checked = 0;
+    const tools = this.tools.length > 0;
     try {
       const stream = await this.w.createChatCompletion({
         messages: gemmaMessages(this.messages, this.tools, this.active),
@@ -176,7 +204,7 @@ export class Conversation {
         temperature: this.greedy ? 0 : 0.7,
         top_k: 64,
         top_p: 0.95,
-        penalty_repeat: 1.1,
+        penalty_repeat: REPEAT_PENALTY,
         cache_prompt: true,
         abortSignal: ctrl.signal,
       });
@@ -184,50 +212,58 @@ export class Conversation {
         const piece = chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta && chunk.choices[0].delta.content;
         if (!piece) continue;
         out += piece;
-        if (inCall) continue;
-        const at = this.tools.length ? out.indexOf(MARK) : -1;
+        const parts = splitThinking(out);
+        if (parts.thinking.length > thinkShown) { yield { thinking: parts.thinking.slice(thinkShown) }; thinkShown = parts.thinking.length; }
+        text = parts.text;
+        // Stop a reply that keeps repeating itself (checked at sentence ends).
+        if (/[.!?\n]/.test(piece) && out.length - checked > 40) {
+          checked = out.length;
+          if (isLooping(out.slice(-3000))) { looped = true; ctrl.abort(); break; }
+        }
+        if (inCall || parts.open || parts.pending) continue;
+        const at = tools ? text.indexOf(MARK) : -1;
         if (at >= 0) {
           inCall = true;
-          if (at > shown) yield { content: out.slice(shown, at) };
+          if (at > shown) yield { content: text.slice(shown, at) };
           shown = at;
           continue;
         }
-        const safe = out.length - (this.tools.length ? heldBack(out) : 0);
-        if (safe > shown) { yield { content: out.slice(shown, safe) }; shown = safe; }
+        const safe = text.length - (tools ? heldBack(text) : 0);
+        if (safe > shown) { yield { content: text.slice(shown, safe) }; shown = safe; }
       }
     } catch (e) {
       if (!ctrl.signal.aborted) throw e;
     }
-    const calls = inCall ? parseToolCalls(out.slice(shown)) : [];
-    if (out.length > shown && !calls.length) yield { content: out.slice(shown) };   // incl. an unparseable block
-    this.messages.push({ role: 'assistant', content: out });
-    return { calls, aborted: ctrl.signal.aborted };
+    const parts = splitThinking(out);
+    text = parts.open ? '' : parts.text;
+    if (parts.open && parts.thinking.length > thinkShown) yield { thinking: parts.thinking.slice(thinkShown) };
+    const calls = inCall ? parseToolCalls(text.slice(shown)) : [];
+    if (text.length > shown && !calls.length) yield { content: text.slice(shown) };   // incl. an unparseable block
+    if (looped) yield { content: '\n\n_(stopped: the model was repeating itself)_' };
+    // Thinking is never replayed into history.
+    this.messages.push({ role: 'assistant', content: text || '(thought about it)' });
+    return { calls, aborted: ctrl.signal.aborted && !looped };
   }
 
   async *sendMessageStreaming(input) {
     if (typeof input === 'string') this.messages.push({ role: 'user', content: input });
-    else for (const m of input) this.messages.push(m);           // tool results from the agent
-    // find_tools is answered here, then the model goes again (a few times at most).
-    for (let round = 0; round < 3; round++) {
-      const { calls, aborted } = yield* this.generate();
-      if (aborted || !calls.length) return;
-      const lookups = calls.filter(c => c.function.name === FIND_TOOLS);
-      const real = calls.filter(c => c.function.name !== FIND_TOOLS);
-      if (real.length || !lookups.length) {
-        // Calling a tool it hadn't looked up is fine if the name is real.
-        for (const c of real) this.active.add(c.function.name);
-        yield { tool_calls: real };
-        return;
+    else {
+      for (const m of input) {                                       // tool results from the agent
+        this.messages.push(m);
+        // Tools `find` turned up are described in the prompt from now on.
+        for (const p of Array.isArray(m.content) ? m.content : []) {
+          const found = p && p.response && p.response.tools;
+          if (Array.isArray(found)) for (const n of found) this.active.add(String(n));
+        }
       }
-      const results = lookups.map((c) => {
-        const found = findTools(this.tools, c.function.arguments.query || c.function.arguments.q || '');
-        for (const t of found) this.active.add(nameOf(t));
-        return { name: FIND_TOOLS, response: found.length
-          ? { found: found.map(toolLine).join('\n'), next: 'Call one of these now if it fits.' }
-          : { found: 'No matching tool.', next: 'Answer without a tool, or try other words.' } };
-      });
-      this.messages.push({ role: 'tool', content: results });
     }
+    const { calls, aborted } = yield* this.generate();
+    if (aborted || !calls.length) return;
+    for (const c of calls) {
+      if (c.function.name === 'find_tools') c.function.name = 'find';     // the old name
+      this.active.add(c.function.name);                                   // calling a real tool unlooked-up is fine
+    }
+    yield { tool_calls: calls };
   }
 }
 
