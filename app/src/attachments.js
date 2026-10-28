@@ -5,9 +5,14 @@
 // binary blob would be corrupted by a conflict), so what gets synced is text:
 //   text-like files   → the file itself, at home/attachments/<session>/<name>
 //   PDFs              → the extracted text, at …/<name>.txt
-//   images, other binaries → not stored; the model is told one was attached
+//   images            → the text read from them (ocr.js), at …/<name>.txt
+//   other binaries    → not stored; the model is told one was attached
 // Everything stored is readable by the model through read_file and grep.
 import { wrapUntrusted } from './untrusted.js';
+
+// Text recognition for images; replaceable in tests.
+let ocr = async (file) => (await import('./ocr.js')).readImage(file);
+export function setOcr(fn) { ocr = fn; }
 
 export const MAX_FILES = 10;
 export const MAX_BYTES = 20 * 1024 * 1024;
@@ -115,7 +120,15 @@ export async function readAttachment(file, taken, sessionId) {
   const a = { name: safe, type: file.type || '', size: file.size, kind, text: null, path: null, stored: false, chars: 0, lines: 0 };
   const dir = `/home/attachments/${sessionId}/`;
   try {
-    if (kind === 'image') return a;
+    if (kind === 'image') {
+      // The model can't see images, so it gets the words in them.
+      const r = await ocr(file);
+      if (!r || !r.text) { a.error = 'no readable text found in the image'; return a; }
+      const text = `Text read from the image ${safe} (OCR, so letters or numbers may be misread; it doesn't describe pictures or icons):\n\n${r.text}\n`;
+      a.path = dir + safe + '.txt';
+      Object.assign(a, { text, stored: true, chars: text.length, lines: lineCount(text) });
+      return a;
+    }
     const bytes = new Uint8Array(await file.arrayBuffer());
     let text = null;
     if (kind === 'pdf') {
@@ -154,8 +167,9 @@ export async function saveAttachments(atts, io) {
 // One line per attachment for the model's note.
 function describe(a) {
   const size = fmtSize(a.size);
+  if (a.stored && a.kind === 'image') return `- ${a.name} (image, ${size}): you can't see images; the text read from it is at ${a.path}`;
   if (a.stored) return `- ${a.path} (${size}, ${a.lines} line${a.lines === 1 ? '' : 's'})`;
-  if (a.kind === 'image') return `- ${a.name} (image, ${size}): not saved; you can't see images, so you can't read it`;
+  if (a.kind === 'image') return `- ${a.name} (image, ${size}): ${a.error ? a.error + '; ' : ''}you can't see images, so you can't say what's in it`;
   if (a.error) return `- ${a.name} (${size}): ${a.error}; not saved`;
   return `- ${a.name} (${size}): unsupported binary file; not saved and not readable`;
 }
