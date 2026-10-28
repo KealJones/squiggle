@@ -9,7 +9,7 @@ import * as memory from './memory.js';
 import * as storage from './storage.js';
 import * as recipes from './recipes.js';
 import * as tasks from './tasks.js';
-import { find as findAll, renderFind } from './find.js';
+import { find as findAll, renderFind, PAST_CHAT } from './find.js';
 import { buildEntities, resolve as resolveRefs, renderRefs } from './refs.js';
 import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes } from './context.js';
 export { scrubFakeToolNotes };
@@ -227,6 +227,7 @@ class Turn {
       // the room (injected facts and other chats also confused them).
       others: settings.contextMode === 'smart' && !lite() ? sessions.list() : [],
       recall: lite() ? null : (q, k) => memory.recall(q, k), factText: memory.factText,
+      actions: !lite(),   // "Tool calls you made" read to small models as things the user said
       embed: settings.contextMode === 'smart' && settings.semantic ? embed : null,
     });
   }
@@ -517,7 +518,9 @@ class Turn {
       tools: toolSpecs(settings.tools),
       recipes,
       recall: (q, k) => memory.recall(q, k),
-      searchHistory: async (q, k) => searchChats(q, k, this.userMsg.id),
+      // Small models read past-chat snippets as part of this conversation ("the past chats
+      // mention 'search the web'"), so they get them only when the query asks about one.
+      searchHistory: lite() && !PAST_CHAT.test(String(query).toLowerCase()) ? null : async (q, k) => searchChats(q, k, this.userMsg.id),
       taskItems: tasks.taskItems(task),
     }, { k: 3 });
     const outside = r.task.filter(t => t.source === 'tool output');
