@@ -431,8 +431,9 @@ function wireApp() {
     await recipes.reload(changed);
     if (current && current.deleted) openSession(sessions.list()[0] || sessions.newSession());
   });
-  memory.events.on('change', () => { if (drawerPanel === 'memory') renderMemoryPanel(); });
-  recipes.events.on('change', () => { if (drawerPanel === 'memory') renderMemoryPanel(); });
+  const memoryChanged = () => { if (drawerPanel === 'memory' && !document.querySelector('#drawer .recipe-form')) renderMemoryPanel(); };
+  memory.events.on('change', memoryChanged);
+  recipes.events.on('change', memoryChanged);
   sessions.events.on('session', (id) => { if (drawerPanel === 'notes' && current && id === current.id) renderNotesPanel(); });
   addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeDrawer(); closeSidebar(); } });
 }
@@ -521,11 +522,12 @@ function emptyState() {
     h('div', { class: 'suggestions' }, ideas.map(t => h('button', { onclick: () => { $('#input').value = t; $('#input').focus(); } }, t))));
 }
 
-function messageEl(m, { inThread, streaming }) {
+function messageEl(m, { inThread, streaming, session }) {
   const el = h('div', { class: `msg ${m.role}`, 'data-mid': m.id || '' });
   const col = h('div', { style: m.role === 'user' ? 'display:flex;flex-direction:column;align-items:flex-end;width:100%' : '' });
   if (m.role === 'assistant') {
-    const task = m.task && current && current.tasks && current.tasks[m.task];
+    const owner = session || current;
+    const task = m.task && owner && owner.tasks && owner.tasks[m.task];
     if (task) col.append(planEl(task, { live: false }));
     if (m.tools && m.tools.length) col.append(toolTrail(m.tools));
     // Saved thinking stays viewable (collapsed); it's never sent back to the model.
@@ -731,7 +733,7 @@ async function send(text, threadId, files = []) {
           scrollDown(scroller);
           card.querySelector('button').focus({ preventScroll: true });
         },
-        onDone: (m) => { if (vc) vc.finish(agent.scrubFakeToolNotes(m.content)); live.replaceWith(messageEl(m, { inThread: Boolean(threadId) })); if (!threadId) $('#chat-title').textContent = session.title; },
+        onDone: (m) => { if (vc) vc.finish(agent.scrubFakeToolNotes(m.content)); live.replaceWith(messageEl(m, { inThread: Boolean(threadId), session })); if (!threadId) $('#chat-title').textContent = session.title; },
       },
     });
   } finally {

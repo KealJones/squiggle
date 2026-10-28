@@ -65,12 +65,16 @@ test('the step prompt has goal, plan with results, sections, and the request', (
   assert.match(tasks.stepUser(t), /^kill whatever is on 8080 and restart the dev server\n\nWork on step 2 now: Stop it\nWhen the step is finished, call done with what you found\.$/);
 });
 
-test('logCall counts calls per step and bounds the log; taskItems feed find', () => {
+test('logCall counts calls per step, keeps arguments of old calls but not their output', () => {
   const t = mk();
   const s = tasks.startStep(t);
-  for (let i = 0; i < 50; i++) tasks.logCall(t, s, { name: 'read_file', args: { path: '/home/x' + i }, label: 'read x' + i, text: 'line ' + i });
-  assert.equal(s.calls, 50);
-  assert.equal(t.log.length, 40);
+  const before = t.mts;
+  for (let i = 0; i < 160; i++) tasks.logCall(t, s, { name: 'read_file', args: { path: '/home/x' + i }, label: 'read x' + i, text: 'line ' + i }, before + 1 + i);
+  assert.equal(s.calls, 160);
+  assert.equal(t.log.length, 150);
+  assert.ok(t.mts > before, 'logging a call bumps the task so the newer log wins a merge');
+  assert.equal(t.log.filter(l => l.text).length, 40, 'only the newest keep their output');
+  assert.deepEqual(t.log[0].args, { path: '/home/x10' }, 'old calls keep their arguments (recipes use them)');
   tasks.logCall(t, s, { name: 'find', args: {}, text: 'Tools: …' });
   tasks.finishStep(t, 'found it');
   const items = tasks.taskItems(t);
@@ -78,20 +82,57 @@ test('logCall counts calls per step and bounds the log; taskItems feed find', ()
   assert.ok(!items.some(x => /Tools: …/.test(x.text)), 'harness tool output is not a finding');
 });
 
-test('resumable: a waiting task takes the next message as its answer; "continue" resumes a stopped one', () => {
+test('compactOld drops tool output of old finished tasks only', () => {
+  const now = Date.now();
+  const old = mk(); tasks.logCall(old, null, { name: 'read_file', text: 'big' }, now - 5 * 86400000); old.status = 'done'; old.updated = now - 5 * 86400000;
+  const fresh = mk(); tasks.logCall(fresh, null, { name: 'read_file', text: 'big' }, now); fresh.status = 'done';
+  const running = mk(); tasks.logCall(running, null, { name: 'read_file', text: 'big' }, now - 9 * 86400000); running.updated = now - 9 * 86400000;
+  const session = { tasks: { [old.id]: old, [fresh.id]: fresh, [running.id]: running } };
+  assert.ok(tasks.compactOld(session, now));
+  assert.equal(old.log[0].text, '');
+  assert.equal(fresh.log[0].text, 'big');
+  assert.equal(running.log[0].text, 'big', 'active tasks keep everything');
+});
+
+test('samePlan: re-sending the current plan is not a revision', () => {
+  const t = mk();
+  tasks.finishStep(t, 'x');
+  assert.ok(tasks.samePlan(t, ['Stop it', 'Restart the dev server']));
+  assert.ok(tasks.samePlan(t, ['Find what is listening on 8080', '2. stop it', 'Restart the dev server']), 'done steps and numbering are ignored');
+  assert.ok(!tasks.samePlan(t, ['Stop it', 'Restart the dev server', 'Check it works']));
+});
+
+test('step prompt stays within a token budget: sections go first, then older results shrink', () => {
+  const t = tasks.newTask({ request: 'r'.repeat(3000), goal: 'Big job', steps: Array.from({ length: 10 }, (_, i) => `Step number ${i + 1}`) });
+  for (let i = 0; i < 9; i++) tasks.finishStep(t, `result ${i} `.repeat(60));
+  const sections = [{ title: 'Recipe from a similar task', text: 'recipe '.repeat(200) }, { title: 'Found earlier in this task', text: 'found '.repeat(400) }];
+  const all = tasks.stepPrompt('BASE', t, sections);
+  assert.deepEqual(all.shown, ['Recipe from a similar task', 'Found earlier in this task']);
+  const p = tasks.stepPrompt('BASE', t, sections, { maxTokens: 1200 });
+  assert.ok(Math.ceil(p.text.length / 3.2) <= 1200, `fits: ${p.text.length}`);
+  assert.ok(!p.shown.includes('Found earlier in this task'), 'the lowest-priority section went first');
+  assert.match(p.text, /9\. \[done\] Step number 9 → (result 8 ){10}/, 'the latest results stay whole');
+  assert.ok(tasks.stepUser(t).length < 900, 'the request is trimmed');
+  assert.ok(Math.ceil(tasks.finalSystem('BASE', t, { maxTokens: 1500 }).length / 3.2) <= 1500);
+});
+
+test('resumable: only the task of the latest reply, when waiting or told to go on', () => {
   const session = { tasks: {} };
   const t = mk();
   session.tasks[t.id] = t;
-  assert.equal(tasks.resumable(session, null, 'hello'), null);
+  assert.equal(tasks.resumable(session, null, 'hello', t.id), null);
   t.waiting = true;
-  assert.deepEqual(tasks.resumable(session, null, 'yes'), { task: t, how: 'answer' });
-  assert.equal(tasks.resumable(session, 'thread1', 'yes'), null, 'other threads are separate');
+  assert.deepEqual(tasks.resumable(session, null, 'yes', t.id), { task: t, how: 'answer' });
+  assert.equal(tasks.resumable(session, null, 'yes', null), null, 'an older task is not picked up by a later chat reply');
+  assert.equal(tasks.resumable(session, 'thread1', 'yes', t.id), null, 'other threads are separate');
   t.waiting = false; t.status = 'stopped';
-  assert.equal(tasks.resumable(session, null, 'what else?'), null);
-  assert.deepEqual(tasks.resumable(session, null, 'ok continue'), { task: t, how: 'continue' });
-  assert.deepEqual(tasks.resumable(session, null, 'Keep going please'), { task: t, how: 'continue' });
+  assert.equal(tasks.resumable(session, null, 'what else?', t.id), null);
+  assert.deepEqual(tasks.resumable(session, null, 'ok continue', t.id), { task: t, how: 'continue' });
+  assert.deepEqual(tasks.resumable(session, null, 'Keep going please', t.id), { task: t, how: 'continue' });
+  for (const s of t.steps) s.status = 'done';
+  assert.deepEqual(tasks.resumable(session, null, 'continue', t.id), { task: t, how: 'continue' }, 'all steps done but no final reply yet');
   t.status = 'done';
-  assert.equal(tasks.resumable(session, null, 'continue'), null);
+  assert.equal(tasks.resumable(session, null, 'continue', t.id), null);
 });
 
 test('tasks merge across devices by id, newest wins', () => {

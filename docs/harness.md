@@ -39,9 +39,18 @@ all steps done
 ```
 
 There is no fixed cap on rounds. Each step has a soft cap of 12 tool calls
-(then the model is told to finish the step with what it has, or call `need`).
-Each turn has a check-in every 60 tool calls: the UI shows a "Keep going"
-button with the plan so far (never "say continue"). Stop always works.
+(then the model is told to finish the step with what it has, or call `need`)
+and a hard cap of 18 (the step closes with what it has). Each turn has a
+check-in every 60 tool calls: the UI shows a "Keep going" button with the plan
+so far. Stop always works; a stopped task resumes when the next message says
+"continue" (only the task of the latest reply resumes).
+
+A step that won't move ends the turn with a question instead of spinning:
+a reply with no text and no tool call (thinking cut off at the output cap) or a
+reply stopped for repeating itself gets two nudges, then the user is asked
+"I got stuck on step N … How should I go on?". Re-sending the current plan, or
+revising it more than 3 times in a task, counts the same way (3 strikes). If a
+step's own context fills, the model is warned once, then the step closes.
 
 ## Tools the harness adds
 
@@ -52,7 +61,7 @@ tools; the small model calls them with fenced blocks (see "Small-model format").
 | --- | --- | --- |
 | `plan` | `goal` (string), `steps` (string[]) | Start or replace the plan for this turn. Steps are short imperative lines ("Find where the login form is defined"). Calling it again mid-task revises the plan; finished steps keep their results. |
 | `done` | `result` (string) | Finish the current step. `result` is the one-to-three-line finding the rest of the task needs (paths, numbers, names, decisions), not a narration. |
-| `need` | `what` (string) | Say what is missing. The harness tries `find` with it first; if nothing useful comes back, it asks the user (the question is shown as a normal assistant message and the user's reply, in any form, comes back as the result). |
+| `need` | `what` (string) | Say what is missing. The harness tries `find` with it first; if memory, a recipe, or another chat (sharing at least two words with the question) answers it, that comes back as the result. Otherwise it asks the user: the question is the reply, and the user's next message, in any form, is the answer (shown in later step prompts under "The user answered your questions"). Tools, this task's own results and this chat don't count as answers: the model already had those. |
 | `find` | `query` (string) | One search across everything Squiggle knows: tools (name + how to call), recipes, memory facts, past chats (all sessions), and this task's step results and saved tool output. Returns the top few of each kind that clear a relevance bar, labelled by kind. |
 
 `find_tools` (current small-model engine) becomes the tools part of `find`.
@@ -66,13 +75,22 @@ Stored on the session (synced, merged by id like messages):
 
 ```js
 session.tasks[taskId] = {
-  id, msg,               // the user message that started it
-  goal, created, updated,
+  id, msg, thread,       // the user message that started it
+  request, goal, created, updated, mts,
   status: 'active' | 'done' | 'stopped',
   steps: [{ id, text, status: 'todo' | 'active' | 'done' | 'blocked', result?, need?, calls: n }],
-  recipe?: recipeId,     // recipe it started from, if any
+  recipe?: recipeId,     // recipe it started from (or was saved as)
+  waiting?,              // a `need` question is waiting for the user's answer
+  answers?: [{ q, a }],  // the user's answers to `need` questions
+  revisions?,            // plan revisions so far (max 3)
+  attachNote?,           // paths of files the user attached
+  tools: [name],         // tools looked up with find (the small model sees their details in every step)
+  log: [{ step, name, args, ok, label, text }],   // tool calls; the newest 40 keep their output
 }
 ```
+
+The reply message carries `task: taskId`. Finished or stopped tasks older than
+3 days drop their logged output (plan, results and call arguments stay).
 
 The UI shows the active task as a checklist above the reply (goal, steps with
 state, the current step highlighted, results in small text), and as a compact
@@ -80,7 +98,12 @@ state, the current step highlighted, results in small text), and as a compact
 
 ## Step prompt (what the model sees in step mode)
 
-Rebuilt from scratch for every step, so context never fills up:
+Rebuilt from scratch for every step, so context never fills up. It is budgeted
+to 45% of the context window: the last 2 finished steps show their whole result
+and older ones are cut to 120 characters (`find` still has them), and when it is
+still too long the sections go in reverse order (references first, the
+attachments note last). The final prompt (goal + every step's result, no tools)
+is budgeted the same way.
 
 ```
 system:   short system prompt (model-appropriate; see below)
@@ -90,14 +113,18 @@ system:   short system prompt (model-appropriate; see below)
           1. [done] <step> → <result>
           2. [now]  <step>
           3. [todo] <step>
+          ## The user answered your questions             (the last 3 `need` answers, if any)
+          ## Files the user attached                      (paths, if any)
           ## Recipe from a similar task (if any)
           <recipe steps + specifics>
           ## What you know about the user and their work   (memory facts, goal+step query)
           ## Found earlier in this task                     (retrieved step results / tool output for this step)
           ## Resolved references                             (if any)
           ## Tools                                           (big models: all; small: looked-up only)
-user:     <the original request, verbatim>
-          Work on step 2 now. When the step is finished, call done with what you found.
+user:     <the original request, verbatim (first 700 characters)>
+
+          Work on step 2 now: <step text>
+          When the step is finished, call done with what you found.
 ```
 
 Within a step the model's own tool calls and results accumulate normally (that
@@ -122,7 +149,8 @@ id like facts):
   into a recipe. The small model can't do that well, so when the active model is
   lite the harness builds it deterministically from the tool log (steps = the
   step texts; specifics = tool arguments that were paths, repos, URLs, commands)
-  and lets the next big-model session refine it.
+  and lets the next big-model session refine it (saved with `draft: true`; a
+  big model refines one draft per turn, in the background).
 - **Merged**: if a new recipe's `when` matches an existing one closely, update that
   one (append example phrasing, refresh steps if they changed) instead of adding.
 - **Used**: at the start of a turn the harness retrieves recipes for the request;
@@ -180,13 +208,21 @@ and parses it.
   more than one step, make a plan, then do one step at a time.
   Call a tool with a ```tool_call block containing {"name", "arguments"}; tools
   you have: plan, done, need, find, and any tool you have looked up with find.
+  Arguments: plan(goal, steps), done(result), need(what), find(query).
+  Today is <Day Mon DD YYYY>.
   ```
+
+  (`LITE_SYSTEM` in agent.js; the date line is `new Date().toDateString()`.)
+  Tools the model has looked up are appended as
+  `Tools you have looked up:\n- name(arg, optional?): first sentence of the description`.
 
 - Tools the small model has not looked up are not described in its prompt; `find`
   returns their name, arguments and one line of description. Calling a real tool
   without looking it up is allowed.
-- Anti-loop: the engine stops generation when the same sentence (≥ 8 words)
-  appears three times, and uses repeat penalty 1.15.
+- Anti-loop: the engine stops generation when any run of 8 words appears three
+  times (and says so in the reply), and uses repeat penalty 1.15.
+- `find` results come back as `{"found": "<text>", "tools": [names]}`; the
+  engine describes those tools from then on (and carries them into later steps).
 
 ## What the fine-tune should learn (training targets)
 
