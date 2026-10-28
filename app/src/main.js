@@ -1626,7 +1626,7 @@ function renderSettingsPanel() {
 
     h('div', { class: 'field' }, h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: S.contextMode === 'smart' ? true : null, onchange: (e) => { S.contextMode = e.target.checked ? 'smart' : 'compact'; saveSettings(); if (S.contextMode === 'smart' && S.semantic) loadSemantic(); updateComposerNote(); renderSettingsPanel(); } }),
-      h('span', {}, h('strong', {}, 'Smart context'), h('span', { class: 'hint', style: 'display:block' }, 'Instead of only a summary plus recent messages, picks the earlier messages, other chats, web pages and files most relevant to each question and to the current step. Check "What the model saw" on any reply.')))),
+      h('span', {}, h('strong', {}, 'Smart context'), h('span', { class: 'hint', style: 'display:block' }, 'Instead of only a summary plus recent messages, picks the earlier messages, web pages and files from this chat most relevant to each question and to the current step (other chats are searched only when needed). Check "What the model saw" on any reply.')))),
     S.contextMode !== 'smart' ? '' : h('div', { class: 'field' }, h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: S.semantic ? true : null, onchange: (e) => { S.semantic = e.target.checked; saveSettings(); if (S.semantic) loadSemantic(); } }),
       h('span', {}, h('strong', {}, 'Search by meaning'), h('span', { class: 'hint', style: 'display:block' }, 'Also matches by meaning, not just words. Downloads a small 23 MB search model that runs on the CPU. Off by default on phones.')))),
