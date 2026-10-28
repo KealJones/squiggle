@@ -115,7 +115,24 @@ export function takeSpeakable(raw, from = 0, final = false) {
 }
 
 /** Best installed voice for `lang`: the saved one if it still exists, else the
- *  best-scoring voice for the language (exact locale, then neural/enhanced ones). */
+ *  best-scoring voice for the language. Quality beats everything else: Apple
+ *  marks it in the voiceURI (premium > enhanced > compact), Edge/Android in the
+ *  name ("Natural", "Neural"); robotic voices (Apple's Eloquence set, novelty
+ *  voices) are avoided. On iPhone, Squiggle used to land on one of those. */
+const NOVELTY = /^(albert|bad news|bahh|bells|boing|bubbles|cellos|fred|good news|jester|junior|kathy|organ|ralph|superstar|trinoids|whisper|wobble|zarvox)\b/i;
+const ELOQUENCE = /^(eddy|flo|grandma|grandpa|reed|rocko|sandy|shelley)\b/i;
+export function voiceQuality(v) {
+  const uri = String(v.voiceURI || ''), name = String(v.name || '');
+  if (/eloquence/i.test(uri) || ELOQUENCE.test(name) || /eloquence/i.test(name)) return -10;
+  if (NOVELTY.test(name) || /novelty/i.test(name)) return -10;
+  if (/premium/i.test(uri) || /premium/i.test(name)) return 9;
+  if (/natural|neural/i.test(name)) return 8;
+  if (/siri/i.test(uri) || /siri/i.test(name)) return 7;
+  if (/enhanced/i.test(uri) || /enhanced/i.test(name)) return 6;
+  if (/google/i.test(name)) return 4;
+  if (/compact/i.test(uri)) return /samantha/i.test(name) ? 1 : 0;
+  return 1;
+}
 export function pickVoice(voices, lang = 'en-US', savedURI = '') {
   const list = Array.from(voices || []);
   if (!list.length) return null;
@@ -126,16 +143,14 @@ export function pickVoice(voices, lang = 'en-US', savedURI = '') {
   const score = (v) => {
     const l = String(v.lang || '').toLowerCase().replace('_', '-');
     let s = 0;
-    if (l === want) s += 6; else if (l.split('-')[0] === prim) s += 3; else return -1;
-    if (/natural|premium|enhanced|neural|siri/i.test(v.name)) s += 4;
-    if (/google/i.test(v.name)) s += 2;
-    if (v.default) s += 1;
-    if (v.localService) s += 0.5;
-    if (/eloquence|novelty|bad news|bahh|bells|boing|bubbles|cellos|good news|jester|organ|superstar|trinoids|whisper|wobble|zarvox/i.test(v.name)) s -= 10;
+    if (l === want) s += 3; else if (l.split('-')[0] === prim) s += 1; else return -100;
+    s += voiceQuality(v);
+    if (v.default) s += 0.5;
+    if (v.localService) s += 0.25;
     return s;
   };
-  let best = null, bestScore = -1;
-  for (const v of list) { const sc = score(v); if (sc > bestScore) { best = v; bestScore = sc; } }
+  let best = null, bestScore = -Infinity;
+  for (const v of list) { const sc = score(v); if (sc > -100 && sc > bestScore) { best = v; bestScore = sc; } }
   return best || list.find(v => v.default) || list[0];
 }
 
