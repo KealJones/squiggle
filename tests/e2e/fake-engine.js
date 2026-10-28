@@ -68,6 +68,8 @@ function stepScript(conv, input, onText) {
 
 export async function respond(conv, input, { onText } = {}) {
   log.push({ type: 'respond', input, system: conv.cfg && conv.cfg.system });
+  // The script answers the person's words, not the recalled block smart context appends.
+  if (typeof input === 'string') input = input.split('\n\n---\nPossibly relevant earlier messages')[0];
   const scripted = stepScript(conv, input, onText);
   if (scripted) return scripted;
   if (typeof input === 'string') {

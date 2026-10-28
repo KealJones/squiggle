@@ -44,7 +44,9 @@ test('smart: retrieves the relevant old message the window dropped', async () =>
   assert.ok(r.report.used <= 3000);
   const got = r.report.items.filter(i => i.kind === 'message');
   assert.ok(got.some(i => /Pickles/.test(i.label)), JSON.stringify(got));
-  assert.ok(r.system.includes('Pickles'));
+  // Recalled messages go after the request, not into the system prompt.
+  assert.ok(!r.system.includes('Pickles'));
+  assert.match(r.recalled, /Earlier in this chat .*the user said "My cat is named Pickles/);
 });
 
 test('smart: saved web pages come back wrapped as untrusted', async () => {

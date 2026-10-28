@@ -23,7 +23,8 @@ app/                    static app, plain ES modules, no build step
     engine.js           model registry, download (resumable, IndexedDB chunks), LiteRT engine, generation
     engine-cloud.js     cloud model through the relay (same conversation interface)
     engine-wllama.js    Gemma 3 270M on llama.cpp WASM (phones): prompt-based tools, <think>, anti-loop
-    context.js          context assembly: smart (default; retrieval within this chat; other chats only via find) / compact / full; report
+    context.js          context assembly: smart (default) / compact / full; report
+    recall.js           smart mode's recalled block: earlier messages (this chat + other chats) and memory, quoted after the request; time phrases, size caps
     search.js           BM25 + blend with optional embeddings (embed.js, MiniLM on CPU)
     tools.js            agent tools; run_js sandbox host
     calc.js             `calculate` tool: safe math expression parser (no eval), % and money-friendly
