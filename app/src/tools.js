@@ -54,6 +54,16 @@ async function readAgentFile(p) {
   return null;
 }
 
+// Writes a workspace file; returns an error message or null.
+async function writeAgentFile(r, text) {
+  const rp = realPath(r);
+  if (rp.kind === 'virtual' || (r.area === 'repos' && !r.rel)) return 'Give a file path under /home/ or /repos/<name>/.';
+  if (rp.kind === 'home') { await storage.write(rp.rel, text); return null; }
+  if (!await exists(`${REPOS}/${r.repo}`)) return `/repos/${r.repo} doesn't exist. Clone it first.`;
+  await writeFile(rp.path, text);
+  return null;
+}
+
 async function listAgentDir(p) {
   const r = resolveAgentPath(p);
   if (r.area === 'root') return ['home/', 'repos/', ...(webPages.size ? ['web/'] : [])];
@@ -83,6 +93,27 @@ async function repoDir(name) {
   const dir = `${REPOS}/${n}`;
   if (!await exists(dir + '/.git')) throw new Error(`/repos/${n} is not cloned. Use git_clone first.`);
   return dir;
+}
+
+// A commit id (short or full), branch, tag or HEAD, with ~N / ^ for ancestors.
+async function resolveCommit(dir, ref) {
+  const m = /^(.*?)((?:[~^]\d*)*)$/.exec(ref);
+  const base = m[1] || 'HEAD';
+  let oid;
+  if (/^[0-9a-f]{4,40}$/i.test(base)) {
+    try { oid = await git.expandOid({ fs, dir, oid: base.toLowerCase() }); } catch { oid = null; }
+  }
+  if (!oid) oid = await git.resolveRef({ fs, dir, ref: base });
+  for (const step of m[2].match(/[~^]\d*/g) || []) {
+    const n = step.length > 1 ? +step.slice(1) : 1;
+    for (let i = 0; i < (step[0] === '~' ? n : 1); i++) {
+      const { commit } = await git.readCommit({ fs, dir, oid });
+      const parent = commit.parent[step[0] === '^' ? n - 1 : 0];
+      if (!parent) throw new Error('no parent');
+      oid = parent;
+    }
+  }
+  return oid;
 }
 
 async function originOf(dir) {
@@ -259,17 +290,49 @@ export const TOOLS = [
     },
   },
   {
-    spec: { name: 'write_file', description: 'Create or overwrite a text file in the workspace. Files under /home sync to all the user\'s devices.', parameters: S({ path: str('File path'), content: str('Full file contents') }, ['path', 'content']) },
-    async run({ path, content }) {
+    spec: { name: 'write_file', description: 'Create a text file, or replace a whole file. To change part of an existing file, use edit_file. Files under /home sync to all the user\'s devices.', parameters: S({ path: str('File path'), content: str('Full file contents'), overwrite: bool('Set true to replace an existing file with much shorter content') }, ['path', 'content']) },
+    async run({ path, content, overwrite = false }) {
       const r = resolveAgentPath(path);
-      const rp = realPath(r);
-      if (rp.kind === 'virtual' || (r.area === 'repos' && !r.rel)) return { model: { error: 'Give a file path under /home/ or /repos/<name>/.' } };
-      if (rp.kind === 'home') await storage.write(rp.rel, String(content));
-      else {
-        if (!await exists(`${REPOS}/${r.repo}`)) return { model: { error: `/repos/${r.repo} doesn't exist. Clone it first.` } };
-        await writeFile(rp.path, String(content));
+      const text = String(content ?? '');
+      // A small model asked to change one function wrote the snippet over the whole
+      // 2,000-line file. Shrinking a real file to under a third needs overwrite: true.
+      const old = await readAgentFile(path).catch(() => null);
+      if (old != null && !overwrite) {
+        const oldLines = old.split('\n').length, newLines = text.split('\n').length;
+        if (oldLines >= 40 && text.length < old.length / 3) {
+          return { model: { error: `Not written: this would replace all ${oldLines} lines of ${agentPath(r)} with ${newLines}. To change part of the file, use edit_file (old_text → new_text). Only if you really mean to replace the whole file, call write_file again with overwrite: true.` }, label: `write_file refused (would shrink ${agentPath(r)})` };
+        }
       }
-      return { model: { ok: true, path: agentPath(r), chars: String(content).length }, label: `wrote ${agentPath(r)}` };
+      const err = await writeAgentFile(r, text);
+      if (err) return { model: { error: err } };
+      return { model: { ok: true, path: agentPath(r), chars: text.length }, label: `wrote ${agentPath(r)}` };
+    },
+  },
+  {
+    spec: { name: 'edit_file', description: 'Change part of a text file: replaces old_text with new_text. old_text must match the file exactly (copy it from read_file, without the line numbers) and appear only once, so include a few lines around the change.', parameters: S({ path: str('File path'), old_text: str('Exact text to replace, copied from the file'), new_text: str('What to put in its place (empty to delete it)'), replace_all: bool('Replace every occurrence instead of exactly one') }, ['path', 'old_text', 'new_text']) },
+    async run({ path, old_text, new_text = '', replace_all = false }) {
+      const r = resolveAgentPath(path);
+      const text = await readAgentFile(path);
+      if (text == null) return { model: { error: `No such file: ${path}. To create a file, use write_file.` }, label: `edit ${path} (missing)` };
+      const from = String(old_text ?? ''), to = String(new_text ?? '');
+      if (!from) return { model: { error: 'old_text is empty. Copy the exact lines to change from read_file.' } };
+      const at = [];
+      for (let i = text.indexOf(from); i >= 0; i = text.indexOf(from, i + Math.max(1, from.length))) at.push(i);
+      const lineOf = (i) => text.slice(0, i).split('\n').length;
+      if (!at.length) {
+        const first = from.split('\n').map(l => l.trim()).find(Boolean) || '';
+        const lines = text.split('\n');
+        const near = first ? lines.findIndex(l => l.trim() === first) : -1;
+        return { model: { error: `old_text was not found in ${agentPath(r)}: it must match exactly, including spaces.` + (near >= 0 ? ` Its first line is at line ${near + 1}; read_file around there and copy the lines exactly.` : ' read_file the part you want to change and copy it exactly.') }, label: `edit ${agentPath(r)} (no match)` };
+      }
+      if (at.length > 1 && !replace_all) {
+        return { model: { error: `old_text appears ${at.length} times (lines ${at.map(lineOf).slice(0, 10).join(', ')}). Include more surrounding lines so it matches once, or set replace_all: true.` }, label: `edit ${agentPath(r)} (${at.length} matches)` };
+      }
+      const out = replace_all ? text.split(from).join(to) : text.slice(0, at[0]) + to + text.slice(at[0] + from.length);
+      const err = await writeAgentFile(r, out);
+      if (err) return { model: { error: err } };
+      const line = lineOf(at[0]);
+      return { model: { ok: true, path: agentPath(r), replaced: replace_all ? at.length : 1, line, lines: out.split('\n').length }, label: `edited ${agentPath(r)} (line ${line}${replace_all && at.length > 1 ? `, ${at.length} places` : ''})` };
     },
   },
   {
@@ -435,6 +498,35 @@ export const TOOLS = [
       const log = await git.log({ fs, dir, depth: Math.min(50, count) });
       const lines = log.map(c => `${c.oid.slice(0, 8)} ${new Date(c.commit.author.timestamp * 1000).toISOString().slice(0, 10)} ${c.commit.author.name}: ${c.commit.message.split('\n')[0]}`);
       return { model: { commits: wrapUntrusted('git log', lines.join('\n')) }, label: `log of ${repo}` };
+    },
+  },
+  {
+    spec: { name: 'git_show', description: 'Read a file as it was at an earlier commit, with line numbers. To restore it, write that content back with write_file (overwrite: true).', parameters: S({ repo: str('Folder name under /repos'), path: str('File path in the repo, e.g. app/src/main.js'), ref: str('Commit id from git_log (short is fine), or HEAD~1 for the one before the latest'), start_line: num('First line (default 1)'), end_line: num('Last line (default start_line + 150)') }, ['repo', 'path', 'ref']) },
+    async run({ repo, path, ref = 'HEAD', start_line = 1, end_line }, ctx = {}) {
+      const dir = await repoDir(repo);
+      const name = dir.slice(REPOS.length + 1);
+      const filepath = String(path || '').replace(/^\/?repos\/[^/]+\//, '').replace(/^\/+/, '');
+      if (!filepath) return { model: { error: 'Give the file path inside the repo, e.g. app/src/main.js.' } };
+      let oid;
+      try { oid = await resolveCommit(dir, String(ref || 'HEAD').trim()); }
+      catch (e) { return { model: { error: `Unknown commit or branch "${ref}". Use a commit id from git_log, a branch name, or HEAD~1.` }, label: `git_show ${ref} (unknown)` }; }
+      let text;
+      try { text = new TextDecoder().decode((await git.readBlob({ fs, dir, oid, filepath })).blob); }
+      catch { return { model: { error: `${filepath} didn't exist at ${oid.slice(0, 8)}.` }, label: `git_show ${filepath} at ${oid.slice(0, 8)} (missing)` }; }
+      const lines = text.split('\n');
+      const start = Math.max(1, Math.floor(start_line) || 1);
+      let end = Math.min(lines.length, Math.floor(end_line) || start + 149);
+      const cap = Math.min(MAX_READ, ctx.room || MAX_READ);
+      let out = '';
+      for (let i = start; i <= end; i++) {
+        const line = `${i}: ${lines[i - 1]}\n`;
+        if (out.length + line.length > cap) { end = i - 1; break; }
+        out += line;
+      }
+      return {
+        model: { repo: name, path: filepath, commit: oid.slice(0, 8), total_lines: lines.length, start_line: start, end_line: end, content: wrapUntrusted(`file ${filepath} at ${oid.slice(0, 8)}`, out), ...(end < lines.length ? { more: `lines ${end + 1}-${lines.length} not shown; call again with start_line` } : {}) },
+        label: `read ${filepath} at ${oid.slice(0, 8)}${start > 1 || end < lines.length ? ` lines ${start}-${end}` : ''}`,
+      };
     },
   },
   {

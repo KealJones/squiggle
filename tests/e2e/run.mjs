@@ -266,6 +266,48 @@ await check('agent git tools: agent/ pushes freely; other branches need approval
   assert.match(git(stateRepo, 'show', 'main:settings/push-grants.jsonl'), /"branch":"main"/);
 });
 
+
+await check('edit_file changes one exact passage; write_file won\'t shrink a real file without overwrite; git_show reads old versions', async () => {
+  const r = await A.page.evaluate(async () => {
+    const run = async (name, args) => (await T.tools.runTool({ function: { name, arguments: args } }, { session: T.sessions.list()[0] })).model;
+    const big = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join('\n') + '\nfunction wave() { return 1; }\nfunction wave2() { return 1; }\n';
+    const out = {};
+    await run('write_file', { path: '/home/long.js', content: big });
+    out.edit = await run('edit_file', { path: '/home/long.js', old_text: 'function wave() { return 1; }', new_text: 'function wave() { return 2; }' });
+    out.twice = await run('edit_file', { path: '/home/long.js', old_text: 'return', new_text: 'yield' });
+    out.missing = await run('edit_file', { path: '/home/long.js', old_text: 'line 3\nline  4', new_text: 'x' });
+    out.shrink = await run('write_file', { path: '/home/long.js', content: 'function wave() { return 3; }\n' });
+    out.after = await T.storage.read('home/long.js');
+    out.forced = await run('write_file', { path: '/home/long.js', content: 'short\n', overwrite: true });
+    out.final = await T.storage.read('home/long.js');
+    await run('git_clone', { repo: 'tester/app' });   // already cloned when the git check ran first
+    await run('git_branch', { repo: 'app', name: 'history-test' });
+    for (const v of ['v1', 'v2', 'v3']) {
+      await run('write_file', { path: '/repos/app/HISTORY.md', content: v + '\n' });
+      await run('git_commit', { repo: 'app', message: 'History ' + v });
+    }
+    const log = (await run('git_log', { repo: 'app', count: 10 })).commits;
+    const first = (log.match(/([0-9a-f]{8}) \S+ [^:]+: History v1/) || [])[1];
+    out.byId = await run('git_show', { repo: 'app', path: 'HISTORY.md', ref: first }); out.log = log;
+    out.prev = await run('git_show', { repo: 'app', path: '/repos/app/HISTORY.md', ref: 'HEAD~1' });
+    out.index = await run('git_show', { repo: 'app', path: 'src/index.js', ref: 'main' });
+    out.badRef = await run('git_show', { repo: 'app', path: 'HISTORY.md', ref: 'nope123' });
+    out.noFile = await run('git_show', { repo: 'app', path: 'HISTORY.md', ref: first + '~1' });
+    return out;
+  });
+  assert.equal(r.edit.ok, true, JSON.stringify(r.edit)); assert.equal(r.edit.line, 61);
+  assert.match(r.twice.error, /appears 2 times \(lines 61, 62\)/);
+  assert.match(r.missing.error, /not found[\s\S]*first line is at line 3/);
+  assert.match(r.shrink.error, /would replace all 63 lines[\s\S]*edit_file[\s\S]*overwrite: true/);
+  assert.match(r.after, /function wave\(\) \{ return 2; \}/, 'the refused write changed nothing; the edit stuck');
+  assert.equal(r.forced.ok, true); assert.equal(r.final, 'short\n');
+  assert.match(r.byId.content, /1: v1/);
+  assert.match(r.prev.content || '', /1: v2/, JSON.stringify(r.prev) + r.log);
+  assert.match(r.index.content, /console\.log\(/);
+  assert.match(r.badRef.error, /Unknown commit or branch "nope123"/);
+  assert.match(r.noFile.error, /didn't exist at/);
+});
+
 await check('fetch_url wraps page text as untrusted and strips scripts', async () => {
   const r = await A.page.evaluate(async (url) => {
     const res = await T.tools.runTool({ function: { name: 'fetch_url', arguments: { url } } }, { session: T.sessions.list()[0] });

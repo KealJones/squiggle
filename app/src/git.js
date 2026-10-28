@@ -60,9 +60,15 @@ export async function rmrf(path) {
   }
 }
 
+// Files written since the last stageAll. git's status check trusts size and
+// modification time, so a same-size change made within the same second as the
+// last commit ("return 1" → "return 2") looked unchanged and was never committed.
+const written = new Set();
+
 export async function writeFile(path, data) {
   await mkdirp(path.split('/').slice(0, -1).join('/'));
   await pfs.writeFile(path, data, typeof data === 'string' ? 'utf8' : undefined);
+  written.add(path);
 }
 
 export async function readText(path) {
@@ -90,7 +96,19 @@ export async function currentBranch(dir) {
 }
 
 // Stage every change in the working tree (adds, edits, deletes).
+// Re-adds (re-hashes) every file written under dir, so the status sees
+// same-size changes too.
+async function refreshWritten(dir) {
+  const prefix = dir.replace(/\/$/, '') + '/';
+  for (const p of [...written]) {
+    if (!p.startsWith(prefix)) continue;
+    written.delete(p);
+    try { await git.add({ fs, dir, filepath: p.slice(prefix.length) }); } catch { /* deleted since: the status handles it */ }
+  }
+}
+
 export async function stageAll(dir) {
+  await refreshWritten(dir);
   const matrix = await git.statusMatrix({ fs, dir });
   let changed = 0;
   for (const [filepath, head, work, stage] of matrix) {
@@ -104,6 +122,7 @@ export async function stageAll(dir) {
 
 // Human-readable status lines like `M src/app.js`.
 export async function statusLines(dir) {
+  await refreshWritten(dir);
   const matrix = await git.statusMatrix({ fs, dir });
   const lines = [];
   for (const [f, head, work, stage] of matrix) {
