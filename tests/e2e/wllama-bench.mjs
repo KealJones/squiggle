@@ -6,7 +6,8 @@
 //   node tests/e2e/wllama-bench.mjs [--model SQ] [--prompt "…"] [--tokens 64]
 import http from 'node:http';
 import { createRequire } from 'node:module';
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, extname, normalize } from 'node:path';
 
 const require = createRequire(import.meta.url);
@@ -54,7 +55,10 @@ function serve(isolate) {
   return new Promise(r => srv.listen(0, '127.0.0.1', () => r(srv)));
 }
 
-const browser = await chromium.launch({ args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan'] });
+// A persistent on-disk profile: a fresh (incognito) context keeps storage in memory with a small quota,
+// which a ~1 GB model file exceeds.
+const profile = mkdtempSync(join(tmpdir(), 'wllama-bench-'));
+const browser = await chromium.launchPersistentContext(profile, { args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan'] });
 const runs = [
   { name: '1 thread', isolate: false, gpu: false, threads: false },
   { name: 'all cores (isolated)', isolate: true, gpu: false, threads: true },
@@ -74,3 +78,4 @@ for (const r of runs) {
   srv.close();
 }
 await browser.close();
+rmSync(profile, { recursive: true, force: true });
