@@ -1,4 +1,4 @@
-// The agent loop (docs/harness.md): resolve references and look up recipes,
+// The agent loop (docs/harness.md): resolve references,
 // then the model answers directly or makes a plan; a plan is worked one step
 // at a time with a fresh prompt per step, and a finished plan is saved as a
 // recipe so the next similar request is fast. Plus background jobs that keep
@@ -179,7 +179,7 @@ class Turn {
     this.calls = 0;          // tool calls this turn (check-ins every CHECK_IN_EVERY)
     this.conv = null;
     this.task = null;
-    this.recipe = null;      // a strong recipe match offered in the prompt
+    this.recipe = null;      // the best recipe the model found with `find` this turn (carried into its plan's steps)
     this.finishedNow = false;
     this.paused = false;     // the person chose "Stop here" at a check-in
     this.nextCheckIn = tasks.CHECK_IN_EVERY;
@@ -255,14 +255,8 @@ class Turn {
       const refs = renderRefs(resolveRefs(shown, ents, { messageCount: line.length }));
       if (refs) extra.push({ kind: 'refs', title: 'Resolved references (hints; the user\'s words win)', text: refs, label: 'Resolved references' });
     } catch (e) { console.warn('refs', e); }
-    // A recipe from a similar task: a strong match is offered as the starting plan.
-    try {
-      const [best] = await recipes.match(shown, 1);
-      if (best && best.score >= recipes.STRONG) {
-        this.recipe = best.recipe;
-        extra.push({ kind: 'recipe', title: 'Recipe from a similar task (if it fits, start with plan using these steps; skip what is already answered)', text: recipeText(best.recipe), label: `Recipe: ${best.recipe.title}` });
-      }
-    } catch (e) { console.warn('recipes', e); }
+    // Recipes aren't injected: the model looks them up with `find` when it wants one
+    // (an injected recipe for an unrelated request took over small models' turns).
     return { line, extra, focus };
   }
 
@@ -580,6 +574,8 @@ class Turn {
       searchHistory: lite() && !PAST_CHAT.test(String(query).toLowerCase()) ? null : async (q, k) => searchChats(q, k, this.userMsg.id),
       taskItems: tasks.taskItems(task),
     }, { k: 3 });
+    // A recipe the model looked up goes with the plan it makes this turn.
+    if (!this.recipe && r.recipes.length && !task) this.recipe = r.recipes[0].recipe;
     const outside = r.task.filter(t => t.source === 'tool output');
     const inside = { ...r, task: r.task.filter(t => t.source !== 'tool output') };
     const empty = !['tools', 'recipes', 'facts', 'chats', 'task'].some(k => r[k] && r[k].length);

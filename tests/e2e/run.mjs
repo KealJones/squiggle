@@ -1057,7 +1057,7 @@ await check('step mode through the UI: plan, live checklist, find, done, final r
   assert.match(r.thinking, /Look it up first\./);
   assert.match(r.thinking, /Step 2: Stop it\nStopped node/);
 
-  // The finished plan became a recipe; a similar request gets it in the prompt.
+  // The finished plan became a recipe; a similar request doesn't get it injected, but find returns it.
   const recipe = await D.page.evaluate(async () => {
     const recipes = await import('/src/recipes.js');
     for (let i = 0; i < 80 && !recipes.list().length; i++) await new Promise(r => setTimeout(r, 100));
@@ -1069,7 +1069,12 @@ await check('step mode through the UI: plan, live checklist, find, done, final r
   await D.page.press('#input', 'Enter');
   await D.page.waitForFunction(() => /Plain answer to: kill whatever/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 15000 });
   const sys = await D.page.evaluate(() => window.__engineLog.filter(x => x.type === 'conversation').pop().system);
-  assert.match(sys, /## Recipe from a similar task[^\n]*\n[^\n]*\n1\. Find what is listening on 8080\n2\. Stop it/);
+  assert.doesNotMatch(sys, /Recipe from a similar task/);
+  const found = await D.page.evaluate(async () => {
+    const [{ find, renderFind }, recipes] = await Promise.all([import('/src/find.js'), import('/src/recipes.js')]);
+    return renderFind(await find('kill whatever is listening on port 8080', { recipes }));
+  });
+  assert.match(found, /Recipes from similar tasks:\n\* [^\n]*\n  1\. Find what is listening on 8080\n  2\. Stop it/);
 
   // need with nothing found: the question is the reply; the next message is the answer.
   await D.page.click('#new-chat');
