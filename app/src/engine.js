@@ -31,8 +31,8 @@ export const MODELS = {
     url: HF + 'unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_0.gguf', bytes: 773025824 },
   // Gemma 4 E2B pruned (80K vocab, hidden 1024, FFN 42%, 31 layers) and barely healed (tp-parse
   // experiments/tiny-gemma4, heal 2). For load/memory/speed checks; it rambles and repeats.
-  TG4: { label: 'Test: Tiny Gemma 4 (barely healed)', size: '1.13 GB', note: 'Gemma 4 E2B cut down for phones, early test build: checks that it loads and how much memory it takes. Rambles and repeats. Chat only, no tools', phone: true, runtime: 'wllama',
-    url: HF + 'kealjones/tiny-gemma4-test/resolve/main/tiny-gemma4-heal2-Q4_0.gguf', bytes: 1134460576 },
+  TG4: { label: 'Test: Tiny Gemma 4 (barely healed)', size: '778 MB', note: 'Gemma 4 E2B cut down for phones, early test build: checks that it loads and how much memory it takes. Rambles and repeats. Chat only, no tools', phone: true, runtime: 'wllama',
+    url: HF + 'kealjones/tiny-gemma4-test/resolve/main/tiny-gemma4-heal2-v2-Q4_0.gguf', bytes: 778158496 },
   // Not on this device: runs on the relay (only listed when the relay offers it).
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true },
 };
