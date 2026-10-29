@@ -54,6 +54,18 @@ const say = (t, onText, thinking = '') => { onText && onText(t); return { text: 
 function stepScript(conv, input, onText) {
   const sys = (conv.cfg && conv.cfg.system) || '';
   if (typeof input === 'string') {
+    // AI-managed context: steps that attach earlier results, a checkpoint inside a step, one in the chat phase.
+    if (/MANAGEDTEST|CPCHAT/.test(input)) {
+      if (/Every step is done/.test(input)) return say(/CPCHAT/.test(input) ? 'Carried on after the checkpoint: done.' : 'Ada is ten years older than Ben.', onText);
+      // Step prompts start with the request too, so they are matched first.
+      if (/CPCHAT/.test(input) && /You checkpointed step 1/.test(input)) return call('done', { result: /the answer is 42/.test(sys) ? 'It is 42.' : 'lost the checkpoint' });
+      if (/^CPCHAT/.test(input)) return call('checkpoint', { summary: 'Read the brief: the answer is 42.', needs: ['step:1'], next: 'Answer with the number' });
+      if (/Work on step 1 now/.test(input)) return call('done', { result: 'Ada was born in 1950' });
+      if (/Work on step 2 now/.test(input)) return call('checkpoint', { summary: 'Ben was born in 1960 (from his bio)', next: 'Confirm Ben\'s year and finish' });
+      if (/You checkpointed step 2/.test(input)) return call('done', { result: /Ben was born in 1960/.test(sys) ? 'Ben was born in 1960' : 'lost the checkpoint' });
+      if (/Work on step 3 now/.test(input)) return call('done', { result: /Attached for this step[\s\S]*1950[\s\S]*1960/.test(sys) ? 'Ada is 10 years older' : 'nothing attached' });
+      if (/^MANAGEDTEST/.test(input)) return call('plan', { goal: 'Compare birth years', steps: [{ text: 'Find when Ada was born' }, { text: 'Find when Ben was born' }, { text: 'Compare the two years', needs: ['step:1', 'step:2'] }] });
+    }
     if (/Every step is done/.test(input)) return say(/NEEDTEST/.test(input) ? 'Set up Wobble, as you said.' : 'Port 8080 had node (pid 4242); it is free now.', onText);
     if (/PLANTEST|NEEDTEST/.test(input) && /Work on step 1 now/.test(input)) {
       if (/NEEDTEST/.test(input)) return /The user answered/.test(sys) ? call('done', { result: 'Call it Wobble' }) : call('need', { what: 'What should the new project be called?' });
