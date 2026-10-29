@@ -6,7 +6,9 @@
 //
 //   session.tasks[id] = { id, msg, thread, goal, request, created, updated, mts,
 //     status: 'active' | 'done' | 'stopped',
-//     steps: [{ id, text, status: 'todo' | 'active' | 'done' | 'blocked', result?, need?, calls }],
+//     steps: [{ id, text, status: 'todo' | 'active' | 'done' | 'blocked', result?, need?, calls,
+//               needs?: ['step:1' | 'note:<id>' | 'file:<path>[:a-b]' | 'find:<query>'], kind?: 'summarize',
+//               checkpoint?: { summary, needs, next } }],   (needs/kind/checkpoint: AI-managed context)
 //     recipe?, waiting?, answers?: [{ q, a }], log: [{ step, name, args, ok, label, text }], tools: [name] }
 import { uid, estTokens } from './util.js';
 
@@ -32,11 +34,34 @@ export const HARNESS_SPECS = {
   need: { name: 'need', description: 'Say what is missing to go on. Squiggle searches for it, and asks the user if it can\'t be found.', parameters: S({ what: str('What you need, e.g. "which repo the site lives in"') }, ['what']) },
   find: { name: 'find', description: 'Search everything Squiggle knows: tools (and how to call them), recipes from past tasks, memory, past chats and this task\'s earlier results.', parameters: S({ query: str('What you are looking for, in plain words') }, ['query']) },
 };
-export const HARNESS = new Set(Object.keys(HARNESS_SPECS));
+// AI-managed context (docs/harness.md, "the model manages its own context"): plan steps can say what they
+// need attached, and `checkpoint` hands off to a fresh context instead of running out.
+const NEEDS = { type: 'array', items: { type: 'string' }, description: 'What to attach: "step:2" (that step\'s result), "note:<id>", "file:<path>" or "file:<path>:10-40", "find:<query>"' };
+export const MANAGED_SPECS = {
+  plan: { name: 'plan', description: 'Make a plan for a request that takes more than one step, then work it one step at a time, each with a fresh view. A step can list what it needs attached (earlier results, files, notes, a search), and a "summarize" step reads something big and keeps only what later steps need. Calling it again revises the plan; finished steps keep their results.',
+    parameters: S({ goal: str('What the user wants, in one line'), steps: { type: 'array', items: S({ text: str('Short imperative step, e.g. "Compare the two birth years"'), needs: NEEDS, kind: { type: 'string', enum: ['summarize'], description: 'summarize: read the attached thing and finish with a short summary' } }, ['text']), description: 'The steps in order' } }, ['goal', 'steps']) },
+  checkpoint: { name: 'checkpoint', description: 'Running low on room: save where you are and carry on in a fresh context. The fresh one gets the request, your summary, what you list in needs, and next as the instruction. The user sees one continuous reply.',
+    parameters: S({ summary: str('What is known and done so far (facts, paths, numbers, unfinished thinking)'), needs: NEEDS, next: str('What to do next') }, ['summary', 'next']) },
+};
+export const HARNESS = new Set([...Object.keys(HARNESS_SPECS), 'checkpoint']);
+export const MAX_CHECKPOINTS = 4;   // per turn; then the person is asked whether to go on
 
-const cleanSteps = (steps) => (Array.isArray(steps) ? steps : typeof steps === 'string' ? steps.split(/\n+/) : [])
-  .map(s => String(typeof s === 'object' && s ? s.text || s.step || '' : s).replace(/^\s*(?:\d+[.)]|[-*•])\s*/, '').replace(/\s+/g, ' ').trim())
-  .filter(Boolean).slice(0, MAX_STEPS);
+const cleanText = (t) => String(t ?? '').replace(/^\s*(?:\d+[.)]|[-*•])\s*/, '').replace(/\s+/g, ' ').trim();
+// Steps as given: strings, or { text, needs, kind } objects (AI-managed context).
+export function normSteps(steps) {
+  if (typeof steps === 'string') { try { const j = JSON.parse(steps); if (Array.isArray(j)) steps = j; } catch {} }
+  const list = Array.isArray(steps) ? steps : typeof steps === 'string' ? steps.split(/\n+/) : [];
+  return list.map((x) => {
+    if (!x || typeof x !== 'object') return { text: cleanText(x) };
+    const out = { text: cleanText(x.text || x.step || '') };
+    const needs = (Array.isArray(x.needs) ? x.needs : typeof x.needs === 'string' ? x.needs.split(/[,\n]+/) : [])
+      .map(n => String(n).trim()).filter(n => parseRef(n)).slice(0, 6);
+    if (needs.length) out.needs = needs;
+    if (/^summar/i.test(String(x.kind || ''))) out.kind = 'summarize';
+    return out;
+  }).filter(x => x.text).slice(0, MAX_STEPS);
+}
+const cleanSteps = (steps) => normSteps(steps).map(x => x.text);
 const same = (a, b) => a.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() === b.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 export function newTask({ msg = null, thread = null, request = '', goal = '', steps = [], recipe = null, now = Date.now() } = {}) {
@@ -50,15 +75,15 @@ export function newTask({ msg = null, thread = null, request = '', goal = '', st
 // with the same text as a done one stays done, and done steps the new plan
 // leaves out stay at the front so their findings aren't lost.
 export function setPlan(task, goal, steps, now = Date.now()) {
-  const texts = cleanSteps(steps);
+  const items = normSteps(steps);
   if (goal && String(goal).trim()) task.goal = truncate(String(goal).replace(/\s+/g, ' ').trim(), 300);
-  if (!task.goal) task.goal = texts[0] || truncate(task.request, 200);
+  if (!task.goal) task.goal = (items[0] && items[0].text) || truncate(task.request, 200);
   const done = task.steps.filter(s => s.status === 'done');
   const used = new Set();
-  const next = texts.map((text) => {
+  const next = items.map(({ text, needs, kind }) => {
     const prev = done.find(d => !used.has(d.id) && same(d.text, text));
     if (prev) { used.add(prev.id); return prev; }
-    return { id: uid('st'), text, status: 'todo', calls: 0 };
+    return { id: uid('st'), text, status: 'todo', calls: 0, ...(needs ? { needs } : {}), ...(kind ? { kind } : {}) };
   });
   const kept = done.filter(d => !used.has(d.id));
   task.steps = [...kept, ...next];
@@ -82,8 +107,9 @@ export function finishStep(task, result, now = Date.now()) {
   const s = current(task);
   if (!s) return null;
   s.status = 'done';
-  s.result = truncate(String(result || '').trim() || '(no result given)', 600);
+  s.result = truncate(String(result || '').trim() || '(no result given)', s.kind === 'summarize' ? 1500 : 600);
   delete s.need;
+  delete s.checkpoint;
   touch(task, now);
   return s;
 }
@@ -151,7 +177,8 @@ export function renderPlan(task, { results = true, full = Infinity, short = 120 
     const r = s.result ? s.result.replace(/\s+/g, ' ') : '';
     const res = results && s.status === 'done' && r ? ` → ${keep.has(s) ? r : truncate(r, short)}` : '';
     const need = s.status === 'blocked' && s.need ? ` (needs: ${s.need})` : '';
-    return `${i + 1}. [${tag}] ${s.text}${res}${need}`;
+    const att = s.status !== 'done' && s.needs && s.needs.length ? ` [attach: ${s.needs.join(', ')}]` : '';
+    return `${i + 1}. [${tag}]${s.kind === 'summarize' ? ' (summarize)' : ''} ${s.text}${res}${need}${att}`;
   }).join('\n');
 }
 
@@ -181,17 +208,65 @@ export function stepPrompt(base, task, sections = [], { maxTokens = Infinity } =
   };
   let secs = live.slice();
   let text = build(secs, 120);
-  while (estTokens(text) > maxTokens && secs.length) { secs.pop(); text = build(secs, 120); }
+  // Sections marked keep (a checkpoint, attachments the model asked for; already sized) are never dropped.
+  const lastDroppable = () => { for (let i = secs.length - 1; i >= 0; i--) if (!secs[i].keep) return i; return -1; };
+  for (let i = lastDroppable(); estTokens(text) > maxTokens && i >= 0; i = lastDroppable()) { secs.splice(i, 1); text = build(secs, 120); }
   if (estTokens(text) > maxTokens) text = build(secs, 40);
   return { text, shown: secs.map(s => s.title) };
 }
 export const stepSystem = (base, task, sections = [], opts) => stepPrompt(base, task, sections, opts).text;
 
 const MAX_REQUEST = 700;
-export function stepUser(task) {
+export function stepUser(task, { budget = '' } = {}) {
   const s = current(task);
   const n = stepIndex(task, s) + 1;
-  return `${truncate(task.request || task.goal, MAX_REQUEST)}\n\nWork on step ${n} now: ${s.text}\nWhen the step is finished, call done with what you found.`;
+  const head = truncate(task.request || task.goal, MAX_REQUEST);
+  const tail = budget ? `\n\n${budget}` : '';
+  if (s.checkpoint) return `${head}\n\nYou checkpointed step ${n} (${s.text}) to carry on with a fresh context. Carry on now: ${s.checkpoint.next || s.text}\nWhen the step is finished, call done with what you found.${tail}`;
+  if (s.kind === 'summarize') return `${head}\n\nWork on step ${n} now (a summarize step): ${s.text}\nRead what's attached, then call done with a short summary: only what the rest of the task needs from it.${tail}`;
+  return `${head}\n\nWork on step ${n} now: ${s.text}\nWhen the step is finished, call done with what you found.${tail}`;
+}
+
+// ── AI-managed context: references, the budget line, attachments ───────────
+
+// "step:2", "note:n3", "file:/repos/app/src/main.js:610-640", "find:login form". null when it's none of those.
+export function parseRef(ref) {
+  const m = String(ref || '').trim().match(/^(step|note|file|find)\s*:\s*(.+)$/i);
+  if (!m) return null;
+  const kind = m[1].toLowerCase(), rest = m[2].trim();
+  if (kind === 'step') { const n = parseInt(rest.replace(/^#/, ''), 10); return n > 0 ? { kind, n } : null; }
+  if (kind === 'file') {
+    const r = rest.match(/^(.*?):(\d+)(?:\s*-\s*(\d+))?$/);
+    return r ? { kind, path: r[1], start: +r[2], end: r[3] ? +r[3] : +r[2] } : { kind, path: rest };
+  }
+  return { kind, [kind === 'note' ? 'id' : 'query']: rest };
+}
+
+// The last line before the model writes (docs/harness.md, "A budget line on every prompt").
+export const LOW_ROOM = 600;
+export function budgetLine(used, total, reserve) {
+  const left = Math.max(0, total - used - reserve);
+  const r = (x) => Math.max(0, Math.round(x / 10) * 10).toLocaleString('en-US');
+  const line = `Context: ${r(used)} of ${total.toLocaleString('en-US')} tokens used (about ${r(left)} left after room for your reply).`;
+  return left < LOW_ROOM ? `${line} ${lowRoomNote()}` : line;
+}
+export const lowRoomNote = () => 'You\'re running low on room. Finish now, or call checkpoint with what you need for the next part.';
+
+// Attachments for a step: [{ ref, text }] → fitted under maxTokens by trimming the largest (head and
+// tail kept) and saying what was cut and how to get the rest. Never drops one outright.
+export function fitAttachments(items, maxTokens) {
+  const out = items.map(x => ({ ...x, text: String(x.text || ''), trimmed: false }));
+  const total = () => out.reduce((n, x) => n + estTokens(x.text), 0);
+  for (let guard = 0; total() > maxTokens && guard < 20; guard++) {
+    const big = out.reduce((a, b) => estTokens(b.text) > estTokens(a.text) ? b : a);
+    const over = total() - maxTokens;
+    const keep = Math.max(200, (estTokens(big.text) - over - 40) * 3.5);   // characters to keep
+    if (big.text.length <= keep + 50) break;
+    const head = big.text.slice(0, Math.floor(keep * 0.7)), tail = big.text.slice(big.text.length - Math.floor(keep * 0.3));
+    big.text = `${head}\n… (cut to fit: ${big.text.length - head.length - tail.length} characters left out${big.how ? '; ' + big.how : ''}) …\n${tail}`;
+    big.trimmed = true;
+  }
+  return out;
 }
 
 export function finalSystem(base, task, { maxTokens = Infinity } = {}) {

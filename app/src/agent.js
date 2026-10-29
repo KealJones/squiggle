@@ -53,6 +53,12 @@ const lite = () => engine.isLite(settings.model);
 // A small (wllama) model that speaks Gemma 4's own tool format (engine nativeTools): it gets the full prompt
 // and every tool, like E2B, and is otherwise treated as small (context budgets, no background jobs).
 const native = () => Boolean(engine.nativeTools && engine.nativeTools(settings.model));
+// AI-managed context (Settings → Context: AI-managed): the model sees what everything costs, steps say what
+// they need attached, and it can checkpoint to a fresh context (docs/harness.md, "the model manages its own
+// context"). Off in plain chat. Compress and Smart are unchanged.
+const managed = () => settings.contextMode === 'managed' && !plain();
+const UPFRONT = 'You work over several turns and steps. Each one shows you only what it needs; anything earlier can be fetched with find or attached to a step (a plan step\'s needs). Don\'t try to fit everything into one turn. The last line of each prompt says how much room is left; when you\'re running low, call checkpoint and carry on fresh.';
+const UPFRONT_SMALL = 'Each step shows only what it needs: attach earlier results to a plan step (needs), or find them.\nThe last line says how much room is left; when it runs low, call checkpoint.';
 
 
 // Plain chat for small models without tool training (engine.chatOnly).
@@ -60,7 +66,7 @@ const plain = () => Boolean(engine.chatOnly && engine.chatOnly(settings.model));
 
 function systemPrompt(threadId, session) {
   if (plain()) return '';
-  if (lite() && !native()) return `${LITE_SYSTEM}\nToday is ${new Date().toDateString()}.`;
+  if (lite() && !native()) return `${LITE_SYSTEM}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
   const thread = threadId && session.threads[threadId];
   return [
     `You are Squiggle, a personal AI agent running privately on the user's own device. Today is ${new Date().toDateString()}.`,
@@ -71,6 +77,7 @@ function systemPrompt(threadId, session) {
     `For anything that takes more than one step, call plan(goal, steps) first. You then work one step at a time, each with a fresh view that shows the goal, the plan and what earlier steps found, and finish each step with done(result). Take as long as you need; thinking is shown to the user.`,
     `When you learn something lasting about the user or their projects (preferences, decisions, names), save it with remember. Use search_history to find things from past conversations.`,
     `Your context window is ${settings.contextSize} tokens; every tool result says how much is left, so prefer grep and line ranges when it's low. For quick tasks without a plan, keep notes with the note tool. For code, use grep to find things, then read_file with a line range.`,
+    managed() ? UPFRONT : '',
     `Use tools when they help; answer directly when they don't. Be concise. Never invent file contents or tool results, and never say you saved, remembered, changed or pushed something unless you called the tool for it in this reply.`,
     thread ? `This is a side thread started on an earlier message ("${truncate(thread.title, 80)}"). Focus on that topic.` : '',
     UNTRUSTED_RULES(),
@@ -91,6 +98,7 @@ function phaseTools(step) {
   if (plain()) return [];
   const base = toolSpecs(settings.tools).filter(t => !(step && t.name === 'note'));
   const h = tasks.HARNESS_SPECS;
+  if (managed()) return [...base, tasks.MANAGED_SPECS.plan, ...(step ? [h.done] : []), h.need, h.find, tasks.MANAGED_SPECS.checkpoint];
   return [...base, h.plan, ...(step ? [h.done] : []), h.need, h.find];
 }
 
@@ -187,6 +195,7 @@ class Turn {
     this.paused = false;     // the person chose "Stop here" at a check-in
     this.nextCheckIn = tasks.CHECK_IN_EVERY;
     this.attNote = '';       // paths of files sent with this message
+    this.checkpoints = 0;    // checkpoints this turn (AI-managed context)
   }
 
   get aborted() { return Boolean(this.signal && this.signal.aborted); }
@@ -303,6 +312,8 @@ class Turn {
     if (ctx.recalled && !plain()) { pending += `\n\n${ctx.recalled}`; used += estTokens(ctx.recalled); }
     this.attNote = att.note || '';
     used += estTokens(att.text);
+    const reserve = Math.min(MAX_OUTPUT, 700);
+    if (managed()) pending += `\n\n${tasks.budgetLine(used, settings.contextSize, reserve)}`;
     let chatCalls = 0, full = false;
     for (;;) {
       const r = await this.respond(pending);
@@ -312,11 +323,16 @@ class Turn {
       // A plan switches to step mode (anything else in the same reply waits for its step).
       const planCall = r.toolCalls.find(c => c.function && c.function.name === 'plan');
       if (planCall) return this.startPlan(planCall.function.arguments);
+      // A checkpoint in the chat phase turns the turn into a task, so its summary survives like a step result.
+      const cp = managed() && r.toolCalls.find(c => c.function && c.function.name === 'checkpoint');
+      if (cp) return this.checkpointTask(cp.function.arguments || {});
       if (full) { this.prefix += '\n\n_(Stopped: the context filled up. Ask again and I\'ll make a plan for what\'s left.)_'; return null; }
       const results = [];
       for (const call of r.toolCalls) {
         if (room() < 2500) {
-          results.push(toolResult(call, { error: 'Not run: your context is almost full. Call plan with the work that is left (you get a fresh context for each step), or answer now with what you have.' }));
+          results.push(toolResult(call, { error: managed()
+            ? 'Not run: your context is almost full. Call checkpoint (summary, needs, next) to carry on fresh, or answer now with what you have.'
+            : 'Not run: your context is almost full. Call plan with the work that is left (you get a fresh context for each step), or answer now with what you have.' }));
           full = true;
           continue;
         }
@@ -327,6 +343,7 @@ class Turn {
         if (chatCalls === CHAT_PLAN_NUDGE) response = { ...response, tip: 'This is taking several steps. If there is more to do, call plan so you can work through it one step at a time.' };
         used += estTokens(JSON.stringify(response)) + 10;
         response = { ...response, context_left: `about ${Math.max(0, Math.round((settings.contextSize - used) / 100) * 100)} of ${settings.contextSize} tokens` };
+        if (managed() && settings.contextSize - used - reserve < tasks.LOW_ROOM) response = { ...response, low_room: tasks.lowRoomNote() };
         results.push(toolResult(call, response));
       }
       if (!await this.checkIn()) return null;
@@ -343,6 +360,40 @@ class Turn {
     this.reply.tools.push({ name: 'plan', label: `planned ${task.steps.length} step${task.steps.length === 1 ? '' : 's'}: ${truncate(task.goal, 80)}`, ok: true });
     this.ui.onPlan && this.ui.onPlan(task);
     return task;
+  }
+
+  // checkpoint in the chat phase: a one-step task that carries on from the summary in a fresh context.
+  checkpointTask(args = {}) {
+    const next = String(args.next || '').trim() || 'Finish the request';
+    const task = this.startPlan({ goal: truncate(this.shown, 200), steps: [next] });
+    const step = task.steps[0];
+    step.checkpoint = { summary: truncate(String(args.summary || ''), 2000), needs: tasks.normSteps([{ text: 'x', needs: args.needs }])[0].needs || [], next };
+    this.checkpoints++;
+    this.reply.tools.push({ name: 'checkpoint', label: `checkpointed: carrying on fresh (${truncate(next, 60)})`, ok: true });
+    sessions.saveTask(this.session, task);
+    return task;
+  }
+
+  // Text for an attachment ref (AI-managed context). Returns { ref, text, how } or null.
+  async attachment(ref, task) {
+    const r = tasks.parseRef(ref);
+    if (!r) return null;
+    if (r.kind === 'step') {
+      const s = task.steps[r.n - 1];
+      return s ? { ref, text: s.result ? `Step ${r.n} (${s.text}): ${s.result}` : `Step ${r.n} (${s.text}) has no result yet.` } : { ref, text: `There is no step ${r.n}.` };
+    }
+    if (r.kind === 'note') {
+      const n = sessions.liveNotes(this.session).find(x => x.id === r.id);
+      return { ref, text: n ? n.text : `No note ${r.id}.` };
+    }
+    if (r.kind === 'find') {
+      const f = await this.find(r.query, task);
+      return { ref, text: f.text, how: `find "${truncate(r.query, 40)}" again for more` };
+    }
+    const res = await runTool({ function: { name: 'read_file', arguments: { path: r.path, ...(r.start ? { start_line: r.start, end_line: r.end } : {}) } } }, { session: this.session, threadId: this.threadId, room: 24000 });
+    const m = res.model || {};
+    const body = m.error ? m.error : `(lines ${m.start_line}-${m.end_line} of ${m.total_lines})\n${String(m.content || '')}`;
+    return { ref, text: m.error ? body : wrapUntrusted(`file ${r.path}`, String(body).replace(STRIP_UNTRUSTED, '')), how: `read_file ${r.path} with a line range for the rest` };
   }
 
   // ── Step mode ───────────────────────────────────────────────────────────
@@ -378,6 +429,25 @@ class Turn {
       const facts = (await memory.recall(`${this.shown}\n${focus}`, 8)).filter(r => r.score >= 0.25);
       if (facts.length) sections.push({ title: 'What you know about the user and their work', text: facts.map(f => '- ' + memory.factText(f.fact)).join('\n') });
     } catch {}
+    if (managed()) {
+      // The step's own choices replace the automatic retrieval: a checkpoint to carry on from, and attachments.
+      if (step.checkpoint && step.checkpoint.summary) sections.unshift({ title: 'Your checkpoint (where you left off)', text: step.checkpoint.summary, keep: true });
+      const refs = [...new Set([...(step.needs || []), ...((step.checkpoint && step.checkpoint.needs) || [])])];
+      if (refs.length) {
+        const got = (await Promise.all(refs.map(x => this.attachment(x, task).catch(e => ({ ref: x, text: `Couldn't attach: ${e.message || e}` }))))).filter(Boolean);
+        const cap = Math.max(300, Math.floor(settings.contextSize * 0.45 * 0.6));
+        const fitted = tasks.fitAttachments(got, cap);
+        const big = got.filter(x => estTokens(x.text) > settings.contextSize / 3 && step.kind !== 'summarize');
+        const total = fitted.reduce((n, x) => n + estTokens(x.text), 0);
+        const body = fitted.map(x => `### ${x.ref} (${estTokens(x.text)} tokens${x.trimmed ? ', trimmed' : ''})\n${x.text}`).join('\n\n')
+          + (big.length ? `\n\n(${big.map(x => x.ref).join(', ')} alone ${big.length > 1 ? 'are each' : 'is'} over a third of your room. Next time, make a summarize step for it and attach that step's result instead.)` : '');
+        // Second in priority (after the attached-files note), so it is trimmed, never dropped.
+        sections.splice(task.attachNote ? 1 : 0, 0, { title: `Attached for this step (${total} tokens)`, text: body, keep: true });
+      }
+      const prep = await this.prepare(focus);
+      for (const x of prep.extra) if (x.kind === 'refs') sections.push({ title: x.title, text: x.text });
+      return sections;
+    }
     // Found earlier in this task: tool output from earlier steps that fits this one.
     const earlier = task.log.map((l, i) => ({ l, i }))
       .filter(({ l }) => l.step !== step.id && l.text && !tasks.HARNESS.has(l.name))
@@ -405,9 +475,11 @@ class Turn {
       items: [{ kind: 'plan', label: `Step ${n}: ${truncate(step.text, 80)} (goal, plan and results)`, tokens: estTokens(tasks.stepSystem('', task)) },
         ...sections.filter(x => prompt.shown.includes(x.title)).map(x => ({ kind: 'section', label: x.title, tokens: estTokens(x.text) }))] };
     this.conv = await engine.conversation({ system, messages: [], tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: [...new Set([...preloaded(tools), ...(task.tools || [])])] });
+    const reserve = Math.min(MAX_OUTPUT, 700);
     let pending = tasks.stepUser(task);
     let used = estTokens(system) + estTokens(pending) + toolTokens;
-    const room = () => Math.max(0, (settings.contextSize - used - Math.min(MAX_OUTPUT, 700)) * 3);
+    if (managed()) { pending = tasks.stepUser(task, { budget: tasks.budgetLine(used + 30, settings.contextSize, reserve) }); used += 30; }
+    const room = () => Math.max(0, (settings.contextSize - used - reserve) * 3);
     const label = `Step ${n}: ${step.text}`;
     let said = '', blank = 0, idle = 0, warnedFull = false;
     try {
@@ -440,6 +512,20 @@ class Turn {
             ended = 'next';
             break;
           }
+          if (name === 'checkpoint' && managed()) {
+            this.calls++;
+            if (this.checkpoints >= tasks.MAX_CHECKPOINTS) {
+              const go = await askCheckIn(task, this.ui, this.signal, this.calls);
+              if (!go) { this.paused = true; this.prefix += `${this.prefix ? '\n\n' : ''}_(Paused after ${this.checkpoints} checkpoints. Say "continue" to pick up where it left off.)_`; return 'stop'; }
+              this.checkpoints = 0;
+            }
+            this.checkpoints++;
+            step.checkpoint = { summary: truncate(String(args.summary || said || ''), 2000), needs: tasks.normSteps([{ text: 'x', needs: args.needs }])[0].needs || [], next: String(args.next || '').trim() || step.text };
+            tasks.logCall(task, step, { name: 'checkpoint', args: { next: step.checkpoint.next }, ok: true, label: 'checkpoint', text: step.checkpoint.summary });
+            this.toolEvent({ name: 'checkpoint', label: `checkpointed step ${n}: carrying on fresh`, ok: true });
+            ended = 'again';   // the same step, with a fresh context built from the checkpoint
+            break;
+          }
           if (name === 'plan') {
             this.calls++;
             const stale = tasks.samePlan(task, args.steps) || (task.revisions || 0) >= tasks.MAX_REVISIONS;
@@ -467,7 +553,9 @@ class Turn {
             // Out of room: warn once, then close the step with what it has.
             if (warnedFull) { tasks.finishStep(task, said || '(the step ran out of room before finishing)'); ended = 'next'; break; }
             warnedFull = true;
-            results.push(toolResult(call, { error: 'Not run: your context for this step is almost full. Call done now with what you found (the next step starts fresh).' }));
+            results.push(toolResult(call, { error: managed()
+              ? 'Not run: your context for this step is almost full. Call done with what you found, or checkpoint (summary, needs, next) to carry on fresh.'
+              : 'Not run: your context for this step is almost full. Call done now with what you found (the next step starts fresh).' }));
             continue;
           }
           const out = await this.exec(call, { room: Math.floor(room() / r.toolCalls.length), task, step });
@@ -475,6 +563,7 @@ class Turn {
           let response = out.response;
           if (step.calls === tasks.STEP_SOFT_CAP) response = { ...response, note: `This step has used ${step.calls} tool calls. Finish it now with done (what you have), or call need.` };
           used += estTokens(JSON.stringify(response)) + 10;
+          if (managed()) response = { ...response, context_left: `about ${Math.max(0, Math.round((settings.contextSize - used) / 100) * 100)} of ${settings.contextSize} tokens`, ...(settings.contextSize - used - reserve < tasks.LOW_ROOM ? { low_room: tasks.lowRoomNote() } : {}) };
           results.push(toolResult(call, response));
         }
         if (!await this.checkIn()) return 'stop';

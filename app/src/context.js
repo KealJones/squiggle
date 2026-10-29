@@ -19,7 +19,7 @@ import { wrapUntrusted } from './untrusted.js';
 import { replayNote } from './attachments.js';
 import { recallBlock } from './recall.js';
 
-const RECENT_SHARE = { smart: 0.45, compact: 0.6, full: 1 };
+const RECENT_SHARE = { smart: 0.45, compact: 0.6, managed: 0.55, full: 1 };
 const MIN_RECENT = 2;
 const OBS_MIN_SCORE = 0.9;
 const MIN_SCORE = 0.18;
@@ -70,7 +70,7 @@ export function chunk(text, maxTokens = CHUNK_TOKENS) {
  * @param {string|null} o.threadId
  * @param {string}   o.query       the new user message
  * @param {number}   o.budget      tokens available for the preface (system + history)
- * @param {string}   o.mode        'smart' | 'compact' | 'full'
+ * @param {string}   o.mode        'smart' | 'compact' | 'managed' (AI-managed: like compact; the model fetches the rest) | 'full'
  * @param {string}   o.system      base system prompt
  * @param {Function} [o.recall]    async (query, k) => [{ fact, score }]
  * @param {Function} [o.embed]     async (texts) => Float32Array[] | null

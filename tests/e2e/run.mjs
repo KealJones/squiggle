@@ -1016,6 +1016,59 @@ await check('a full agent turn through the UI (scripted model): tools, untrusted
   assert.deepEqual(errs, []);
 });
 
+await check('AI-managed context: budget line, steps attach earlier results, checkpoints carry on fresh (in a step and in chat)', async () => {
+  const D = await device('managed');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.evaluate(async () => { (await import('/src/agent.js')).settings.contextMode = 'managed'; });
+  await D.page.click('#new-chat');
+  await D.page.fill('#input', 'MANAGEDTEST who is older, Ada or Ben?');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => /ten years older/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 20000 });
+  const r = await D.page.evaluate(async () => {
+    const sessions = await import('/src/sessions.js');
+    const log = window.__engineLog;
+    const s = sessions.list().find(x => x.messages.some(m => /MANAGEDTEST/.test(m.content)));
+    const reply = s.messages.find(m => m.role === 'assistant');
+    const task = s.tasks[reply.task];
+    const convs = log.filter(x => x.type === 'conversation');
+    return {
+      steps: task.steps.map(x => [x.status, x.result, x.needs || null]),
+      chatInput: log.find(x => x.type === 'respond' && typeof x.input === 'string' && /^MANAGEDTEST/.test(x.input)).input,
+      chatSystem: convs[0].system, chatTools: convs[0].tools,
+      step3: convs.filter(x => /## Plan/.test(x.system)).pop().system,
+      stepPrompts: convs.filter(x => /## Plan/.test(x.system)).length,
+      trail: (reply.tools || []).map(t => t.label),
+    };
+  });
+  assert.deepEqual(r.steps, [['done', 'Ada was born in 1950', null], ['done', 'Ben was born in 1960', null], ['done', 'Ada is 10 years older', ['step:1', 'step:2']]]);
+  assert.match(r.chatInput, /\n\nContext: [\d,]+ of [\d,]+ tokens used \(about [\d,]+ left after room for your reply\)\.$/);
+  assert.match(r.chatSystem, /call checkpoint and carry on fresh/);
+  assert.ok(r.chatTools.includes('checkpoint') && r.chatTools.includes('plan'), JSON.stringify(r.chatTools));
+  assert.match(r.step3, /## Attached for this step \(\d+ tokens\)\n### step:1 \(\d+ tokens\)\nStep 1 \(Find when Ada was born\): Ada was born in 1950/);
+  assert.doesNotMatch(r.step3, /Found earlier in this task/);
+  assert.equal(r.stepPrompts, 4, 'three steps, one of them started twice (the checkpoint)');
+  assert.ok(r.trail.some(l => /^checkpointed step 2/.test(l)), JSON.stringify(r.trail));
+
+  // A checkpoint in the chat phase becomes a one-step task that carries on from the summary.
+  await D.page.click('#new-chat');
+  await D.page.fill('#input', 'CPCHAT what is the answer in the brief?');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => /Carried on after the checkpoint/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 20000 });
+  const c = await D.page.evaluate(async () => {
+    const sessions = await import('/src/sessions.js');
+    const s = sessions.list().find(x => x.messages.some(m => /CPCHAT/.test(m.content)));
+    const reply = s.messages.find(m => m.role === 'assistant');
+    return { steps: s.tasks[reply.task].steps.map(x => [x.status, x.result]), sys: window.__engineLog.filter(x => x.type === 'conversation' && /Your checkpoint/.test(x.system || '')).length };
+  });
+  assert.deepEqual(c.steps, [['done', 'It is 42.']]);
+  assert.equal(c.sys, 2, 'step 2 of the first chat and this one carried on from a checkpoint');
+  await D.page.evaluate(async () => { (await import('/src/agent.js')).settings.contextMode = 'smart'; });
+});
+
 await check('step mode through the UI: plan, live checklist, find, done, final reply, recipe; need asks and resumes', async () => {
   const D = await device('steps');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));

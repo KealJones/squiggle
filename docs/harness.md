@@ -255,9 +255,23 @@ Habits, in order of importance:
    bare links, references to old chats.
 6. Plain chat stays plain: "hey whats up lol" gets a short normal reply.
 
-## Proposal: the model manages its own context (not built yet)
+## The model manages its own context (AI-managed mode)
 
-Status: **proposed** (Keal, 2026-10-28), for review before any code changes (except 0b, which is built). Today the
+Status: **built 2026-10-29** as Settings → Context → "AI-managed (experimental)" (Keal: "it's always a toggle so easy
+enough to turn off"). Proposed 2026-10-28; 0b was built first. What differs from the proposal below:
+
+- **Everything is behind the setting**, including sections 1, 2 and 5 that the proposal applied to every mode: Squiggle
+  Small's system prompt is the exact text it was fine-tuned on, so Compress and Smart stay byte-for-byte as before.
+  Plain chat (stock small models) never gets it.
+- **Chat-phase history** in AI-managed mode is Compress's (rolling summary + recent messages, a bit more of them); the
+  model fetches anything else with `find` or attaches it to a step.
+- **Code:** `tasks.js` (`MANAGED_SPECS` plan/checkpoint, `normSteps`, `parseRef`, `budgetLine`, `fitAttachments`,
+  `stepUser` variants), `agent.js` (`managed()`, `UPFRONT`, `attachment()`, `checkpointTask()`, the `again` step
+  outcome). Attachments get 60% of the step prompt's budget and are trimmed (head and tail), never dropped; a
+  `file:` attachment comes through `read_file` (wrapped as untrusted). Low room = under 600 tokens after the reply
+  reserve: the budget line and tool results (`low_room`) suggest a checkpoint. At 4 checkpoints the person is asked
+  whether to go on (the existing check-in card).
+- **Not yet:** recording Gemma 4 runs in this mode for the fine-tune (section 6). Today the
 harness decides what each prompt holds (smart context, the step prompt above). This
 proposal lets the model choose what it carries forward, sees what everything costs,
 and hands off to a fresh context instead of running out. It's meant for every model,

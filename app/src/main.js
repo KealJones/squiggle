@@ -1300,7 +1300,7 @@ function updateComposerNote() {
   const note = $('#composer-note');
   if (!note || modelState !== 'ready') return;
   const cloud = engine.MODELS[agent.settings.model].runtime === 'cloud';
-  note.textContent = `${engine.MODELS[agent.settings.model].label}, ${cloud ? 'running on your Cloudflare relay (free daily limit)' : `running on this device${smallHow()}`}. ${agent.settings.contextMode === 'smart' ? 'Smart context is on.' : ''}`;
+  note.textContent = `${engine.MODELS[agent.settings.model].label}, ${cloud ? 'running on your Cloudflare relay (free daily limit)' : `running on this device${smallHow()}`}. ${agent.settings.contextMode === 'smart' ? 'Smart context is on.' : agent.settings.contextMode === 'managed' ? 'AI-managed context is on.' : ''}`;
   // Small models: how fast the last reply was (for comparing GPU / cores / models).
   if (!cloud && engine.isLite()) engine.smallSpeed().then((sp) => {
     if (!sp || modelState !== 'ready') return;
@@ -1665,9 +1665,15 @@ function renderSettingsPanel() {
       } }),
       h('span', {}, h('strong', {}, 'Use all CPU cores (experimental)'), h('span', { class: 'hint', style: 'display:block' }, 'Splits the work across several cores, mostly speeding up the wait before a reply starts. Reloads the page. The note under the message box shows what\'s in use and how fast the last reply was.')))),
 
-    h('div', { class: 'field' }, h('label', { class: 'toggle' },
-      h('input', { type: 'checkbox', checked: S.contextMode === 'smart' ? true : null, onchange: (e) => { S.contextMode = e.target.checked ? 'smart' : 'compact'; saveSettings(); if (S.contextMode === 'smart' && S.semantic) loadSemantic(); updateComposerNote(); renderSettingsPanel(); } }),
-      h('span', {}, h('strong', {}, 'Smart context'), h('span', { class: 'hint', style: 'display:block' }, 'Instead of only a summary plus recent messages, brings back a few earlier messages that fit the question ("that", "yesterday", "what I said about…"), quoted after your message, plus relevant web pages and files from this chat. Plain chat like "hi" gets nothing extra. Check "What the model saw" on any reply.')))),
+    h('div', { class: 'field' },
+      h('label', { for: 'context-mode' }, h('strong', {}, 'Context')),
+      h('select', { id: 'context-mode', onchange: (e) => { S.contextMode = e.target.value; saveSettings(); if (S.contextMode === 'smart' && S.semantic) loadSemantic(); updateComposerNote(); renderSettingsPanel(); } },
+        ...[['compact', 'Compress'], ['smart', 'Smart'], ['managed', 'AI-managed (experimental)']].map(([v, l]) => h('option', { value: v, selected: (S.contextMode || 'smart') === v ? true : null }, l))),
+      h('span', { class: 'hint', style: 'display:block' }, {
+        compact: 'A summary of the chat so far plus the recent messages.',
+        smart: 'Also brings back a few earlier messages that fit the question ("that", "yesterday", "what I said about…"), quoted after your message, plus relevant web pages and files from this chat. Plain chat like "hi" gets nothing extra.',
+        managed: 'The model runs its own context: it sees how much room is left, plan steps say which earlier results, files or notes they need attached, big pages get a summarize step, and when room runs low it checkpoints and carries on fresh. Experimental: models haven\'t been trained for it yet.',
+      }[S.contextMode || 'smart'] + ' Check "What the model saw" on any reply.')),
     S.contextMode !== 'smart' ? '' : h('div', { class: 'field' }, h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: S.recallChats !== false ? true : null, onchange: (e) => { S.recallChats = e.target.checked; saveSettings(); } }),
       h('span', {}, h('strong', {}, 'Bring in other chats'), h('span', { class: 'hint', style: 'display:block' }, 'Smart context may also quote a message from another chat when it clearly fits. Off keeps it to this chat.')))),

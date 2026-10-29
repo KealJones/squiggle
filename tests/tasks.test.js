@@ -178,3 +178,62 @@ test('trimArgs keeps tool arguments small enough for the session record', () => 
   assert.deepEqual(tasks.trimArgs({ path: '/repos/app/src/main.js', content: big, n: 3, list: ['a'] }),
     { path: '/repos/app/src/main.js', content: 'x'.repeat(300) + '… (5000 characters)', n: 3, list: ['a'] });
 });
+
+// ── AI-managed context ──────────────────────────────────────────────────────
+test('plan steps can be objects: needs (valid refs only) and summarize kind survive; strings still work', async () => {
+  const t = await import('../app/src/tasks.js');
+  const task = t.newTask({ request: 'r', goal: 'g', steps: [{ text: '1. Read the page', kind: 'summarize', needs: ['file:/web/2.txt', 'nonsense'] }, 'Compare', { text: 'Write it up', needs: 'step:1, step:2' }] });
+  assert.deepEqual(task.steps.map(s => [s.text, s.needs || null, s.kind || null]), [
+    ['Read the page', ['file:/web/2.txt'], 'summarize'], ['Compare', null, null], ['Write it up', ['step:1', 'step:2'], null]]);
+  assert.match(t.renderPlan(task), /1\. \[now\] \(summarize\) Read the page \[attach: file:\/web\/2\.txt\]/);
+  // A JSON string of steps (some models send one) is read the same way.
+  assert.deepEqual(t.normSteps('[{"text":"A","needs":["step:1"]}]'), [{ text: 'A', needs: ['step:1'] }]);
+  // Finishing a step drops its checkpoint; a summarize step keeps a longer result.
+  task.steps[0].checkpoint = { summary: 's', next: 'n' };
+  t.finishStep(task, 'x'.repeat(1200));
+  assert.equal(task.steps[0].checkpoint, undefined);
+  assert.equal(task.steps[0].result.length, 1200);
+});
+
+test('parseRef reads step/note/file/find references', async () => {
+  const { parseRef } = await import('../app/src/tasks.js');
+  assert.deepEqual(parseRef('step:2'), { kind: 'step', n: 2 });
+  assert.deepEqual(parseRef('file:/repos/squiggle/app/src/main.js:610-640'), { kind: 'file', path: '/repos/squiggle/app/src/main.js', start: 610, end: 640 });
+  assert.deepEqual(parseRef('file:/web/3.txt'), { kind: 'file', path: '/web/3.txt' });
+  assert.deepEqual(parseRef('note:n3'), { kind: 'note', id: 'n3' });
+  assert.deepEqual(parseRef('find: login form'), { kind: 'find', query: 'login form' });
+  assert.equal(parseRef('step:0'), null);
+  assert.equal(parseRef('the second step'), null);
+});
+
+test('budgetLine says what is used and left, and suggests a checkpoint when room is low', async () => {
+  const { budgetLine } = await import('../app/src/tasks.js');
+  assert.equal(budgetLine(2310, 4096, 700), 'Context: 2,310 of 4,096 tokens used (about 1,090 left after room for your reply).');
+  assert.match(budgetLine(3000, 4096, 700), /about 400 left[^]*running low on room[^]*checkpoint/);
+});
+
+test('fitAttachments trims the largest attachment (head and tail) and says how to get the rest', async () => {
+  const { fitAttachments } = await import('../app/src/tasks.js');
+  const out = fitAttachments([{ ref: 'file:/web/1.txt', text: 'HEAD ' + 'a'.repeat(8000) + ' TAIL', how: 'read_file /web/1.txt with a line range for the rest' }, { ref: 'step:1', text: 'small result' }], 500);
+  assert.equal(out[1].text, 'small result');
+  assert.ok(out[0].trimmed);
+  assert.match(out[0].text, /^HEAD /);
+  assert.match(out[0].text, / TAIL$/);
+  assert.match(out[0].text, /cut to fit: \d+ characters left out; read_file \/web\/1\.txt/);
+});
+
+test('stepUser: checkpointed and summarize steps get their own instruction, plus the budget line', async () => {
+  const t = await import('../app/src/tasks.js');
+  const task = t.newTask({ request: 'Who is older?', goal: 'g', steps: [{ text: 'Read the bio', kind: 'summarize' }] });
+  assert.match(t.stepUser(task, { budget: 'Context: 1 of 2' }), /a summarize step\): Read the bio\nRead what's attached, then call done with a short summary[^]*\n\nContext: 1 of 2$/);
+  task.steps[0].checkpoint = { summary: 'half done', next: 'finish the bio' };
+  assert.match(t.stepUser(task), /You checkpointed step 1 \(Read the bio\)[^]*Carry on now: finish the bio/);
+});
+
+test('stepPrompt never drops sections marked keep (checkpoint, attachments), only the others', async () => {
+  const t = await import('../app/src/tasks.js');
+  const task = t.newTask({ request: 'r', goal: 'g', steps: ['a'] });
+  const p = t.stepPrompt('base', task, [{ title: 'Attached for this step', text: 'ATT', keep: true }, { title: 'Memory', text: 'm'.repeat(4000) }], { maxTokens: 50 });
+  assert.deepEqual(p.shown, ['Attached for this step']);
+  assert.match(p.text, /## Attached for this step\nATT/);
+});

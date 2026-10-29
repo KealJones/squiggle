@@ -100,6 +100,9 @@ A thread's context = main messages up to its parent + its own messages
 
 The design doc is the contract for agent.js/tasks.js and for the small-model fine-tune; change
 both together. Task state lives on the session (`session.tasks`, merged by id like notes).
+Context modes (`settings.contextMode`): `compact` (Compress), `smart` (default) and `managed` (AI-managed,
+experimental: budget line, plan steps with `needs`/`kind: 'summarize'`, `checkpoint`). Everything AI-managed adds
+is behind `managed()`; the other modes must stay unchanged (Squiggle Small's prompt is its training text).
 
 ## Natural voice (voice.js, tts*.js)
 
