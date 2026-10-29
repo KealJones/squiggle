@@ -249,6 +249,8 @@ export class Conversation {
     // every 200 characters ("+ 2 + 2 + 2…" has no sentence ends).
     const loops = (buf, last, piece) => (/[.!?\n]/.test(piece) && buf.length - last > 40) || buf.length - last > 200;
     const tools = this.tools.length > 0;
+    const t0 = performance.now();
+    let tFirst = 0, pieces = 0;
     try {
       const stream = await this.w.createChatCompletion({
         messages: [...gemmaMessages(this.messages, this.tools, this.active), ...(prefill ? [{ role: 'assistant', content: prefill }] : [])],
@@ -263,6 +265,7 @@ export class Conversation {
       });
       for await (const chunk of stream) {
         const delta = (chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta) || {};
+        if (delta.reasoning_content || delta.content) { pieces++; if (!tFirst) tFirst = performance.now(); }
         // llama.cpp may split a <think> block off into reasoning_content (it does
         // for chat templates that know about thinking, like LFM2.5's).
         if (delta.reasoning_content) {
@@ -305,6 +308,9 @@ export class Conversation {
     } catch (e) {
       if (!ctrl.signal.aborted) throw e;
     }
+    // Speed of this call: how long before the first token (mostly reading the
+    // prompt) and tokens per second after (streamed pieces are about one token each).
+    if (tFirst) speed = { waitMs: Math.round(tFirst - t0), tokens: pieces, perSec: pieces > 1 ? Math.round(10 * (pieces - 1) / ((performance.now() - tFirst) / 1000)) / 10 : null };
     const parts = splitThinking(out);
     text = parts.open ? '' : parts.text;
     if (parts.open && parts.thinking.length > thinkShown) yield { thinking: parts.thinking.slice(thinkShown) };
@@ -363,13 +369,34 @@ export class Conversation {
   }
 }
 
-export async function createEngine(url, contextSize, onStage = () => {}) {
+// Speed of the last call (see generate), for the composer note.
+let speed = null;
+export const lastSpeed = () => speed;
+
+// gpu: offload every layer to WebGPU when the browser has it.
+// threads: use several CPU cores; needs a cross-origin isolated page
+// (sw.js adds the headers when the setting is on), otherwise one thread.
+const safe = (fn, d) => { try { return fn(); } catch { return d; } };
+
+export async function createEngine(url, contextSize, onStage = () => {}, { gpu = false, threads = false } = {}) {
   onStage('starting the runtime');
   const { Wllama } = await getLib();
   const w = new Wllama({ default: WASM }, { suppressNativeLog: true });
-  onStage('loading the model into memory');
-  await w.loadModelFromUrl(url, { n_ctx: contextSize, n_gpu_layers: 0 });
+  const useGpu = Boolean(gpu) && safe(() => w.isSupportWebGPU(), false);
+  const cores = Math.max(1, Math.min(4, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 1));
+  const n = threads && globalThis.crossOriginIsolated ? Math.max(2, cores) : 1;
+  onStage(useGpu ? 'loading the model onto the GPU' : 'loading the model into memory');
+  await w.loadModelFromUrl(url, { n_ctx: contextSize, n_gpu_layers: useGpu ? 999 : 0, n_threads: n });
+  speed = null;
+  const info = {
+    gpu: useGpu,
+    threads: safe(() => w.isMultithread(), false) ? n : 1,
+    // Safari lacks JSPI/Memory64, so wllama runs its slower compatibility build there.
+    compat: safe(() => w.getWorkerResources().compat, false),
+    asked: { gpu: Boolean(gpu), threads: Boolean(threads), isolated: Boolean(globalThis.crossOriginIsolated), webgpu: safe(() => w.isSupportWebGPU(), false) },
+  };
   return {
+    info,
     createConversation: async (cfg) => new Conversation(w, cfg),
     delete: async () => { try { await w.exit(); } catch {} },
   };

@@ -289,8 +289,13 @@ let engineFast = null;
 // is reported, then null when done, so a tab killed mid-reply can say so.
 let progress = () => {};
 export const setProgress = (fn) => { progress = fn || (() => {}); };
-export async function load(id, contextSize, { fast = true, onStage = () => {} } = {}) {
-  if (engine && loadedModel === id && engineContext === contextSize && engineFast === fast) return;
+let engineSmall = '';
+// Small models (wllama): how the last load ran ({ gpu, threads, compat }) and the last reply's speed.
+export const smallInfo = () => (engine && engine.info) || null;
+export const smallSpeed = async () => (isLite() ? (await import('./engine-wllama.js')).lastSpeed() : null);
+export async function load(id, contextSize, { fast = true, onStage = () => {}, small = {} } = {}) {
+  const smallKey = JSON.stringify({ gpu: Boolean(small.gpu), threads: Boolean(small.threads) });
+  if (engine && loadedModel === id && engineContext === contextSize && engineFast === fast && (MODELS[id].runtime !== 'wllama' || engineSmall === smallKey)) return;
   await unload();
   if (MODELS[id].runtime === 'cloud') {
     engine = (await import('./engine-cloud.js')).createEngine();
@@ -298,8 +303,8 @@ export async function load(id, contextSize, { fast = true, onStage = () => {} } 
     return;
   }
   if (MODELS[id].runtime === 'wllama') {
-    engine = await (await import('./engine-wllama.js')).createEngine(MODELS[id].url, contextSize, onStage);
-    loadedModel = id; engineContext = contextSize; engineFast = fast;
+    engine = await (await import('./engine-wllama.js')).createEngine(MODELS[id].url, contextSize, onStage, small);
+    loadedModel = id; engineContext = contextSize; engineFast = fast; engineSmall = smallKey;
     return;
   }
   onStage('starting the runtime');
