@@ -369,6 +369,110 @@ export class Conversation {
   }
 }
 
+// Gemma 4's own tool format, for small builds distilled from E2B (tiny Gemma 4): llama.cpp renders the
+// model's chat template (the GGUF's, with jinja) with the tool declarations and parses the calls back out.
+// History is OpenAI-shaped: assistant turns keep their tool_calls, results are role 'tool' messages.
+// Squiggle hands results over as { role: 'tool', content: [{ name, response }] } (the LiteRT shape).
+export function nativeMessages(messages) {
+  const out = [];
+  let pending = [];                                       // calls of the last assistant turn not yet answered
+  for (const m of messages) {
+    if (m.role === 'tool') {
+      for (const p of Array.isArray(m.content) ? m.content : [{ name: 'tool', response: m.content }]) {
+        const i = pending.findIndex(c => c.function.name === p.name);
+        const call = i >= 0 ? pending.splice(i, 1)[0] : pending.shift();
+        out.push({ role: 'tool', tool_call_id: call ? call.id : 'call0', name: p.name, content: JSON.stringify(p.response) });
+      }
+      continue;
+    }
+    const role = m.role === 'model' ? 'assistant' : m.role;
+    if (!['system', 'user', 'assistant'].includes(role)) continue;
+    const msg = { role, content: textOf(m.content) };
+    if (role === 'assistant' && m.tool_calls && m.tool_calls.length) {
+      msg.tool_calls = m.tool_calls;
+      pending = [...m.tool_calls];
+      if (!msg.content) msg.content = null;
+    } else if (!msg.content.trim()) continue;
+    out.push(msg);
+  }
+  return out;
+}
+
+export class NativeConversation {
+  constructor(w, { preface, sessionConfig }) {
+    this.w = w;
+    this.messages = [...preface.messages];
+    this.tools = preface.tools || [];
+    this.thinking = Boolean(preface.extra_context && preface.extra_context.enable_thinking);
+    this.max = Math.min(sessionConfig.maxOutputTokens || MAX_OUTPUT, MAX_OUTPUT);
+    this.greedy = Boolean(sessionConfig.samplerParams && sessionConfig.samplerParams.type === 3);
+    this.ctrl = null;
+  }
+  cancel() { try { this.ctrl && this.ctrl.abort(); } catch {} }
+  replaceResult(msg, response) {
+    const i = this.messages.indexOf(msg);
+    if (i < 0 || !Array.isArray(msg.content)) return false;
+    this.messages[i] = { ...msg, content: msg.content.map(p => ({ ...p, response })) };
+    return true;
+  }
+  async delete() {}
+
+  async *sendMessageStreaming(input) {
+    if (typeof input === 'string') this.messages.push({ role: 'user', content: input });
+    else for (const m of input) this.messages.push(m);
+    const ctrl = this.ctrl = new AbortController();
+    const t0 = performance.now();
+    let tFirst = 0, pieces = 0, text = '', reasoning = '', checked = 0, looped = false;
+    const parts = [];                                          // streamed tool calls, by index
+    try {
+      const stream = await this.w.createChatCompletion({
+        messages: nativeMessages(this.messages),
+        ...(this.tools.length ? { tools: this.tools } : {}),
+        chat_template_kwargs: { enable_thinking: this.thinking },
+        stream: true,
+        max_tokens: this.max,
+        temperature: this.greedy ? 0 : 0.7,
+        top_k: 64,
+        top_p: 0.95,
+        penalty_repeat: REPEAT_PENALTY,
+        cache_prompt: true,
+        abortSignal: ctrl.signal,
+      });
+      for await (const chunk of stream) {
+        const d = (chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta) || {};
+        if (d.reasoning_content || d.content || d.tool_calls) { pieces++; if (!tFirst) tFirst = performance.now(); }
+        if (d.reasoning_content) { reasoning += d.reasoning_content; yield { thinking: d.reasoning_content }; }
+        if (d.content) { text += d.content; yield { content: d.content }; }
+        for (const tc of d.tool_calls || []) {
+          const p = parts[tc.index || 0] = parts[tc.index || 0] || { id: '', name: '', args: '' };
+          if (tc.id) p.id = tc.id;
+          if (tc.function && tc.function.name) p.name += tc.function.name;
+          if (tc.function && tc.function.arguments) p.args += tc.function.arguments;
+        }
+        const all = reasoning + text;
+        if (all.length - checked > 200 || (/[.!?\n]/.test(d.content || d.reasoning_content || '') && all.length - checked > 40)) {
+          checked = all.length;
+          if (isLooping(all.slice(-3000))) { looped = true; ctrl.abort(); break; }
+        }
+      }
+    } catch (e) {
+      if (!ctrl.signal.aborted) throw e;
+    }
+    if (tFirst) speed = { waitMs: Math.round(tFirst - t0), tokens: pieces, perSec: pieces > 1 ? Math.round(10 * (pieces - 1) / ((performance.now() - tFirst) / 1000)) / 10 : null };
+    if (looped) yield { content: '\n\n_(stopped: the model was repeating itself)_' };
+    const calls = looped ? [] : parts.filter(p => p && p.name).map(p => {
+      let args = {};
+      try { args = p.args ? JSON.parse(p.args) : {}; } catch { args = {}; }
+      return { id: p.id || 'call' + (++callId), type: 'function', function: { name: p.name, arguments: args && typeof args === 'object' ? args : {} } };
+    });
+    // Thinking is never replayed into history; the calls are, so the results can answer them.
+    this.messages.push({ role: 'assistant', content: text,
+      ...(calls.length ? { tool_calls: calls.map(c => ({ id: c.id, type: 'function', function: { name: c.function.name, arguments: JSON.stringify(c.function.arguments) } })) } : {}) });
+    if (ctrl.signal.aborted && !looped) return;
+    if (calls.length) yield { tool_calls: calls };
+  }
+}
+
 // Speed of the last call (see generate), for the composer note.
 let speed = null;
 export const lastSpeed = () => speed;
@@ -378,7 +482,7 @@ export const lastSpeed = () => speed;
 // (sw.js adds the headers when the setting is on), otherwise one thread.
 const safe = (fn, d) => { try { return fn(); } catch { return d; } };
 
-export async function createEngine(url, contextSize, onStage = () => {}, { gpu = false, threads = false } = {}) {
+export async function createEngine(url, contextSize, onStage = () => {}, { gpu = false, threads = false, native = false } = {}) {
   onStage('starting the runtime');
   const { Wllama } = await getLib();
   const w = new Wllama({ default: WASM }, { suppressNativeLog: true });
@@ -386,7 +490,8 @@ export async function createEngine(url, contextSize, onStage = () => {}, { gpu =
   const cores = Math.max(1, Math.min(4, (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 1));
   const n = threads && globalThis.crossOriginIsolated ? Math.max(2, cores) : 1;
   onStage(useGpu ? 'loading the model onto the GPU' : 'loading the model into memory');
-  await w.loadModelFromUrl(url, { n_ctx: contextSize, n_gpu_layers: useGpu ? 999 : 0, n_threads: n });
+  // native: llama.cpp renders the GGUF's own chat template (jinja), tool declarations included.
+  await w.loadModelFromUrl(url, { n_ctx: contextSize, n_gpu_layers: useGpu ? 999 : 0, n_threads: n, ...(native ? { jinja: true } : {}) });
   speed = null;
   const info = {
     gpu: useGpu,
@@ -397,7 +502,7 @@ export async function createEngine(url, contextSize, onStage = () => {}, { gpu =
   };
   return {
     info,
-    createConversation: async (cfg) => new Conversation(w, cfg),
+    createConversation: async (cfg) => (native ? new NativeConversation(w, cfg) : new Conversation(w, cfg)),
     delete: async () => { try { await w.exit(); } catch {} },
   };
 }
