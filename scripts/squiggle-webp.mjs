@@ -21,8 +21,8 @@ try { sharp = require('sharp'); } catch {
 const OUT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'app', 'icons');
 const W = 48, H = 16;     // same box as the #squiggle logo symbol
 const SCALE = 4;          // 192×64 px: sharp on 3× phone screens at the 46×16 size
-const FRAMES = 24;
-const DURATION = 1200;    // ms per loop
+const FRAMES = 48;
+const DURATION = 2400;    // ms per loop (one wavelength)
 
 // One frame: the #squiggle logo itself (same humps, 3px round stroke), with
 // its wave sliding along the body like a snake's. Frame 0 is the logo exactly.
