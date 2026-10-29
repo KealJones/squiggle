@@ -133,7 +133,7 @@ a { color: var(--action); }
 .thread-link:hover .count { text-decoration: underline; }
 .msg.user .thread-link { justify-content: flex-end; margin-left: auto; }
 
-/* Working indicator: a slithering snake (animated WebP mask, coloured by currentColor). */
+/* Working indicator: the logo squiggle wiggling like a snake (animated WebP mask, coloured by currentColor). */
 .squiggle-wait { display: inline-block; width: 46px; height: 16px; color: var(--action); vertical-align: middle; background: currentColor;
   -webkit-mask: url(icons/squiggle.webp) center / contain no-repeat; mask: url(icons/squiggle.webp) center / contain no-repeat; }
 @media (prefers-reduced-motion: reduce) { .squiggle-wait { -webkit-mask-image: url(icons/squiggle-still.webp); mask-image: url(icons/squiggle-still.webp); } }
