@@ -115,7 +115,7 @@ system:   short system prompt (model-appropriate; see below)
           3. [todo] <step>
           ## The user answered your questions             (the last 3 `need` answers, if any)
           ## Files the user attached                      (paths, if any)
-          ## Recipe from a similar task (if any)
+          ## Recipe from a similar task (if the model found one with find)
           <recipe steps + specifics>
           ## What you know about the user and their work   (memory facts, goal+step query)
           ## Found earlier in this task                     (retrieved step results / tool output for this step)
@@ -153,9 +153,13 @@ id like facts):
   big model refines one draft per turn, in the background).
 - **Merged**: if a new recipe's `when` matches an existing one closely, update that
   one (append example phrasing, refresh steps if they changed) instead of adding.
-- **Used**: at the start of a turn the harness retrieves recipes for the request;
-  a strong match goes in the prompt and is offered as the starting plan. Using
-  one bumps `uses` and `lastUsed`.
+- **Used**: the model looks recipes up with `find` (results include "Recipes from
+  similar tasks"); nothing is injected into the prompt (Keal, 2026-10-29: an injected
+  recipe for "What is the date?" took over a small model's turn). The best recipe the
+  model found in the chat phase goes with the plan it makes, into each step prompt.
+  Using one bumps `uses` and `lastUsed`. Note: fine-tunes up to v2 were trained with
+  injected recipes (families recipe_web, recipe_skip); the next corpus should have the
+  model call `find` instead.
   Matching is by words, typo-tolerant (one edit, two for long words; never in
   numbers), and slot-aware: the same request about different names ("who was born
   first, A or B" against a recipe learned from C and D) lines up with the recipe's
