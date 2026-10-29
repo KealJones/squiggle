@@ -50,6 +50,9 @@ export const LITE_SYSTEM = [
 ].join('\n');
 
 const lite = () => engine.isLite(settings.model);
+// A small (wllama) model that speaks Gemma 4's own tool format (engine nativeTools): it gets the full prompt
+// and every tool, like E2B, and is otherwise treated as small (context budgets, no background jobs).
+const native = () => Boolean(engine.nativeTools && engine.nativeTools(settings.model));
 
 
 // Plain chat for small models without tool training (engine.chatOnly).
@@ -57,7 +60,7 @@ const plain = () => Boolean(engine.chatOnly && engine.chatOnly(settings.model));
 
 function systemPrompt(threadId, session) {
   if (plain()) return '';
-  if (lite()) return `${LITE_SYSTEM}\nToday is ${new Date().toDateString()}.`;
+  if (lite() && !native()) return `${LITE_SYSTEM}\nToday is ${new Date().toDateString()}.`;
   const thread = threadId && session.threads[threadId];
   return [
     `You are Squiggle, a personal AI agent running privately on the user's own device. Today is ${new Date().toDateString()}.`,
@@ -79,7 +82,7 @@ function systemPrompt(threadId, session) {
 // call on find first: nearly every phone request needs the web. Only ones enabled.
 const PRELOADED = ['web_search', 'fetch_url'];
 function preloaded(tools) {
-  if (!lite() || plain()) return [];
+  if (!lite() || plain() || native()) return [];
   const names = new Set(tools.map(t => t.name));
   return PRELOADED.filter(n => names.has(n));
 }
@@ -279,7 +282,7 @@ class Turn {
   // ── Chat phase: answer directly, or make a plan ─────────────────────────
   async chat() {
     const tools = phaseTools(false);
-    const toolTokens = lite() ? 300 : estTokens(JSON.stringify(tools));
+    const toolTokens = lite() && !native() ? 300 : estTokens(JSON.stringify(tools));
     // History gets about half the window; the rest stays free for this turn's
     // tool results and the reply (a full window made turns fail at the start).
     // Small models get a quarter: on a 4K phone window half left too little room for a lookup.
@@ -390,7 +393,7 @@ class Turn {
 
   async runStep(task, step) {
     const tools = phaseTools(true);
-    const toolTokens = lite() ? 300 : estTokens(JSON.stringify(tools));
+    const toolTokens = lite() && !native() ? 300 : estTokens(JSON.stringify(tools));
     // The step prompt gets under half the window; the rest is for the step's
     // own tool calls and output (a phone has 4096 tokens in all).
     const maxTokens = Math.max(600, Math.floor(settings.contextSize * 0.45) - toolTokens);

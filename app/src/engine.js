@@ -31,7 +31,7 @@ export const MODELS = {
     url: HF + 'unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_0.gguf', bytes: 773025824 },
   // Gemma 4 E2B pruned (80K vocab, hidden 1024, FFN 42%, 31 layers) and barely healed (tp-parse
   // experiments/tiny-gemma4, heal 2). For load/memory/speed checks; it rambles and repeats.
-  TG4: { label: 'Test: Tiny Gemma 4 (barely healed)', size: '778 MB', note: 'Gemma 4 E2B cut down for phones, early test build: checks that it loads and how much memory it takes. Rambles and repeats. Chat only, no tools', phone: true, runtime: 'wllama',
+  TG4: { label: 'Test: Tiny Gemma 4 (barely healed)', size: '778 MB', note: 'Gemma 4 E2B cut down for phones, early test build: checks that it loads and how much memory it takes. Rambles and repeats; has Gemma 4\'s tools but can\'t call them well yet', phone: true, runtime: 'wllama', tools: true, native: true,
     url: HF + 'kealjones/tiny-gemma4-test/resolve/main/tiny-gemma4-heal2-v2-Q4_0.gguf', bytes: 778158496 },
   // Not on this device: runs on the relay (only listed when the relay offers it).
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true },
@@ -63,6 +63,9 @@ export const isLite = (id = loadedModel) => Boolean(MODELS[id] && MODELS[id].run
 // harness: any system prompt makes it answer the instructions instead of the
 // person ("Okay, I'm ready to be Squiggle!"). It runs as plain chat: no system
 // prompt, no tools, no background summaries. A fine-tuned build sets `tools: true`.
+// Gemma 4's own tool format through llama.cpp's chat template (engine-wllama.js NativeConversation), not
+// Squiggle Small's ```tool_call blocks: for small builds distilled from E2B (tiny Gemma 4).
+export const nativeTools = (id = loadedModel) => isLite(id) && Boolean(MODELS[id] && MODELS[id].native);
 export const chatOnly = (id = loadedModel) => isLite(id) && !(MODELS[id] && MODELS[id].tools);
 
 export async function webgpuStatus() {
@@ -307,7 +310,7 @@ export async function load(id, contextSize, { fast = true, onStage = () => {}, s
     return;
   }
   if (MODELS[id].runtime === 'wllama') {
-    engine = await (await import('./engine-wllama.js')).createEngine(MODELS[id].url, contextSize, onStage, small);
+    engine = await (await import('./engine-wllama.js')).createEngine(MODELS[id].url, contextSize, onStage, { ...small, native: Boolean(MODELS[id].native) });
     loadedModel = id; engineContext = contextSize; engineFast = fast; engineSmall = smallKey;
     return;
   }

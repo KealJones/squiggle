@@ -259,3 +259,49 @@ test('beforeLoop cuts at the sentence before the repeats and keeps nothing when 
   assert.equal(beforeLoop('<think>\nRequest: a thing to find.\nCheck: total = 2 + 2 + 2 + 2', '2 2 2 2'), '<think>\nRequest: a thing to find.');
   assert.equal(beforeLoop('2 + 2 + 2 + 2', '2 2 2 2'), '');
 });
+
+test('nativeMessages: Gemma 4 tool format keeps assistant tool_calls and answers each with a tool message', async () => {
+  const { nativeMessages } = await import('../app/src/engine-wllama.js');
+  const out = nativeMessages([
+    { role: 'system', content: 'You are Squiggle.' },
+    { role: 'user', content: 'Weather in Phoenix and Tempe?' },
+    { role: 'assistant', content: '', tool_calls: [
+      { id: 'a', type: 'function', function: { name: 'get_weather', arguments: '{"city":"Phoenix"}' } },
+      { id: 'b', type: 'function', function: { name: 'web_search', arguments: '{"query":"Tempe weather"}' } }] },
+    { role: 'tool', content: [{ name: 'web_search', response: { results: [] } }, { name: 'get_weather', response: { temp_f: 84 } }] },
+    { role: 'model', content: 'It is 84°F.' },
+  ]);
+  assert.deepEqual(out.map(m => m.role), ['system', 'user', 'assistant', 'tool', 'tool', 'assistant']);
+  assert.equal(out[2].content, null);
+  assert.equal(out[3].tool_call_id, 'b');                 // matched by name, not order
+  assert.equal(out[4].tool_call_id, 'a');
+  assert.equal(out[4].content, '{"temp_f":84}');
+});
+
+test('NativeConversation: passes the tools to llama.cpp, streams text, returns the parsed calls and keeps them in history', async () => {
+  const { NativeConversation } = await import('../app/src/engine-wllama.js');
+  const seen = [];
+  const deltas = [
+    { content: 'Checking. ' },
+    { tool_calls: [{ index: 0, id: 'x1', function: { name: 'web_', arguments: '{"query":' } }] },
+    { tool_calls: [{ index: 0, function: { name: 'search', arguments: '"Phoenix weather"}' } }] },
+  ];
+  const w = { createChatCompletion: async (p) => { seen.push(p); return (async function* () { for (const d of deltas) yield { choices: [{ delta: d }] }; })(); } };
+  const conv = new NativeConversation(w, { preface: { messages: [{ role: 'system', content: 'S' }], tools: TOOLS, extra_context: { enable_thinking: true } }, sessionConfig: { maxOutputTokens: 256 } });
+  const got = [];
+  for await (const x of conv.sendMessageStreaming('Weather in Phoenix?')) got.push(x);
+  assert.equal(seen[0].tools, TOOLS);
+  assert.deepEqual(seen[0].chat_template_kwargs, { enable_thinking: true });
+  assert.equal(got[0].content, 'Checking. ');
+  const calls = got.find(x => x.tool_calls).tool_calls;
+  assert.deepEqual(calls[0].function, { name: 'web_search', arguments: { query: 'Phoenix weather' } });
+  assert.equal(calls[0].id, 'x1');
+  const last = conv.messages[conv.messages.length - 1];
+  assert.equal(last.tool_calls[0].function.arguments, '{"query":"Phoenix weather"}');
+  // The result goes back as a tool message answering that call.
+  deltas.length = 0; deltas.push({ content: 'Sunny.' });
+  for await (const x of conv.sendMessageStreaming([{ role: 'tool', content: [{ name: 'web_search', response: { results: ['sunny'] } }] }])) got.push(x);
+  const sent = seen[1].messages;
+  assert.equal(sent[sent.length - 1].role, 'tool');
+  assert.equal(sent[sent.length - 1].tool_call_id, 'x1');
+});
