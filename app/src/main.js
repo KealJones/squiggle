@@ -757,6 +757,7 @@ async function send(text, threadId, files = []) {
     setBusy(false);
     controller = null;
     if (threadId) renderChat(); // refresh reply count on the parent
+    updateComposerNote();       // small models: the last reply's speed
   }
 }
 
@@ -1193,7 +1194,17 @@ function showCrashBanner(c) {
     modelPromise = null; ensureModel(); // downloads the lighter model first if needed, then loads
   } }, next === S.model ? 'Use lighter settings' : `Use lighter settings (${nm.label}, ${nm.size})`);
   // Settings may have become lighter since the crash (e.g. phones moved to a phone model).
-  const changed = c.model !== S.model || c.contextSize !== S.contextSize || Boolean(c.fast) !== Boolean(S.fastDecode);
+  const changed = c.model !== S.model || c.contextSize !== S.contextSize || Boolean(c.fast) !== Boolean(S.fastDecode)
+    || Boolean(c.small && c.small.gpu) !== Boolean(S.smallGpu && engine.MODELS[S.model].runtime === 'wllama')
+    || Boolean(c.small && c.small.threads) !== Boolean(S.smallThreads && engine.MODELS[S.model].runtime === 'wllama');
+  // The experimental GPU / all-cores settings are the first suspects: offer to turn them off.
+  const risky = c.model === S.model && c.small && (c.small.gpu || c.small.threads) && (S.smallGpu || S.smallThreads);
+  const plain = risky ? h('button', { class: 'btn primary', onclick: async () => {
+    const hadThreads = S.smallThreads;
+    Object.assign(S, { smallGpu: false, smallThreads: false }); saveSettings(); setCrashMarker(null);
+    if (hadThreads) { await setIsolation(false); location.reload(); return; }
+    loadModel();
+  } }, `Turn off ${[c.small.gpu && 'the GPU', c.small.threads && 'all cores'].filter(Boolean).join(' and ')} and try again`) : '';
   const again = h('button', { class: changed ? 'btn primary' : 'btn', onclick: () => { setCrashMarker(null); loadModel(); } }, changed ? 'Load model' : 'Try again');
   const settingsText = `${engine.MODELS[S.model].label}, ${S.contextSize / 1024}K context, speed boost ${S.fastDecode ? 'on' : 'off'}`;
   banner(h('div', { class: 'dl' },
@@ -1204,7 +1215,8 @@ function showCrashBanner(c) {
       : lightest()
         ? 'This is already the lightest setup. Close other tabs and apps, then try again; some devices can\'t run the model.'
         : `Lighter settings use ${nm.label} (needs less memory), a 4K context and no speed boost.`),
-    h('div', { class: 'row' }, changed || lightest() ? '' : lighter, again)));
+    risky ? h('span', { class: 'muted' }, `It was using the experimental ${[c.small.gpu && 'GPU', c.small.threads && 'all-cores'].filter(Boolean).join(' and ')} setting.`) : '',
+    h('div', { class: 'row' }, plain, changed || lightest() || risky ? '' : lighter, again)));
 }
 
 // A short note at the bottom of the screen that goes away on its own.
@@ -1301,7 +1313,34 @@ function updateComposerNote() {
   const note = $('#composer-note');
   if (!note || modelState !== 'ready') return;
   const cloud = engine.MODELS[agent.settings.model].runtime === 'cloud';
-  note.textContent = `${engine.MODELS[agent.settings.model].label}, ${cloud ? 'running on your Cloudflare relay (free daily limit)' : 'running on this device'}. ${agent.settings.contextMode === 'smart' ? 'Smart context is on.' : ''}`;
+  note.textContent = `${engine.MODELS[agent.settings.model].label}, ${cloud ? 'running on your Cloudflare relay (free daily limit)' : `running on this device${smallHow()}`}. ${agent.settings.contextMode === 'smart' ? 'Smart context is on.' : ''}`;
+  // Small models: how fast the last reply was (for comparing GPU / cores / models).
+  if (!cloud && engine.isLite()) engine.smallSpeed().then((sp) => {
+    if (!sp || modelState !== 'ready') return;
+    note.textContent += ` Last reply: started after ${(sp.waitMs / 1000).toFixed(1)} s${sp.perSec ? `, then ${sp.perSec} tokens/s` : ''}.`;
+  }).catch(() => {});
+}
+// "(GPU)", "(4 CPU cores)", "(1 CPU core, Safari compatibility build)" for small models.
+function smallHow() {
+  const i = engine.isLite() ? engine.smallInfo() : null;
+  if (!i) return '';
+  const parts = [i.gpu ? 'GPU' : `${i.threads} CPU core${i.threads === 1 ? '' : 's'}`];
+  if (i.compat) parts.push('Safari compatibility build');
+  if (i.asked && i.asked.gpu && !i.gpu) parts.push('no WebGPU here');
+  if (i.asked && i.asked.threads && i.threads === 1) parts.push(i.asked.isolated ? 'threads unavailable' : 'cores need a reload');
+  return ` (${parts.join(', ')})`;
+}
+
+// "Use all CPU cores": the page must be cross-origin isolated, which sw.js
+// does with headers when this flag is in Cache Storage. Takes a reload.
+async function setIsolation(on) {
+  try {
+    const c = await caches.open('squiggle-flags');
+    if (on) await c.put('/__flags/isolate', new Response('1')); else await c.delete('/__flags/isolate');
+    const sw = navigator.serviceWorker && navigator.serviceWorker.controller;
+    if (sw) sw.postMessage({ type: 'isolate', on });
+    return Boolean(sw);
+  } catch { return false; }
 }
 
 async function loadModel() {
@@ -1312,10 +1351,11 @@ async function loadModel() {
   banner(h('div', { class: 'dl' }, h('div', { class: 'dl-head' }, squiggleWait(), h('span', {}, cloud ? 'Connecting to the cloud model…' : `Loading ${engine.MODELS[S.model].label}…`)), step));
   // The marker is rewritten at every step (localStorage writes are synchronous,
   // so it survives the tab being killed) and says where a crash happened.
-  const marker = { model: S.model, contextSize: S.contextSize, fast: S.fastDecode, at: Date.now(), stage: 'starting', gpu: cloud ? '' : await engine.gpuSummary(), ua: navigator.userAgent };
+  const small = engine.MODELS[S.model].runtime === 'wllama' ? { gpu: Boolean(S.smallGpu), threads: Boolean(S.smallThreads) } : null;
+  const marker = { model: S.model, contextSize: S.contextSize, fast: S.fastDecode, small, at: Date.now(), stage: 'starting', gpu: cloud ? '' : await engine.gpuSummary(), ua: navigator.userAgent };
   setCrashMarker(marker);
   try {
-    await engine.load(S.model, S.contextSize, { fast: S.fastDecode, onStage: (st) => { marker.stage = st; setCrashMarker(marker); step.textContent = st[0].toUpperCase() + st.slice(1) + '…'; } });
+    await engine.load(S.model, S.contextSize, { fast: S.fastDecode, small: small || {}, onStage: (st) => { marker.stage = st; setCrashMarker(marker); step.textContent = st[0].toUpperCase() + st.slice(1) + '…'; } });
     setCrashMarker(null);
     // While a reply is generated, keep a marker too: a crash mid-reply then
     // says so on the next open.
@@ -1625,6 +1665,18 @@ function renderSettingsPanel() {
     engine.MODELS[S.model].runtime !== 'litert' ? '' : h('div', { class: 'field' }, h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: S.fastDecode ? true : null, onchange: async (e) => { S.fastDecode = e.target.checked; saveSettings(); if (engine.engineReady()) await loadModel(); } }),
       h('span', {}, h('strong', {}, 'Speed boost'), h('span', { class: 'hint', style: 'display:block' }, 'Replies come noticeably faster, but it loads an extra helper model and needs more memory. Off by default on phones.')))),
+
+    engine.MODELS[S.model].runtime !== 'wllama' ? '' : h('div', { class: 'field' }, h('label', { class: 'toggle' },
+      h('input', { type: 'checkbox', checked: S.smallGpu ? true : null, onchange: async (e) => { S.smallGpu = e.target.checked; saveSettings(); if (engine.engineReady()) await loadModel(); } }),
+      h('span', {}, h('strong', {}, 'Use the GPU (experimental)'), h('span', { class: 'hint', style: 'display:block' }, 'Runs this model on WebGPU instead of the CPU: could be much faster, or could crash the tab. If it crashes, Squiggle offers to turn it off.')))),
+    engine.MODELS[S.model].runtime !== 'wllama' ? '' : h('div', { class: 'field' }, h('label', { class: 'toggle' },
+      h('input', { type: 'checkbox', checked: S.smallThreads ? true : null, onchange: async (e) => {
+        S.smallThreads = e.target.checked; saveSettings();
+        const ok = await setIsolation(S.smallThreads);
+        if (!ok && S.smallThreads) { toast('Not available here: it needs the app\'s offline helper (service worker), which only runs over https.'); return; }
+        toast('Reloading to apply…', 2000); setTimeout(() => location.reload(), 600);
+      } }),
+      h('span', {}, h('strong', {}, 'Use all CPU cores (experimental)'), h('span', { class: 'hint', style: 'display:block' }, 'Splits the work across several cores, mostly speeding up the wait before a reply starts. Reloads the page. The note under the message box shows what\'s in use and how fast the last reply was.')))),
 
     h('div', { class: 'field' }, h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: S.contextMode === 'smart' ? true : null, onchange: (e) => { S.contextMode = e.target.checked ? 'smart' : 'compact'; saveSettings(); if (S.contextMode === 'smart' && S.semantic) loadSemantic(); updateComposerNote(); renderSettingsPanel(); } }),

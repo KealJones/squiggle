@@ -35,6 +35,8 @@ export const load = async (id, ctx, opts = {}) => {
 export const gpuSummary = async () => 'fake gpu, f16';
 export const setProgress = (fn) => { window.__progress = fn; };
 export const unload = async () => { ready = false; };
+export const smallInfo = () => window.__smallInfo || null;
+export const smallSpeed = async () => window.__smallSpeed || null;
 export const foreground = (fn) => lock(fn);
 export const background = (fn) => lock(fn);
 

@@ -25,6 +25,8 @@ export const settings = {
   model: 'E2B',
   contextSize: 8192,
   fastDecode: true,         // multi-token prediction: faster, uses more memory
+  smallGpu: false,          // small models (wllama): run on WebGPU (experimental)
+  smallThreads: false,      // small models (wllama): use several CPU cores; needs an isolated page (sw.js)
   contextMode: 'smart',     // 'smart' (default) | 'compact' | 'full'
   semantic: true,           // MiniLM embeddings for retrieval (off on phones; BM25 alone works)
   recallChats: true,        // smart mode may recall messages from other chats too

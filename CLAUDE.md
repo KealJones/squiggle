@@ -151,6 +151,13 @@ the fine-tune in tp-parse trains on that exact text). No tool names go in prose:
 tools up with `find` (answered by the agent) and sees details only for tools it found. The cloud model stays
 available on phones. `cleanupStorage` frees downloads of models that aren't offered or don't fit.
 Loads and replies write a crash marker with the current step, shown on the next open.
+Two experimental settings for wllama models (off by default): "Use the GPU" (`smallGpu`: wllama 3.8's WebGPU,
+`n_gpu_layers: 999`) and "Use all CPU cores" (`smallThreads`: `n_threads` up to 4; needs a cross-origin isolated
+page, which sw.js does by adding COOP/COEP/CORP to the app's own responses while the `squiggle-flags` cache holds
+`/__flags/isolate`; takes a reload). A crash with either on offers to turn them off. The composer note shows what's in
+use (GPU / N cores / Safari's slower compatibility build, which wllama picks when JSPI or Memory64 is missing) and the last
+reply's speed. Size-test models (Q06, LF12, LL1) are plain chat. `node tests/e2e/wllama-bench.mjs [--model SQ]` loads a
+real model in headless Chromium: one thread vs all cores vs WebGPU.
 
 ## Cloud model (engine-cloud.js, worker /api/ai/*)
 
