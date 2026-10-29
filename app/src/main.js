@@ -1200,11 +1200,11 @@ function showCrashBanner(c) {
   // The experimental GPU / all-cores settings are the first suspects: offer to turn them off.
   const risky = c.model === S.model && c.small && (c.small.gpu || c.small.threads) && (S.smallGpu || S.smallThreads);
   const plain = risky ? h('button', { class: 'btn primary', onclick: async () => {
-    const hadThreads = S.smallThreads;
-    Object.assign(S, { smallGpu: false, smallThreads: false }); saveSettings(); setCrashMarker(null);
-    if (hadThreads) { await setIsolation(false); location.reload(); return; }
-    loadModel();
-  } }, `Turn off ${[c.small.gpu && 'the GPU', c.small.threads && 'all cores'].filter(Boolean).join(' and ')} and try again`) : '';
+    // The GPU is the likelier culprit: turn off only that when it was on (all cores keeps working).
+    setCrashMarker(null);
+    if (c.small.gpu) { S.smallGpu = false; saveSettings(); loadModel(); return; }
+    S.smallThreads = false; saveSettings(); await setIsolation(false); location.reload();
+  } }, c.small.gpu ? 'Turn off the GPU and try again' : 'Turn off all cores and try again') : '';
   const again = h('button', { class: changed ? 'btn primary' : 'btn', onclick: () => { setCrashMarker(null); loadModel(); } }, changed ? 'Load model' : 'Try again');
   const settingsText = `${engine.MODELS[S.model].label}, ${S.contextSize / 1024}K context, speed boost ${S.fastDecode ? 'on' : 'off'}`;
   banner(h('div', { class: 'dl' },
@@ -1215,7 +1215,7 @@ function showCrashBanner(c) {
       : lightest()
         ? 'This is already the lightest setup. Close other tabs and apps, then try again; some devices can\'t run the model.'
         : `Lighter settings use ${nm.label} (needs less memory), a 4K context and no speed boost.`),
-    risky ? h('span', { class: 'muted' }, `It was using the experimental ${[c.small.gpu && 'GPU', c.small.threads && 'all-cores'].filter(Boolean).join(' and ')} setting.`) : '',
+    risky ? h('span', { class: 'muted' }, `It was using the experimental ${c.small.gpu ? 'GPU' : 'all-cores'} setting.`) : '',
     h('div', { class: 'row' }, plain, changed || lightest() || risky ? '' : lighter, again)));
 }
 
