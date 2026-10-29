@@ -21,6 +21,14 @@ export const MODELS = {
   // experiments/squiggle-ft). Same runtime and prompt format as G3.
   SQ: { label: 'Squiggle Small (experimental)', size: '219 MB', note: 'LFM2.5 350M trained on Squiggle\'s own tools and habits (plan, find, done). Uses tools and looks things up; still often wrong; runs on a phone\'s CPU', phone: true, runtime: 'wllama', tools: true,
     url: HF + 'kealjones/squiggle-small/resolve/main/squiggle-small-lfm25-Q4_0.gguf', bytes: 219312160 },
+  // Size tests for phones (Keal, 2026-10-28): how big a model an iPhone tab survives on wllama.
+  // Plain chat only (stock models: no harness), smallest to largest.
+  Q06: { label: 'Test: Qwen3 0.6B', size: '382 MB', note: 'phone size test: does a ~600M model load and run? Chat only, no tools', phone: true, runtime: 'wllama',
+    url: HF + 'unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_0.gguf', bytes: 382156480 },
+  LF12: { label: 'Test: LFM2.5 1.2B', size: '696 MB', note: 'phone size test: Squiggle Small\'s bigger sibling (1.2B). Chat only, no tools', phone: true, runtime: 'wllama',
+    url: HF + 'LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q4_0.gguf', bytes: 695751488 },
+  LL1: { label: 'Test: Llama 3.2 1B', size: '773 MB', note: 'phone size test: probably right at the edge. Chat only, no tools', phone: true, runtime: 'wllama',
+    url: HF + 'unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_0.gguf', bytes: 773025824 },
   // Not on this device: runs on the relay (only listed when the relay offers it).
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true },
 };
