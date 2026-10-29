@@ -156,7 +156,7 @@ Two experimental settings for wllama models (off by default): "Use the GPU" (`sm
 page, which sw.js does by adding COOP/COEP/CORP to the app's own responses while the `squiggle-flags` cache holds
 `/__flags/isolate`; takes a reload). A crash with either on offers to turn them off. The composer note shows what's in
 use (GPU / N cores / Safari's slower compatibility build, which wllama picks when JSPI or Memory64 is missing) and the last
-reply's speed. Size-test models (Q06, LF12, LL1) are plain chat. `node tests/e2e/wllama-bench.mjs [--model SQ]` loads a
+reply's speed. Size-test models (Q06, LF12, LL1, TG4 = tiny Gemma 4 from tp-parse experiments/tiny-gemma4) are plain chat. `node tests/e2e/wllama-bench.mjs [--model SQ]` loads a
 real model in headless Chromium: one thread vs all cores vs WebGPU.
 
 ## Cloud model (engine-cloud.js, worker /api/ai/*)

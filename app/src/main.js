@@ -1160,7 +1160,7 @@ function showLoadBanner() {
 }
 
 // Models from most to least memory needed; a crash offers the next one down.
-const BY_MEMORY = ['E4B', 'E2B', 'LL1', 'LF12', 'Q06', 'SQ', 'G3'];
+const BY_MEMORY = ['E4B', 'E2B', 'TG4', 'LL1', 'LF12', 'Q06', 'SQ', 'G3'];
 function lighterModel(id) {
   const i = BY_MEMORY.indexOf(id);
   return BY_MEMORY.slice(i + 1).find(m => engine.MODELS[m] && engine.modelFitsDevice(m)) || null;
