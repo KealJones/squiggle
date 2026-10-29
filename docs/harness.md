@@ -1,7 +1,7 @@
 # Squiggle harness v2: goals, steps, recipes
 
 The design every piece of Squiggle's agent loop follows, and the format the
-small-model fine-tune (in tp-parse, `experiments/squiggle-ft/`) trains on. If
+small-model fine-tune (in [lm-experiments](https://github.com/KealJones/lm-experiments), `experiments/squiggle-ft/`) trains on. If
 code and this doc disagree, fix one of them in the same change.
 
 ## Why

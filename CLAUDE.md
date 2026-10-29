@@ -139,7 +139,7 @@ by hand. `node tests/e2e/tts-bench.mjs` loads the real voice model in headless C
 
 iOS Safari kills tabs that load Gemma 4 E2B/E4B, and smaller ONNX models (tried and removed:
 Gemma 3, SmolLM, a QAT E2B build on onnxruntime-web) failed on WebGPU readback. Phones default to
-Squiggle Small (`SQ`): LFM2.5-350M fine-tuned on the harness format (tp-parse experiments/squiggle-ft,
+Squiggle Small (`SQ`): LFM2.5-350M fine-tuned on the harness format (lm-experiments experiments/squiggle-ft,
 public at kealjones/squiggle-small, Q4_0 GGUF 219 MB, experimental v1). Phones on `G3` move to it once.
 Gemma 3 270M (`G3`, unsloth's Q4_0 GGUF, 242 MB) stays as an option. Both run on wllama 3.8.1, CPU only
 (`n_gpu_layers: 0`), in `engine-wllama.js`; wllama caches the file itself. llama.cpp may split LFM2.5's
@@ -150,7 +150,7 @@ plain chat (`engine.chatOnly`): any system prompt made it answer the instruction
 so it gets no system prompt, no tools and no background title/fact/summary jobs. A fine-tuned build sets
 `tools: true` in MODELS and gets the harness. Gemma 3 has no tool
 format, so tools are prompt-based ```tool_call JSON blocks (docs/harness.md, "Small-model format";
-the fine-tune in tp-parse trains on that exact text). No tool names go in prose: the model looks
+the fine-tune in lm-experiments trains on that exact text). No tool names go in prose: the model looks
 tools up with `find` (answered by the agent) and sees details only for tools it found. The cloud model stays
 available on phones. `cleanupStorage` frees downloads of models that aren't offered or don't fit.
 Loads and replies write a crash marker with the current step, shown on the next open.
@@ -159,7 +159,7 @@ Two experimental settings for wllama models (off by default): "Use the GPU" (`sm
 page, which sw.js does by adding COOP/COEP/CORP to the app's own responses while the `squiggle-flags` cache holds
 `/__flags/isolate`; takes a reload). A crash with either on offers to turn them off. The composer note shows what's in
 use (GPU / N cores / Safari's slower compatibility build, which wllama picks when JSPI or Memory64 is missing) and the last
-reply's speed. Size-test models (Q06, LF12, LL1) are plain chat. TG4 (tiny Gemma 4, tp-parse experiments/tiny-gemma4, distilled from E2B) sets `native: true`: wllama loads it with `jinja: true` and `NativeConversation` sends real `tools` through the GGUF's own Gemma 4 chat template, reading back llama.cpp's parsed `tool_calls`; the agent gives it E2B's system prompt and every tool (`engine.nativeTools`), but small-model budgets and no background jobs. `node tests/e2e/wllama-bench.mjs [--model SQ]` loads a
+reply's speed. Size-test models (Q06, LF12, LL1) are plain chat. TG4 (tiny Gemma 4, lm-experiments experiments/tiny-gemma4, distilled from E2B) sets `native: true`: wllama loads it with `jinja: true` and `NativeConversation` sends real `tools` through the GGUF's own Gemma 4 chat template, reading back llama.cpp's parsed `tool_calls`; the agent gives it E2B's system prompt and every tool (`engine.nativeTools`), but small-model budgets and no background jobs. `node tests/e2e/wllama-bench.mjs [--model SQ]` loads a
 real model in headless Chromium: one thread vs all cores vs WebGPU.
 
 ## Cloud model (engine-cloud.js, worker /api/ai/*)
