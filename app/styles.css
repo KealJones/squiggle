@@ -133,9 +133,10 @@ a { color: var(--action); }
 .thread-link:hover .count { text-decoration: underline; }
 .msg.user .thread-link { justify-content: flex-end; margin-left: auto; }
 
-/* Streaming indicator: the squiggle draws itself. */
-.squiggle-wait { display: inline-block; width: 46px; height: 16px; color: var(--action); vertical-align: middle; }
-.squiggle-wait svg { display: block; width: 100%; height: 100%; }
+/* Working indicator: a slithering snake (animated WebP mask, coloured by currentColor). */
+.squiggle-wait { display: inline-block; width: 46px; height: 16px; color: var(--action); vertical-align: middle; background: currentColor;
+  -webkit-mask: url(icons/squiggle.webp) center / contain no-repeat; mask: url(icons/squiggle.webp) center / contain no-repeat; }
+@media (prefers-reduced-motion: reduce) { .squiggle-wait { -webkit-mask-image: url(icons/squiggle-still.webp); mask-image: url(icons/squiggle-still.webp); } }
 .tool-trail .squiggle-wait { width: 28px; height: 10px; }
 
 .empty { max-width: 520px; margin: 14vh auto 0; text-align: center; color: var(--ink-soft); }
