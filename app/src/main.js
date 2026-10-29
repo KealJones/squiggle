@@ -41,7 +41,7 @@ const ago = (ts) => {
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
   return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 };
-// The "working" indicator: a little snake slithering in place. It's an
+// The "working" indicator: the logo squiggle wiggling like a snake. It's an
 // animated WebP (app/icons/squiggle.webp, made by scripts/squiggle-webp.mjs)
 // used as a CSS mask, so it takes the element's colour and costs nothing per
 // frame on the main thread (no SMIL, no style recalcs), and browsers stop it
