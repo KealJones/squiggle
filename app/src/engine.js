@@ -33,6 +33,9 @@ export const MODELS = {
   // E2B's own answers and tool calls (lm-experiments experiments/tiny-gemma4, heal 3).
   TG4: { label: 'Test: Tiny Gemma 4', size: '778 MB', note: 'Gemma 4 E2B cut down for phones (0.6B core) and healed on E2B\'s own answers. Answers short questions, calls Gemma 4\'s tools; still often wrong. Experimental', phone: true, runtime: 'wllama', tools: true, native: true,
     url: HF + 'kealjones/tiny-gemma4-test/resolve/main/tiny-gemma4-heal3-v2-Q4_0.gguf', bytes: 778158496 },
+  // Stock Qwen3.5 0.8B (Keal, 2026-10-31): tools through Qwen's own chat template, like TG4 (native), no fine-tune.
+  Q35: { label: 'Test: Qwen3.5 0.8B', size: '507 MB', note: 'stock Qwen3.5 0.8B with tools in its own tool format (no Squiggle training). Thinks a lot, so it\'s slow on a phone. Experimental', phone: true, runtime: 'wllama', tools: true, native: true,
+    url: HF + 'unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_0.gguf', bytes: 507154688 },
   // Not on this device: runs on the relay (only listed when the relay offers it).
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true },
 };
