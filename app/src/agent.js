@@ -32,6 +32,7 @@ export const settings = {
   recallChats: true,        // smart mode may recall messages from other chats too
   learn: true,              // extract memory facts after turns
   tools: null,              // Set of enabled tool names, or null for all
+  promptSize: 'auto',       // small (wllama) models: 'auto' | 'small' | 'big' (see smallPrompt)
 };
 
 const MAX_OUTPUT = 1536;
@@ -49,6 +50,19 @@ export const LITE_SYSTEM = [
   'Arguments: plan(goal, steps), done(result), need(what), find(query).',
 ].join('\n');
 
+// Small-model prompt for models in their own tool format (native: Qwen3.5, …): the same short text as
+// Squiggle Small's, but tools are called the model's own way and the web tools come up front.
+const NATIVE_SMALL = [
+  'You are Squiggle, an assistant that figures things out. Think first. If you',
+  'don\'t know something, don\'t guess: find it or look it up. For anything with',
+  'more than one step, make a plan, then do one step at a time.',
+  'You start with these tools: plan, done, need, find, web_search, fetch_url.',
+  'find looks up any other tool you need (calculate for math, files, repos,',
+  'memory); after that you can call it. Never do math in your head.',
+].join('\n');
+// Squiggle Small's tool format, added to the full prompt when it runs in big mode.
+const LITE_FORMAT = 'Call a tool with a ```tool_call block containing {"name", "arguments"}.';
+
 const lite = () => engine.isLite(settings.model);
 // A small (wllama) model that speaks Gemma 4's own tool format (engine nativeTools): it gets the full prompt
 // and every tool, like E2B, and is otherwise treated as small (context budgets, no background jobs).
@@ -63,10 +77,22 @@ const UPFRONT_SMALL = 'Each step shows only what it needs: attach earlier result
 
 // Plain chat for small models without tool training (engine.chatOnly).
 const plain = () => Boolean(engine.chatOnly && engine.chatOnly(settings.model));
+// Small vs big prompt (Settings → Prompt), for small (wllama) models with tools. Small: a short system
+// prompt, the harness tools and web_search/fetch_url up front, everything else looked up with find.
+// Big: the full computer prompt and every tool. Auto: small, except builds trained on the full
+// prompt (MODELS fullPrompt, e.g. Tiny Gemma 4). Computers and the cloud model always get the full one.
+export function smallPrompt(id = settings.model) {
+  if (!engine.isLite(id) || (engine.chatOnly && engine.chatOnly(id))) return false;
+  if (settings.promptSize === 'small') return true;
+  if (settings.promptSize === 'big') return false;
+  return !(engine.MODELS[id] && engine.MODELS[id].fullPrompt);
+}
+const small = () => smallPrompt();
 
 function systemPrompt(threadId, session) {
   if (plain()) return '';
-  if (lite() && !native()) return `${LITE_SYSTEM}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
+  if (small() && !native()) return `${LITE_SYSTEM}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
+  if (small()) return `${NATIVE_SMALL}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.\n\n${UNTRUSTED_RULES()}`;
   const thread = threadId && session.threads[threadId];
   return [
     `You are Squiggle, a personal AI agent running privately on the user's own device. Today is ${new Date().toDateString()}.`,
@@ -81,6 +107,7 @@ function systemPrompt(threadId, session) {
     `Use tools when they help; answer directly when they don't. Be concise. Never invent file contents or tool results, and never say you saved, remembered, changed or pushed something unless you called the tool for it in this reply.`,
     thread ? `This is a side thread started on an earlier message ("${truncate(thread.title, 80)}"). Focus on that topic.` : '',
     UNTRUSTED_RULES(),
+    lite() && !native() ? LITE_FORMAT : '',
   ].filter(Boolean).join('\n\n');
 }
 
@@ -88,10 +115,21 @@ function systemPrompt(threadId, session) {
 // Tools a small model starts with already "looked up", so it doesn't spend a model
 // call on find first: nearly every phone request needs the web. Only ones enabled.
 const PRELOADED = ['web_search', 'fetch_url'];
+// Tools a small model starts out knowing: in small mode the web tools (the rest come through find);
+// in big mode every tool (prompt-format models only; native ones get them all declared anyway).
 function preloaded(tools) {
-  if (!lite() || plain() || native()) return [];
+  if (!lite() || plain()) return [];
+  if (!small()) return native() ? [] : tools.map(t => t.name);
   const names = new Set(tools.map(t => t.name));
   return PRELOADED.filter(n => names.has(n));
+}
+// Tool declarations a native small model is sent in small mode: the harness's plus the ones it knows.
+const ALWAYS = new Set(['plan', 'done', 'need', 'find', 'checkpoint']);
+// Rough token cost of the tools in the prompt.
+function toolCost(tools, known) {
+  if (lite() && !native() && small()) return 300;            // one list line + details of looked-up tools
+  if (small()) { const k = new Set(known); return estTokens(JSON.stringify(tools.filter(t => ALWAYS.has(t.name) || k.has(t.name)))); }
+  return estTokens(JSON.stringify(tools));
 }
 
 function phaseTools(step) {
@@ -291,7 +329,8 @@ class Turn {
   // ── Chat phase: answer directly, or make a plan ─────────────────────────
   async chat() {
     const tools = phaseTools(false);
-    const toolTokens = lite() && !native() ? 300 : estTokens(JSON.stringify(tools));
+    const known = preloaded(tools);
+    const toolTokens = toolCost(tools, known);
     // History gets about half the window; the rest stays free for this turn's
     // tool results and the reply (a full window made turns fail at the start).
     // Small models get a quarter: on a 4K phone window half left too little room for a lookup.
@@ -301,7 +340,7 @@ class Turn {
     this.reply.context = ctx.report;
     // Plain chat: only the recent messages; extra sections would be read as instructions.
     if (plain()) ctx.system = '';
-    this.conv = await engine.conversation({ system: ctx.system, messages: ctx.messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: preloaded(tools) });
+    this.conv = await engine.conversation({ system: ctx.system, messages: ctx.messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known, filter: small() && native() });
     let used = estTokens(ctx.system) + estTokens(JSON.stringify(ctx.messages)) + toolTokens + estTokens(this.shown);
     const room = () => Math.max(0, (settings.contextSize - used - Math.min(MAX_OUTPUT, 700)) * 3);
     // Attachments: a note, then the start of each extract using up to half
@@ -463,7 +502,8 @@ class Turn {
 
   async runStep(task, step) {
     const tools = phaseTools(true);
-    const toolTokens = lite() && !native() ? 300 : estTokens(JSON.stringify(tools));
+    const known = [...new Set([...preloaded(tools), ...(task.tools || [])])];
+    const toolTokens = toolCost(tools, known);
     // The step prompt gets under half the window; the rest is for the step's
     // own tool calls and output (a phone has 4096 tokens in all).
     const maxTokens = Math.max(600, Math.floor(settings.contextSize * 0.45) - toolTokens);
@@ -474,7 +514,7 @@ class Turn {
     this.reply.context = { mode: 'step', budget: settings.contextSize, used: estTokens(system),
       items: [{ kind: 'plan', label: `Step ${n}: ${truncate(step.text, 80)} (goal, plan and results)`, tokens: estTokens(tasks.stepSystem('', task)) },
         ...sections.filter(x => prompt.shown.includes(x.title)).map(x => ({ kind: 'section', label: x.title, tokens: estTokens(x.text) }))] };
-    this.conv = await engine.conversation({ system, messages: [], tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: [...new Set([...preloaded(tools), ...(task.tools || [])])] });
+    this.conv = await engine.conversation({ system, messages: [], tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known, filter: small() && native() });
     const reserve = Math.min(MAX_OUTPUT, 700);
     let pending = tasks.stepUser(task);
     let used = estTokens(system) + estTokens(pending) + toolTokens;
