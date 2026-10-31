@@ -1300,7 +1300,7 @@ function updateComposerNote() {
   const note = $('#composer-note');
   if (!note || modelState !== 'ready') return;
   const cloud = engine.MODELS[agent.settings.model].runtime === 'cloud';
-  note.textContent = `${engine.MODELS[agent.settings.model].label}, ${cloud ? 'running on your Cloudflare relay (free daily limit)' : `running on this device${smallHow()}`}. ${agent.settings.contextMode === 'smart' ? 'Smart context is on.' : agent.settings.contextMode === 'managed' ? 'AI-managed context is on.' : ''}`;
+  note.textContent = `${engine.MODELS[agent.settings.model].label}, ${cloud ? 'running on your Cloudflare relay (free daily limit)' : `running on this device${smallHow()}`}. ${agent.settings.contextMode === 'smart' ? 'Smart context is on.' : agent.settings.contextMode === 'managed' ? 'AI-managed context is on.' : ''}${engine.isLite(agent.settings.model) && !engine.chatOnly(agent.settings.model) ? (agent.smallPrompt() ? ' Small-model prompt.' : ' Full prompt.') : ''}`;
   // Small models: how fast the last reply was (for comparing GPU / cores / models).
   if (!cloud && engine.isLite()) engine.smallSpeed().then((sp) => {
     if (!sp || modelState !== 'ready') return;
@@ -1665,6 +1665,12 @@ function renderSettingsPanel() {
       } }),
       h('span', {}, h('strong', {}, 'Use all CPU cores (experimental)'), h('span', { class: 'hint', style: 'display:block' }, 'Splits the work across several cores, mostly speeding up the wait before a reply starts. Reloads the page. The note under the message box shows what\'s in use and how fast the last reply was.')))),
 
+    !engine.isLite(S.model) || engine.chatOnly(S.model) ? '' : h('div', { class: 'field' },
+      h('label', { for: 'prompt-size' }, h('strong', {}, 'Prompt')),
+      h('select', { id: 'prompt-size', onchange: (e) => { S.promptSize = e.target.value; saveSettings(); updateComposerNote(); renderSettingsPanel(); } },
+        ...[['auto', `Auto (${engine.MODELS[S.model].fullPrompt ? 'big' : 'small'} for this model)`], ['small', 'Small model'], ['big', 'Big model']]
+          .map(([v, l]) => h('option', { value: v, selected: (S.promptSize || 'auto') === v ? true : null }, l))),
+      h('span', { class: 'hint', style: 'display:block' }, 'Small model: a short system prompt, with plan/done/need/find and web search up front; it looks other tools up with find. Big model: the full prompt computers get, with every tool described (a few thousand tokens, so far less room on a phone). Auto picks big only for models trained on the full prompt.')),
     h('div', { class: 'field' },
       h('label', { for: 'context-mode' }, h('strong', {}, 'Context')),
       h('select', { id: 'context-mode', onchange: (e) => { S.contextMode = e.target.value; saveSettings(); if (S.contextMode === 'smart' && S.semantic) loadSemantic(); updateComposerNote(); renderSettingsPanel(); } },

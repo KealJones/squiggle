@@ -398,11 +398,15 @@ export function nativeMessages(messages) {
   return out;
 }
 
+const NATIVE_ALWAYS = new Set(['plan', 'done', 'need', 'find', 'checkpoint']);
 export class NativeConversation {
   constructor(w, { preface, sessionConfig }) {
     this.w = w;
     this.messages = [...preface.messages];
     this.tools = preface.tools || [];
+    // Small-prompt mode: declare only the harness's tools and ones looked up with find (or already called).
+    this.filter = Boolean(preface.filter);
+    this.active = new Set(preface.known || []);
     this.thinking = Boolean(preface.extra_context && preface.extra_context.enable_thinking);
     this.max = Math.min(sessionConfig.maxOutputTokens || MAX_OUTPUT, MAX_OUTPUT);
     this.greedy = Boolean(sessionConfig.samplerParams && sessionConfig.samplerParams.type === 3);
@@ -419,7 +423,14 @@ export class NativeConversation {
 
   async *sendMessageStreaming(input) {
     if (typeof input === 'string') this.messages.push({ role: 'user', content: input });
-    else for (const m of input) this.messages.push(m);
+    else for (const m of input) {
+      this.messages.push(m);
+      for (const p of Array.isArray(m.content) ? m.content : []) {            // tools `find` turned up
+        const found = p && p.response && p.response.tools;
+        if (Array.isArray(found)) for (const n of found) this.active.add(String(n));
+      }
+    }
+    const tools = this.filter ? this.tools.filter(t => NATIVE_ALWAYS.has(nameOf(t)) || this.active.has(nameOf(t))) : this.tools;
     const ctrl = this.ctrl = new AbortController();
     const t0 = performance.now();
     let tFirst = 0, pieces = 0, text = '', reasoning = '', checked = 0, looped = false;
@@ -427,7 +438,7 @@ export class NativeConversation {
     try {
       const stream = await this.w.createChatCompletion({
         messages: nativeMessages(this.messages),
-        ...(this.tools.length ? { tools: this.tools } : {}),
+        ...(tools.length ? { tools } : {}),
         chat_template_kwargs: { enable_thinking: this.thinking },
         stream: true,
         max_tokens: this.max,
@@ -469,6 +480,7 @@ export class NativeConversation {
     this.messages.push({ role: 'assistant', content: text,
       ...(calls.length ? { tool_calls: calls.map(c => ({ id: c.id, type: 'function', function: { name: c.function.name, arguments: JSON.stringify(c.function.arguments) } })) } : {}) });
     if (ctrl.signal.aborted && !looped) return;
+    for (const c of calls) this.active.add(c.function.name);
     if (calls.length) yield { tool_calls: calls };
   }
 }

@@ -31,7 +31,7 @@ export const MODELS = {
     url: HF + 'unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_0.gguf', bytes: 773025824 },
   // Gemma 4 E2B pruned (80K vocab, hidden 1024, FFN 42%, 31 layers) and healed by distillation, last on
   // E2B's own answers and tool calls (lm-experiments experiments/tiny-gemma4, heal 3).
-  TG4: { label: 'Test: Tiny Gemma 4', size: '778 MB', note: 'Gemma 4 E2B cut down for phones (0.6B core) and healed on E2B\'s own answers. Answers short questions, calls Gemma 4\'s tools; still often wrong. Experimental', phone: true, runtime: 'wllama', tools: true, native: true,
+  TG4: { label: 'Test: Tiny Gemma 4', size: '778 MB', note: 'Gemma 4 E2B cut down for phones (0.6B core) and healed on E2B\'s own answers. Answers short questions, calls Gemma 4\'s tools; still often wrong. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, fullPrompt: true,
     url: HF + 'kealjones/tiny-gemma4-test/resolve/main/tiny-gemma4-heal3-v2-Q4_0.gguf', bytes: 778158496 },
   // Stock Qwen3.5 0.8B (Keal, 2026-10-31): tools through Qwen's own chat template, like TG4 (native), no fine-tune.
   Q35: { label: 'Test: Qwen3.5 0.8B', size: '507 MB', note: 'stock Qwen3.5 0.8B with tools in its own tool format (no Squiggle training). Thinks a lot, so it\'s slow on a phone. Experimental', phone: true, runtime: 'wllama', tools: true, native: true,
@@ -360,7 +360,7 @@ const SAMPLER = { type: 2, p: 0.95, k: 64, temperature: 0.7 };
 const GREEDY = { type: 3 };
 
 // Starts a conversation from a preface: system text, prior turns, tools.
-export async function conversation({ system, messages = [], tools = [], thinking = false, maxOutputTokens = 2048, greedy = false, known = [] }) {
+export async function conversation({ system, messages = [], tools = [], thinking = false, maxOutputTokens = 2048, greedy = false, known = [], filter = false }) {
   if (!engine) throw new Error('Model not loaded.');
   const preface = {
     messages: [{ role: 'system', content: system }, ...messages],
@@ -369,6 +369,8 @@ export async function conversation({ system, messages = [], tools = [], thinking
   if (tools.length) preface.tools = tools.map(t => ({ type: 'function', function: t }));
   // The small model only sees details of tools it has looked up (engine-wllama.js).
   if (isLite() && known.length) preface.known = known;
+  // Small-prompt mode for native small models: only the harness's and known tools are declared (engine-wllama.js).
+  if (isLite() && filter) preface.filter = true;
   const cfg = { preface, sessionConfig: { maxOutputTokens, samplerParams: greedy ? GREEDY : SAMPLER } };
   try {
     return await engine.createConversation(cfg);
