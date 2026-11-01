@@ -1300,7 +1300,7 @@ function updateComposerNote() {
   const note = $('#composer-note');
   if (!note || modelState !== 'ready') return;
   const cloud = engine.MODELS[agent.settings.model].runtime === 'cloud';
-  note.textContent = `${engine.MODELS[agent.settings.model].label}, ${cloud ? 'running on your Cloudflare relay (free daily limit)' : `running on this device${smallHow()}`}. ${agent.settings.contextMode === 'smart' ? 'Smart context is on.' : agent.settings.contextMode === 'managed' ? 'AI-managed context is on.' : ''}`;
+  note.textContent = `${engine.MODELS[agent.settings.model].label}, ${cloud ? 'running on your Cloudflare relay (free daily limit)' : `running on this device${smallHow()}`}. ${agent.settings.contextMode === 'smart' ? 'Smart context is on.' : agent.settings.contextMode === 'managed' ? 'AI-managed context is on.' : ''}${agent.smallModeSwitchable() && agent.smallMode() ? ' Small-model mode is on.' : ''}`;
   // Small models: how fast the last reply was (for comparing GPU / cores / models).
   if (!cloud && engine.isLite()) engine.smallSpeed().then((sp) => {
     if (!sp || modelState !== 'ready') return;
@@ -1630,6 +1630,26 @@ function voiceSettingsField(S, seg) {
     natural || voices.some(v => mine(v) && voice.voiceQuality(v) >= 6) ? '' : h('span', { class: 'hint' }, 'For a much more natural voice, choose Natural above, or download a "Premium" or "Enhanced" voice in your device\'s settings (iPhone: Settings → Accessibility → Spoken Content → Voices), then pick it here.'));
 }
 
+// Small-model mode: a per-model switch for models with tools; always on (and shown as such) for Squiggle
+// Small, whose fenced tool format only works with it; not shown for plain-chat models.
+function smallModeField(S) {
+  const id = S.model;
+  if (engine.chatOnly && engine.chatOnly(id)) return '';
+  const what = 'The short "don\'t guess, find it" prompt Squiggle Small is trained on: plan, done, need and find up front, and find to pick other tools.';
+  if (!agent.smallModeSwitchable(id)) {
+    return h('div', { class: 'field' }, h('span', { class: 'label' }, 'Small-model mode'),
+      h('span', { class: 'hint' }, `Always on for ${engine.MODELS[id].label}: it's trained on this format. ${what}`));
+  }
+  return h('div', { class: 'field' }, h('label', { class: 'toggle' },
+    h('input', { type: 'checkbox', checked: agent.smallMode(id) ? true : null, onchange: (e) => {
+      S.smallMode = { ...(S.smallMode || {}), [id]: e.target.checked };
+      if (!e.target.checked) delete S.smallMode[id];
+      saveSettings(); updateComposerNote();
+    } }),
+    h('span', {}, h('strong', {}, 'Small-model mode'), h('span', { class: 'hint', style: 'display:block' },
+      `${what} Off gives ${engine.MODELS[id].label} the full prompt. Saved for this model only; applies from the next message.`))));
+}
+
 // Settings
 function renderSettingsPanel() {
   const c = openDrawer('Settings', 'settings');
@@ -1644,6 +1664,8 @@ function renderSettingsPanel() {
       h('span', { class: 'hint' }, engine.isMobile()
         ? 'Phones run Gemma 3 270M on the CPU by default: Gemma 4 doesn\'t fit in a phone browser tab. It\'s much less capable, especially with tools; the cloud model is the stronger option when your relay offers it.'
         : 'Gemma 4 E4B is the default on computers: the smartest and best with tools. Each model downloads once per device.')),
+
+    smallModeField(S),
 
     h('div', { class: 'field' }, h('span', { class: 'label' }, 'Context window'),
       seg([[4096, '4K'], [8192, '8K'], [16384, '16K']], S.contextSize, async (v) => { S.contextSize = v; if (engine.engineReady()) await loadModel(); }),
