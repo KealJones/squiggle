@@ -32,6 +32,7 @@ export const settings = {
   recallChats: true,        // smart mode may recall messages from other chats too
   learn: true,              // extract memory facts after turns
   tools: null,              // Set of enabled tool names, or null for all
+  smallMode: {},            // model id → true: small-model mode on for a model that can switch (smallModeSwitchable)
 };
 
 const MAX_OUTPUT = 1536;
@@ -49,10 +50,30 @@ export const LITE_SYSTEM = [
   'Arguments: plan(goal, steps), done(result), need(what), find(query).',
 ].join('\n');
 
+// The same prompt for models that call tools in their own native format (Gemma 4, Qwen, the cloud model):
+// the first three lines are LITE_SYSTEM's, the fenced-block line is left out (their template declares the
+// tools), and find is how they learn which of the declared tools fits.
+export const LITE_SYSTEM_NATIVE = [
+  ...LITE_SYSTEM.split('\n').slice(0, 3),
+  'Start with plan, done, need and find; find tells you which of your other tools fits.',
+  'Arguments: plan(goal, steps), done(result), need(what), find(query).',
+].join('\n');
+
 const lite = () => engine.isLite(settings.model);
 // A small (wllama) model that speaks Gemma 4's own tool format (engine nativeTools): it gets the full prompt
 // and every tool, like E2B, and is otherwise treated as small (context budgets, no background jobs).
 const native = () => Boolean(engine.nativeTools && engine.nativeTools(settings.model));
+// Small-model mode: the short find-first prompt above instead of the full one. Always on for small models in
+// the fenced tool format (Squiggle Small: it's their training text and the only format their engine parses);
+// a switch (Settings → Small-model mode, per model) for every other model with tools. Context budgets and
+// background jobs still follow the runtime (lite), not this.
+const fencedSmall = () => lite() && !native();
+const nativeId = (id) => Boolean(engine.nativeTools && engine.nativeTools(id));
+const chatOnlyId = (id) => Boolean(engine.chatOnly && engine.chatOnly(id));
+const fencedId = (id) => engine.isLite(id) && !nativeId(id) && !chatOnlyId(id);
+export const smallModeSwitchable = (id = settings.model) => Boolean(engine.MODELS[id]) && !chatOnlyId(id) && !fencedId(id);
+export const smallMode = (id = settings.model) => fencedId(id)
+  || (smallModeSwitchable(id) && Boolean(settings.smallMode && settings.smallMode[id]));
 // AI-managed context (Settings → Context: AI-managed): the model sees what everything costs, steps say what
 // they need attached, and it can checkpoint to a fresh context (docs/harness.md, "the model manages its own
 // context"). Off in plain chat. Compress and Smart are unchanged.
@@ -66,7 +87,7 @@ const plain = () => Boolean(engine.chatOnly && engine.chatOnly(settings.model));
 
 function systemPrompt(threadId, session) {
   if (plain()) return '';
-  if (lite() && !native()) return `${LITE_SYSTEM}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
+  if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : LITE_SYSTEM_NATIVE}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
   const thread = threadId && session.threads[threadId];
   return [
     `You are Squiggle, a personal AI agent running privately on the user's own device. Today is ${new Date().toDateString()}.`,

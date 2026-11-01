@@ -1383,6 +1383,46 @@ await check('Squiggle Small (fine-tuned) gets the harness: system prompt and too
   assert.equal(await D.page.evaluate(() => window.__engineLog.filter(e => e.type === 'complete').length), 0, 'no titles, facts or summaries from a small model');
 });
 
+await check('small-model mode is a per-model switch: off gives E2B the full prompt, on gives it the find-first one; Squiggle Small is always on', async () => {
+  const D = await device('smallmode');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'E2B'; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  const send = async (text) => {
+    const before = await D.page.evaluate(() => (window.__engineLog || []).filter(e => e.type === 'conversation').length);
+    await D.page.click('#new-chat');
+    await D.page.fill('#input', text);
+    await D.page.press('#input', 'Enter');
+    await D.page.waitForFunction(n => (window.__engineLog || []).filter(e => e.type === 'conversation').length > n, before);
+    return D.page.evaluate(() => window.__engineLog.filter(e => e.type === 'conversation').at(-1));
+  };
+  const off = await send('hi');
+  assert.match(off.system, /^You are Squiggle, a personal AI agent/, 'off by default: the full prompt');
+  await D.page.click('button[data-panel="settings"]');
+  const box = D.page.locator('#drawer label.toggle:has-text("Small-model mode") input');
+  assert.equal(await box.isChecked(), false);
+  await box.check();
+  assert.deepEqual(await D.page.evaluate(() => JSON.parse(localStorage.getItem('squiggle-settings')).smallMode), { E2B: true });
+  await D.page.click('#close-drawer');
+  await D.page.waitForTimeout(500);
+  const on = await send('hello again');
+  assert.match(on.system, /^You are Squiggle, an assistant that figures things out\./);
+  assert.match(on.system, /find tells you which of your other tools fits/);
+  assert.doesNotMatch(on.system, /```tool_call/, 'native tool formats don\'t get the fenced-block line');
+  assert.ok(on.tools.includes('find') && on.tools.includes('plan'), JSON.stringify(on.tools));
+  // Squiggle Small: shown as always on, no switch.
+  await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'SQ'; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('button[data-panel="settings"]');
+  await D.page.waitForSelector('#drawer .field:has-text("Small-model mode")');
+  assert.equal(await D.page.locator('#drawer label.toggle:has-text("Small-model mode")').count(), 0);
+  assert.match(await D.page.locator('#drawer .field:has-text("Small-model mode")').textContent(), /Always on for Fake SQ/);
+});
+
 await check('small models: a long page comes back as a card saved in /web, grep finds the answer, and used results shrink to what the model took', async () => {
   const D = await device('cards');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));

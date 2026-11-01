@@ -221,6 +221,15 @@ and parses it.
   ```
 
   (`LITE_SYSTEM` in agent.js; the date line is `new Date().toDateString()`.)
+
+- **Small-model mode switch** (Settings → Small-model mode, stored per model in `settings.smallMode`):
+  always on for small models in this fenced format (Squiggle Small; it's their training text and the only
+  format their engine parses), off by default and switchable for every other model with tools (Gemma 4
+  E2B/E4B, the cloud model, tiny Gemma 4, Qwen3.5). Switched on, those models get `LITE_SYSTEM_NATIVE`:
+  `LITE_SYSTEM`'s first three lines, without the ```` ```tool_call ```` line (their own template declares
+  the tools), plus "Start with plan, done, need and find; find tells you which of your other tools fits."
+  They still get every tool declared natively. Context budgets and background jobs follow the runtime
+  (wllama or not), not this switch.
   Tools the model has looked up are appended as
   `Tools you have looked up:\n- name(arg, optional?): first sentence of the description`.
 
