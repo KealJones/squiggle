@@ -1652,14 +1652,18 @@ function sideProgress(line) {
   })();
   if (!task) return sideSection('progress', 'Progress', '', h('p', { class: 'empty-line' }, 'No plan yet. Longer jobs get a step list here.'));
   const { done, total } = tasks.progress(task);
-  return sideSection('progress', 'Progress', `${done}/${total}`, planEl(task, { live: Boolean(liveTurn) }));
+  const el = planEl(task, { live: Boolean(liveTurn) });
+  if (el.tagName === 'DETAILS') el.open = true;  // a finished plan: still show the steps here
+  return sideSection('progress', 'Progress', `${done}/${total}`, el);
 }
 
 // Tools grouped by name, plus what came in (attachments, pages, repos) and what went out (files, commits, pushes, PRs).
+const HARNESS_TOOLS = new Set(['plan', 'done', 'checkpoint']);
 const OUTPUT_TOOLS = new Set(['write_file', 'edit_file', 'delete_file', 'git_commit', 'git_push', 'git_branch', 'github_open_pr', 'remember', 'note']);
 function sideUsage(line) {
-  const tools = line.flatMap(m => m.tools || []);
-  if (liveTurn) tools.push(...liveTurn.tools.filter(t => !t.running));
+  // The harness's own bookkeeping (plan, done, checkpoint) isn't a tool the chat "used".
+  const tools = line.flatMap(m => m.tools || []).filter(t => !HARNESS_TOOLS.has(t.name));
+  if (liveTurn) tools.push(...liveTurn.tools.filter(t => !t.running && !HARNESS_TOOLS.has(t.name)));
   const counts = new Map();
   for (const t of tools) {
     const c = counts.get(t.name) || { n: 0, fail: 0 };
@@ -1671,7 +1675,7 @@ function sideUsage(line) {
   const used = [];
   if (files.length) used.push(...files.map(a => h('li', {}, icon('i-attach'), h('span', { class: 'label', title: a.name }, a.name), h('span', { class: 'count' }, fmtSize(a.size)))));
   if (pages.length) used.push(...pages.slice(-8).map(u => h('li', {}, h('span', { class: 'label', title: u }, u.replace(/^https?:\/\//, '')))));
-  const toolRows = [...counts].filter(([n]) => !['done', 'plan', 'checkpoint'].includes(n)).sort((a, b) => b[1].n - a[1].n)
+  const toolRows = [...counts].sort((a, b) => b[1].n - a[1].n)
     .map(([name, c]) => h('li', {}, h('span', { class: 'label' }, name), c.fail ? h('span', { class: 'fail', title: `${c.fail} failed` }, `${c.fail}✕`) : '', h('span', { class: 'count' }, `×${c.n}`)));
   const outs = tools.filter(t => OUTPUT_TOOLS.has(t.name) && t.ok !== false).slice(-12)
     .map(t => h('li', {}, h('span', { class: 'label', title: t.args ? JSON.stringify(t.args) : (t.label || t.name) }, t.label || t.name)));

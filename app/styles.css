@@ -311,6 +311,9 @@ a { color: var(--action); }
 .ctx-rows .p { color: var(--ink-soft); text-align: right; min-width: 3.2em; }
 .ctx-note { color: var(--ink-soft); margin: 8px 0 0; font-size: 0.82rem; }
 .side-body .plan { margin: 0; }
+.side-body .plan.chip > summary { display: none; }
+.side-body .plan.chip { border: 0; border-radius: 0; background: none; padding: 0; }
+.side-body .plan.chip .plan-steps, .side-body .plan.chip[open] .plan-steps { border-left: 0; padding-left: 0; margin-top: 0; }
 .side-body .plan.live { padding: 8px 10px; }
 .use-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
 .use-list li { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
