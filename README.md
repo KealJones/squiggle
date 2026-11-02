@@ -16,15 +16,17 @@ few GitHub requests browsers aren't allowed to make directly.
 
 ## What it does
 
-- **On-device model**: Gemma 4 E4B (3.0 GB, default) or E2B (2.0 GB) on computers. Phones run Gemma 3 270M (242 MB) on the CPU, since Gemma 4 doesn't fit a phone browser tab; it's quick but much less capable, and the cloud model is still there for harder tasks. Downloads once per device, then works offline.
+- **On-device model**: Gemma 4 E4B (3.0 GB, default) or E2B (2.0 GB) on computers. Phones run Squiggle Small (219 MB, experimental) on the CPU, since Gemma 4 doesn't fit a phone browser tab. It's LFM2.5 350M fine-tuned on Squiggle's own tool format, so it can use tools, but it's much less capable than Gemma 4, and the cloud model is still there for harder tasks. Gemma 3 270M (242 MB, chat only, no tools) and a few other small test models are in the model list too. Computers without WebGPU fall back to the same CPU models. Downloads once per device, then works offline.
 - **Cloud model (optional)**: Gemma 4 26B on your relay's Workers AI, for GitHub logins in `AI_USERS`. It stops at a daily cap under Cloudflare's free 10,000 neurons (resets midnight UTC) and says so, so it never bills. Chats sent to it leave your device.
 - **Sessions that follow you**: every conversation syncs through your storage repo. Two devices can chat offline in the same session; their messages merge on the next sync instead of conflicting.
 - **Threads**: reply in a thread on any message. The thread knows the conversation up to that point, the main chat stays uncluttered, and a one-line outcome shows under the parent message.
-- **Git workspace**: `/home` is the agent's own synced folder; `/repos/<name>` holds clones. Tools: clone, status, branch, commit, push, pull, log, open PR, list repos.
-- **Memory**: a small graph of facts about you and your projects (`memory/facts.jsonl`), learned as you chat or added by hand, reviewable in the Memory panel.
-- **Context for small models**: compaction by default (rolling summary + recent messages). Turn on **Smart context** in Settings to also retrieve the most relevant earlier messages, web pages and files for each question. "What the model saw" on any reply shows exactly what went in.
+- **Git workspace**: `/home` is the agent's own synced folder; `/repos/<name>` holds clones. Tools: list, read, write, edit and delete files, grep, note, clone, status, branch, commit, push, pull, log, show, open PR, list repos.
+- **Memory**: a small graph of facts about you and your projects (`memory/facts.jsonl`), learned as you chat or added by hand, reviewable in the Memory panel. The agent can `remember`, `recall` and `forget`.
+- **Voice**: a call button for talking with it hands-free, with replies read aloud on-device (Kokoro-82M on computers, KittenTTS nano on phones, both downloaded once).
+- **Attachments**: attach files to a message (up to 10, 20 MB each). Text is read directly, PDFs have their text extracted, and images are read with OCR.
+- **Context for small models**: Settings → Context picks how the model's context is managed: Compress (rolling summary + recent messages), Smart (the default: also retrieves the most relevant earlier messages, web pages and files for each question) or AI-managed (experimental). You can also bring in other chats. "What the model saw" on any reply shows exactly what went in.
 - **Search**: search all your chats from the sidebar; the agent can search them too (`search_history`).
-- **Web and code**: `fetch_url` reads pages; `run_js` runs JavaScript in an isolated sandbox.
+- **Web and code**: `fetch_url` reads pages, `web_search` searches the web, `calculate` does maths and `run_js` runs JavaScript in an isolated sandbox.
 
 ## How it keeps you safe
 
@@ -145,12 +147,13 @@ Optional backstop. In a repo where you never want direct pushes to `main` (even 
 | Data | Where it lives |
 |---|---|
 | Model weights | Downloaded from Hugging Face once, stored in this browser |
+| Voice models | Downloaded once, stored in this browser |
 | Conversations, memory, `/home` files | Your private storage repo on GitHub, plus a local copy in this browser |
 | Repo clones (`/repos`) | This browser only; share work by pushing branches |
-| Settings (model, theme, smart context) | This browser only |
+| Settings (model, theme, context mode) | This browser only |
 | GitHub sign-in | This browser only; passes through your Worker on the way to GitHub, never stored there |
 
-Your Worker relays git traffic and (if `ENABLE_FETCH` is on) pages the agent reads. It runs on your own Cloudflare account and logs nothing. The model runtime loads from a version-pinned jsDelivr URL; the optional smart-context search model (23 MB) loads from Hugging Face.
+Your Worker relays git traffic and (if `ENABLE_FETCH` is on) pages the agent reads. It runs on your own Cloudflare account and logs nothing. The model runtime loads from a version-pinned jsDelivr URL; the optional smart-context search model (23 MB) loads from Hugging Face. Attachments and voice also load version-pinned libraries from jsDelivr (Tesseract.js for OCR, pdf.js for PDFs, ONNX Runtime Web and a phonemizer for speech).
 
 ## Development
 
@@ -164,9 +167,11 @@ npm run dev                 # local Worker + app at http://localhost:8787
 npm run vendor              # rebuild app/vendor/ after changing a library version
 ```
 
+There are also two benchmarks you can run by hand: `node tests/e2e/tts-bench.mjs` (speech) and `node tests/e2e/wllama-bench.mjs` (the phone CPU models). CI (`.github/workflows/ci.yml`) runs the unit tests, the e2e suite (both modes) and a Worker dry-run.
+
 No build step: the app is plain ES modules in `app/`. See [CLAUDE.md](CLAUDE.md) for the architecture.
 
 ## Roadmap
 
-- **Next**: voice call mode (speak, auto-send on pause, replies read aloud), file attachments and document search, skills and custom agents.
+- **Next**: skills and custom agents.
 - **Then**: scheduled jobs via GitHub Actions in your storage repo, remote MCP servers, push notifications.
