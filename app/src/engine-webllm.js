@@ -220,6 +220,20 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
   };
 }
 
+// The engine Squiggle loads (engine.js): the shim under engine-wllama.js's conversations. Built here,
+// not in engine-wllama.js, so a browser still holding an older cached engine-wllama.js can't end up
+// loading a WebLLM model through the wllama path.
+export async function createEngine(mlc, contextSize, onStage = () => {}, { native = false, toolFormat = null } = {}) {
+  onStage('starting the runtime');
+  const { Conversation, NativeConversation } = await import('./engine-wllama.js');
+  const w = await createShim(mlc, contextSize, onStage, { format: native ? toolFormat : null });
+  return {
+    info: { ...w.info, asked: { gpu: true, threads: false, isolated: Boolean(globalThis.crossOriginIsolated), webgpu: true } },
+    createConversation: async (cfg) => (native ? new NativeConversation(w, cfg) : new Conversation(w, cfg)),
+    delete: async () => { try { await w.exit(); } catch {} },
+  };
+}
+
 // "<think>…</think>rest" → { thinking, text, pending }. pending while a tag might still be forming.
 // assumeOpen: thinking was asked for and the template may already have written the opening tag,
 // so text before a </think> is thinking even without a <think>.

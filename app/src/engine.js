@@ -334,8 +334,9 @@ export async function load(id, contextSize, { fast = true, onStage = () => {}, s
   }
   if (MODELS[id].runtime === 'wllama') {
     const m = MODELS[id];
-    engine = await (await import('./engine-wllama.js')).createEngine(m.url, contextSize, onStage,
-      { ...small, native: Boolean(m.native), ...(m.backend === 'webllm' ? { webllm: m.mlc, toolFormat: m.toolFormat || null } : {}) });
+    engine = m.backend === 'webllm'
+      ? await (await import('./engine-webllm.js')).createEngine(m.mlc, contextSize, onStage, { native: Boolean(m.native), toolFormat: m.toolFormat || null })
+      : await (await import('./engine-wllama.js')).createEngine(m.url, contextSize, onStage, { ...small, native: Boolean(m.native) });
     loadedModel = id; engineContext = contextSize; engineFast = fast; engineSmall = smallKey;
     return;
   }

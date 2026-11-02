@@ -501,18 +501,8 @@ export const lastSpeed = () => speed;
 // (sw.js adds the headers when the setting is on), otherwise one thread.
 const safe = (fn, d) => { try { return fn(); } catch { return d; } };
 
-export async function createEngine(url, contextSize, onStage = () => {}, { gpu = false, threads = false, native = false, webllm = null, toolFormat = null } = {}) {
+export async function createEngine(url, contextSize, onStage = () => {}, { gpu = false, threads = false, native = false } = {}) {
   onStage('starting the runtime');
-  // WebLLM on WebGPU (engine-webllm.js): same conversations, a different engine underneath.
-  if (webllm) {
-    const w = await (await import('./engine-webllm.js')).createShim(webllm, contextSize, onStage, { format: native ? toolFormat : null });
-    speed = null;
-    return {
-      info: { ...w.info, asked: { gpu: true, threads: false, isolated: Boolean(globalThis.crossOriginIsolated), webgpu: true } },
-      createConversation: async (cfg) => (native ? new NativeConversation(w, cfg) : new Conversation(w, cfg)),
-      delete: async () => { try { await w.exit(); } catch {} },
-    };
-  }
   const { Wllama } = await getLib();
   const w = new Wllama({ default: WASM }, { suppressNativeLog: true });
   const useGpu = Boolean(gpu) && safe(() => w.isSupportWebGPU(), false);
