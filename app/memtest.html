@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Phone Memory Test</title>
+<style>
+  /* One column, phone first: device facts, run controls, results log. */
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --fg: #1b1f27; --muted: #5d6675; --line: #dde1e8;
+    --accent: #2f5bd3; --ok: #1f7a4a; --bad: #b3261e; --warn: #8a5a00;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12151b; --panel: #1a1e26; --fg: #e6e9ef; --muted: #9aa3b2; --line: #2b313c;
+            --accent: #7fa2ff; --ok: #5cc98d; --bad: #ff8a80; --warn: #e3b55b; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 var(--sans);
+         padding-block: max(16px, env(safe-area-inset-top, 0px)) 32px;
+         padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  main { max-width: 760px; margin: 0 auto; display: grid; gap: 16px; }
+  h1 { font-size: 1.35rem; margin: 0; }
+  h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+  p { margin: 0; color: var(--muted); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; }
+  .facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font: 13px/1.4 var(--mono); }
+  .facts dt { color: var(--muted); } .facts dd { margin: 0; overflow-wrap: anywhere; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+  label { display: grid; gap: 4px; font-size: .85rem; color: var(--muted); flex: 1 1 200px; }
+  select, button { font: inherit; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+  button { cursor: pointer; } button:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { font: 13px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+  .banner { border-left: 4px solid var(--warn); padding: 10px 12px; background: var(--panel); border-radius: 6px; }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font: 13px/1.35 var(--mono); font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  details summary { cursor: pointer; color: var(--muted); }
+  ol { margin: 6px 0 0; padding-left: 20px; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Phone Memory Test</h1>
+    <p>Loads one small model with one engine, checks it answers, then measures how much memory the tab still has. If the tab dies, reopen this page: it records where it died.</p>
+  </header>
+
+  <div id="crash" class="banner" hidden></div>
+
+  <section>
+    <h2>This device</h2>
+    <dl class="facts" id="facts"></dl>
+  </section>
+
+  <section>
+    <h2>Run</h2>
+    <div class="row">
+      <label for="engine">Engine
+        <select id="engine">
+          <option value="wllama-cpu">wllama, CPU (what Squiggle uses)</option>
+          <option value="wllama-gpu">wllama, WebGPU</option>
+          <option value="webllm">WebLLM (MLC), WebGPU</option>
+          <option value="none">No model (baseline)</option>
+        </select>
+      </label>
+      <label for="model">Model
+        <select id="model"></select>
+      </label>
+      <label for="probe">Then measure
+        <select id="probe">
+          <option value="js">JS memory left</option>
+          <option value="gpu">GPU memory left</option>
+          <option value="off">Nothing (load and answer only)</option>
+        </select>
+      </label>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="run">Run test</button>
+      <button id="copy">Copy results</button>
+      <button id="clear">Clear results</button>
+    </div>
+    <div id="status" style="margin-top:12px">Ready.</div>
+  </section>
+
+  <section>
+    <h2>Results</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>engine</th><th>model</th><th>load s</th><th>tok/s</th><th>left after</th><th>outcome</th></tr></thead>
+      <tbody id="results"></tbody>
+    </table></div>
+    <details style="margin-top:10px"><summary>How to read this</summary>
+      <ol>
+        <li>Start with <b>No model (baseline)</b> for JS, then for GPU. That's the tab's whole budget right now.</li>
+        <li>Run each engine with the same model. Budget minus "left after" is roughly what the engine costs.</li>
+        <li>"died while loading" means the engine's loading peak is too big for this phone, whatever it costs once loaded.</li>
+        <li>The tab is expected to die at the end of a memory measurement; that's how it finds the limit. Reopen the page each time.</li>
+        <li>Numbers move with what else the phone is doing. Close other tabs and apps, and repeat a run before trusting a gap under ~100 MB.</li>
+      </ol>
+    </details>
+  </section>
+</main>
+
+<script type="module">
+const WLLAMA_VERSION = '3.8.1';
+const WEBLLM_VERSION = '0.2.87';
+const HF = 'https://huggingface.co/';
+const MODELS = {
+  q06: { label: 'Qwen3 0.6B', gguf: HF + 'unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_0.gguf', ggufMB: 382, mlc: 'Qwen3-0.6B-q4f16_1-MLC' },
+  q35: { label: 'Qwen3.5 0.8B', gguf: HF + 'unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_0.gguf', ggufMB: 507, mlc: 'Qwen3.5-0.8B-q4f16_1-MLC' },
+  ll1: { label: 'Llama 3.2 1B', gguf: HF + 'unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_0.gguf', ggufMB: 773, mlc: 'Llama-3.2-1B-Instruct-q4f16_1-MLC' },
+  q2b: { label: 'Qwen3.5 2B', gguf: HF + 'unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_0.gguf', ggufMB: 1215, mlc: 'Qwen3.5-2B-q4f16_1-MLC' },
+};
+const PROMPT = 'In three sentences, explain why the sky is blue.';
+const MAX_TOKENS = 64;
+const CTX = 2048;
+const params = new URLSearchParams(location.search);
+const STEP_MB = 32;
+const CAP_MB = Number(params.get('cap')) || 4096;   // ?cap=512 for desktop testing
+const STEP_PAUSE = 200;                              // ms between steps, so the marker reaches disk before a kill
+
+const $ = (id) => document.getElementById(id);
+const KEY_RUN = 'memtest-run', KEY_RESULTS = 'memtest-results';
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const say = (t) => { $('status').textContent = t; };
+
+for (const [id, m] of Object.entries(MODELS)) {
+  const o = document.createElement('option'); o.value = id; o.textContent = `${m.label} (~${m.ggufMB} MB GGUF)`; $('model').append(o);
+}
+// Remember the last choice so a reopen after a kill lands on the same settings.
+const last = store.get('memtest-choice', null);
+if (last) for (const k of ['engine', 'model', 'probe']) if (last[k]) $(k).value = last[k];
+
+// ── Device facts ──────────────────────────────────────────────────────────
+async function deviceFacts() {
+  const f = {
+    browser: navigator.userAgent.replace(/^Mozilla\/5\.0 /, ''),
+    cores: navigator.hardwareConcurrency || '?',
+    'device memory': navigator.deviceMemory ? navigator.deviceMemory + ' GB (rounded)' : 'not reported',
+    JSPI: typeof WebAssembly.Suspending === 'function' ? 'yes' : 'no',
+    Memory64: (() => { try { new WebAssembly.Memory({ address: 'i64', initial: 1n }); return 'yes'; } catch { return 'no'; } })(),
+    'wllama build': '',
+    WebGPU: 'no',
+  };
+  f['wllama build'] = f.JSPI === 'yes' && f.Memory64 === 'yes' ? 'normal' : 'compatibility (slower)';
+  if (navigator.gpu) {
+    try {
+      const a = await navigator.gpu.requestAdapter();
+      if (a) {
+        const info = a.info || {};
+        f.WebGPU = [info.vendor, info.architecture].filter(Boolean).join(' ') || 'yes';
+        f['max buffer'] = Math.round(a.limits.maxBufferSize / 2 ** 20) + ' MB';
+        f['max storage binding'] = Math.round(a.limits.maxStorageBufferBindingSize / 2 ** 20) + ' MB';
+        f['shader-f16'] = a.features.has('shader-f16') ? 'yes' : 'no';
+      } else f.WebGPU = 'no adapter';
+    } catch (e) { f.WebGPU = 'error: ' + e.message; }
+  }
+  $('facts').replaceChildren(...Object.entries(f).flatMap(([k, v]) => {
+    const dt = document.createElement('dt'); dt.textContent = k;
+    const dd = document.createElement('dd'); dd.textContent = v;
+    return [dt, dd];
+  }));
+  return f;
+}
+
+// ── Results ───────────────────────────────────────────────────────────────
+function renderResults() {
+  const rows = store.get(KEY_RESULTS, []);
+  $('results').replaceChildren(...(rows.length ? rows : [{ empty: true }]).map(r => {
+    const tr = document.createElement('tr');
+    if (r.empty) { tr.innerHTML = '<td colspan="6" style="color:var(--muted)">No runs yet. Start with the baseline.</td>'; return tr; }
+    const cells = [
+      r.engine, r.engine === 'none' ? '—' : MODELS[r.model]?.label || r.model,
+      r.loadS ?? '—', r.tokS ?? '—',
+      r.leftMB == null ? '—' : `${r.capped ? '≥' : '~'}${r.leftMB} MB ${r.probe.toUpperCase()}`,
+    ];
+    for (const c of cells) { const td = document.createElement('td'); td.textContent = c; tr.append(td); }
+    const td = document.createElement('td'); td.textContent = r.outcome; td.className = r.cls || ''; tr.append(td);
+    return tr;
+  }));
+}
+function addResult(r) { const rows = store.get(KEY_RESULTS, []); rows.push(r); store.set(KEY_RESULTS, rows); renderResults(); }
+
+// A run writes its stage here as it goes. If the page opens and finds one, the tab died mid-run.
+function mark(run, patch) { Object.assign(run, patch, { at: Date.now() }); store.set(KEY_RUN, run); }
+
+function recoverCrash() {
+  const run = store.get(KEY_RUN, null);
+  if (!run) return;
+  store.del(KEY_RUN);
+  const probing = run.stage === 'probe';
+  const r = { ...pick(run), leftMB: probing ? run.mb : null, capped: false,
+    outcome: probing ? 'tab died at the memory limit (expected)' : `tab died while ${run.stage}`,
+    cls: probing ? 'ok' : 'bad', facts: run.facts };
+  addResult(r);
+  const b = $('crash'); b.hidden = false;
+  b.textContent = probing
+    ? `Last run finished: the tab hit its limit with about ${run.mb} MB of ${run.probe.toUpperCase()} memory still free after the model. Saved below.`
+    : `The last run's tab died while ${run.stage} (${run.engine}, ${MODELS[run.model]?.label || run.model}). Saved below.`;
+}
+const pick = (run) => ({ engine: run.engine, model: run.model, probe: run.probe, loadS: run.loadS, tokS: run.tokS, ts: run.ts });
+
+// ── Engines ───────────────────────────────────────────────────────────────
+async function runWllama(run, gpu) {
+  const m = MODELS[run.model];
+  const lib = await import(`https://cdn.jsdelivr.net/npm/@wllama/wllama@${WLLAMA_VERSION}/esm/index.min.js`);
+  // Download into wllama's cache first, so "died while downloading" and "died while loading" are told apart.
+  const cache = new lib.CacheManager();
+  const have = await cache.open(m.gguf).then(b => b && b.size).catch(() => 0);
+  if (!have) {
+    mark(run, { stage: 'downloading' });
+    await cache.download(m.gguf, { progressCallback: ({ loaded, total }) => say(`Downloading ${m.label}: ${Math.round(100 * loaded / (total || 1))}%`) });
+  }
+  const w = new lib.Wllama({ default: `https://cdn.jsdelivr.net/npm/@wllama/wllama@${WLLAMA_VERSION}/esm/wasm/wllama.wasm` }, { suppressNativeLog: true });
+  if (gpu && !w.isSupportWebGPU()) throw new Error('This browser has no WebGPU');
+  mark(run, { stage: 'loading' });
+  say(`Loading ${m.label} with wllama (${gpu ? 'WebGPU' : 'CPU'})…`);
+  const t0 = performance.now();
+  await w.loadModelFromUrl(m.gguf, { n_ctx: CTX, n_gpu_layers: gpu ? 999 : 0, n_threads: 1 });
+  mark(run, { loadS: +((performance.now() - t0) / 1000).toFixed(1), stage: 'answering', compat: !!w.getWorkerResources?.().compat });
+  say('Answering the test prompt…');
+  let n = 0, text = '', t1 = 0;
+  const stream = await w.createChatCompletion({ messages: [{ role: 'user', content: PROMPT }], max_tokens: MAX_TOKENS, temperature: 0, stream: true });
+  for await (const c of stream) {
+    const d = c.choices?.[0]?.delta || {};
+    const piece = (d.content || '') + (d.reasoning_content || '');
+    if (piece) { if (!n) t1 = performance.now(); n++; text += piece; }
+  }
+  const tokS = n > 1 ? +((n - 1) / ((performance.now() - t1) / 1000)).toFixed(1) : null;
+  mark(run, { tokS, sample: text.slice(0, 120) });
+  return { unload: () => w.exit().catch(() => {}) };
+}
+
+async function runWebLLM(run) {
+  const m = MODELS[run.model];
+  if (!navigator.gpu) throw new Error('This browser has no WebGPU');
+  // q4f16 needs the GPU's shader-f16 feature; fall back to the f32 build without it.
+  const mlcId = FACTS['shader-f16'] === 'yes' ? m.mlc : m.mlc.replace('q4f16_1', 'q4f32_1');
+  mark(run, { mlcId });
+  const webllm = await import(`https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@${WEBLLM_VERSION}/+esm`);
+  mark(run, { stage: 'downloading or loading' });
+  const t0 = performance.now();
+  const engine = await webllm.CreateMLCEngine(mlcId, {
+    initProgressCallback: (p) => {
+      const stage = /fetch/i.test(p.text) ? 'downloading' : 'loading';
+      if (stage !== run.stage) mark(run, { stage });
+      say(`WebLLM: ${p.text}`);
+    },
+  }, { context_window_size: CTX });
+  mark(run, { loadS: +((performance.now() - t0) / 1000).toFixed(1), stage: 'answering' });
+  say('Answering the test prompt…');
+  let n = 0, text = '', t1 = 0;
+  const chunks = await engine.chat.completions.create({ messages: [{ role: 'user', content: PROMPT }], max_tokens: MAX_TOKENS, temperature: 0, stream: true });
+  for await (const c of chunks) {
+    const piece = c.choices?.[0]?.delta?.content || '';
+    if (piece) { if (!n) t1 = performance.now(); n++; text += piece; }
+  }
+  const tokS = n > 1 ? +((n - 1) / ((performance.now() - t1) / 1000)).toFixed(1) : null;
+  mark(run, { tokS, sample: text.slice(0, 120) });
+  return { unload: () => engine.unload().catch(() => {}) };
+}
+
+// ── Headroom probes ───────────────────────────────────────────────────────
+// Fill memory in 32 MB steps with incompressible bytes (iOS compresses memory, so zeros would undercount).
+function noiseBlock(bytes) {
+  const a = new Uint8Array(bytes);
+  for (let i = 0; i < 65536 && i < bytes; i += 65536) crypto.getRandomValues(a.subarray(i, i + 65536));
+  // Different random bytes per 64 KB, cheaply: fill the first 64 KB, then copy with a rolling offset xor.
+  for (let off = 65536; off < bytes; off += 65536) {
+    a.copyWithin(off, 0, Math.min(65536, bytes - off));
+    a[off] ^= off >>> 16; a[off + 1] ^= off >>> 8;
+  }
+  return a;
+}
+
+async function probeJS(run) {
+  const keep = [];
+  for (let mb = STEP_MB; mb <= CAP_MB; mb += STEP_MB) {
+    mark(run, { stage: 'probe', mb: mb - STEP_MB });
+    say(`Measuring JS memory left: ${mb - STEP_MB} MB held so far…`);
+    try { keep.push(noiseBlock(STEP_MB * 2 ** 20)); }
+    catch { return { leftMB: mb - STEP_MB, capped: false, how: 'allocation refused' }; }
+    await sleep(STEP_PAUSE);
+  }
+  keep.length = 0;
+  return { leftMB: CAP_MB, capped: true, how: 'reached the cap' };
+}
+
+async function probeGPU(run) {
+  if (!navigator.gpu) throw new Error('This browser has no WebGPU');
+  const adapter = await navigator.gpu.requestAdapter();
+  const device = await adapter.requestDevice();
+  let lost = false; device.lost.then(() => { lost = true; });
+  const size = STEP_MB * 2 ** 20;
+  const data = noiseBlock(size);
+  const bufs = [];
+  for (let mb = STEP_MB; mb <= CAP_MB; mb += STEP_MB) {
+    mark(run, { stage: 'probe', mb: mb - STEP_MB });
+    say(`Measuring GPU memory left: ${mb - STEP_MB} MB held so far…`);
+    device.pushErrorScope('out-of-memory');
+    const b = device.createBuffer({ size, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    device.queue.writeBuffer(b, 0, data);   // write real bytes so the memory is committed
+    await device.queue.onSubmittedWorkDone();
+    const err = await device.popErrorScope();
+    if (err || lost) { device.destroy(); return { leftMB: mb - STEP_MB, capped: false, how: lost ? 'GPU device lost' : 'GPU out of memory' }; }
+    bufs.push(b);
+    await sleep(STEP_PAUSE);
+  }
+  device.destroy();
+  return { leftMB: CAP_MB, capped: true, how: 'reached the cap' };
+}
+
+// ── Run ───────────────────────────────────────────────────────────────────
+async function runTest() {
+  const choice = { engine: $('engine').value, model: $('model').value, probe: $('probe').value };
+  store.set('memtest-choice', choice);
+  if (choice.engine === 'none' && choice.probe === 'off') { say('Pick JS or GPU to measure for a baseline.'); return; }
+  for (const b of document.querySelectorAll('button, select')) b.disabled = true;
+  $('crash').hidden = true;
+  const run = { ...choice, ts: new Date().toISOString(), facts: FACTS };
+  let session = null;
+  try {
+    if (choice.engine === 'wllama-cpu') session = await runWllama(run, false);
+    else if (choice.engine === 'wllama-gpu') session = await runWllama(run, true);
+    else if (choice.engine === 'webllm') session = await runWebLLM(run);
+    let left = { leftMB: null };
+    if (choice.probe === 'js') left = await probeJS(run);
+    if (choice.probe === 'gpu') left = await probeGPU(run);
+    store.del(KEY_RUN);
+    addResult({ ...pick(run), ...left, outcome: left.how ? `finished (${left.how})` : 'loaded and answered', cls: 'ok', sample: run.sample, compat: run.compat, facts: FACTS });
+    say(`Done.${run.sample ? `\nIt said: “${run.sample}…”` : ''}`);
+  } catch (e) {
+    store.del(KEY_RUN);
+    addResult({ ...pick(run), outcome: `error while ${run.stage || 'starting'}: ${e.message}`, cls: 'bad', facts: FACTS });
+    say('Error: ' + (e && e.message || e));
+  } finally {
+    if (session) await session.unload();
+    for (const b of document.querySelectorAll('button, select')) b.disabled = false;
+  }
+}
+
+$('run').onclick = runTest;
+$('clear').onclick = () => { store.del(KEY_RESULTS); renderResults(); say('Results cleared.'); };
+$('copy').onclick = async () => {
+  const text = JSON.stringify({ device: FACTS, results: store.get(KEY_RESULTS, []) }, null, 1);
+  try { await navigator.clipboard.writeText(text); say('Copied. Paste it back to Claude.'); }
+  catch { say(text); }
+};
+
+const FACTS = await deviceFacts();
+recoverCrash();
+renderResults();
+window.memtestReady = true;
+</script>
+</body>
+</html>
