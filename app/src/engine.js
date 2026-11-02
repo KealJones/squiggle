@@ -360,7 +360,7 @@ const SAMPLER = { type: 2, p: 0.95, k: 64, temperature: 0.7 };
 const GREEDY = { type: 3 };
 
 // Starts a conversation from a preface: system text, prior turns, tools.
-export async function conversation({ system, messages = [], tools = [], thinking = false, maxOutputTokens = 2048, greedy = false, known = [] }) {
+export async function conversation({ system, messages = [], tools = [], thinking = false, maxOutputTokens = 2048, greedy = false, known = [], gate = null }) {
   if (!engine) throw new Error('Model not loaded.');
   const preface = {
     messages: [{ role: 'system', content: system }, ...messages],
@@ -369,6 +369,8 @@ export async function conversation({ system, messages = [], tools = [], thinking
   if (tools.length) preface.tools = tools.map(t => ({ type: 'function', function: t }));
   // The small model only sees details of tools it has looked up (engine-wllama.js).
   if (isLite() && known.length) preface.known = known;
+  // Small native models: only these (plus tools looked up) are declared; the rest are names in the prompt.
+  if (isLite() && gate) preface.gate = gate;
   const cfg = { preface, sessionConfig: { maxOutputTokens, samplerParams: greedy ? GREEDY : SAMPLER } };
   try {
     return await engine.createConversation(cfg);

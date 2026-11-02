@@ -237,3 +237,11 @@ test('stepPrompt never drops sections marked keep (checkpoint, attachments), onl
   assert.deepEqual(p.shown, ['Attached for this step']);
   assert.match(p.text, /## Attached for this step\nATT/);
 });
+
+test('tool_info spec takes a list of names and counts as harness bookkeeping', () => {
+  const s = tasks.TOOL_INFO_SPEC;
+  assert.equal(s.name, 'tool_info');
+  assert.deepEqual(s.parameters.required, ['names']);
+  assert.equal(s.parameters.properties.names.type, 'array');
+  assert.ok(tasks.HARNESS.has('tool_info'));
+});

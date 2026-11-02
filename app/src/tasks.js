@@ -43,7 +43,12 @@ export const MANAGED_SPECS = {
   checkpoint: { name: 'checkpoint', description: 'Running low on room: save where you are and carry on in a fresh context. The fresh one gets the request, your summary, what you list in needs, and next as the instruction. The user sees one continuous reply.',
     parameters: S({ summary: str('What is known and done so far (facts, paths, numbers, unfinished thinking)'), needs: NEEDS, next: str('What to do next') }, ['summary', 'next']) },
 };
-export const HARNESS = new Set([...Object.keys(HARNESS_SPECS), 'checkpoint']);
+// Small native models (wllama with the GGUF's own template) get only a few tools declared up front and every
+// other tool as a bare name in the prompt; tool_info declares the ones it asks for (docs/harness.md, "Tool names
+// up front"). A tool stays declared for the rest of the step or chat phase.
+export const TOOL_INFO_SPEC = { name: 'tool_info', description: 'Get how to call tools from the "other tools" list. Ask for every tool you expect to need at once. They are ready to call after this.',
+  parameters: S({ names: { type: 'array', items: { type: 'string' }, description: 'Tool names from the list, e.g. ["read_file", "grep"]' } }, ['names']) };
+export const HARNESS = new Set([...Object.keys(HARNESS_SPECS), 'checkpoint', 'tool_info']);
 export const MAX_CHECKPOINTS = 4;   // per turn; then the person is asked whether to go on
 
 const cleanText = (t) => String(t ?? '').replace(/^\s*(?:\d+[.)]|[-*•])\s*/, '').replace(/\s+/g, ' ').trim();

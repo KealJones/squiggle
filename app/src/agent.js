@@ -68,6 +68,10 @@ const native = () => Boolean(engine.nativeTools && engine.nativeTools(settings.m
 // a switch (Settings → Small-model mode, per model) for every other model with tools. Context budgets and
 // background jobs still follow the runtime (lite), not this.
 const fencedSmall = () => lite() && !native();
+// Small native models (Qwen3.5 0.8B, tiny Gemma 4) get tools by name: GATE's tools are declared with full schemas,
+// every other tool is a bare name in the system prompt, declared once tool_info (or find) turns it up. Every
+// schema up front filled most of a phone's 4K window (docs/harness.md, "Tool names up front").
+const gated = () => lite() && native();
 const nativeId = (id) => Boolean(engine.nativeTools && engine.nativeTools(id));
 const chatOnlyId = (id) => Boolean(engine.chatOnly && engine.chatOnly(id));
 const fencedId = (id) => engine.isLite(id) && !nativeId(id) && !chatOnlyId(id);
@@ -85,9 +89,17 @@ const UPFRONT_SMALL = 'Each step shows only what it needs: attach earlier result
 // Plain chat for small models without tool training (engine.chatOnly).
 const plain = () => Boolean(engine.chatOnly && engine.chatOnly(settings.model));
 
-function systemPrompt(threadId, session) {
+// Gated models: the tools they can ask tool_info about, by name only (phase 'final' has no tools).
+function toolNamesLine(phase) {
+  if (!gated() || phase === 'final') return '';
+  const names = toolSpecs(settings.tools).map(t => t.name).filter(n => !GATE.includes(n) && !(phase === 'step' && n === 'note'));
+  return names.length ? `Other tools: ${names.join(', ')}. Before calling one, get how with tool_info(names); ask for every one you expect to need at once.` : '';
+}
+
+function systemPrompt(threadId, session, phase = 'chat') {
   if (plain()) return '';
-  if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : LITE_SYSTEM_NATIVE}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
+  const names = toolNamesLine(phase);
+  if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : LITE_SYSTEM_NATIVE}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
   const thread = threadId && session.threads[threadId];
   return [
     `You are Squiggle, a personal AI agent running privately on the user's own device. Today is ${new Date().toDateString()}.`,
@@ -99,6 +111,7 @@ function systemPrompt(threadId, session) {
     `When you learn something lasting about the user or their projects (preferences, decisions, names), save it with remember. Use search_history to find things from past conversations.`,
     `Your context window is ${settings.contextSize} tokens; every tool result says how much is left, so prefer grep and line ranges when it's low. For quick tasks without a plan, keep notes with the note tool. For code, use grep to find things, then read_file with a line range.`,
     managed() ? UPFRONT : '',
+    names,
     `Use tools when they help; answer directly when they don't. Be concise. Never invent file contents or tool results, and never say you saved, remembered, changed or pushed something unless you called the tool for it in this reply.`,
     thread ? `This is a side thread started on an earlier message ("${truncate(thread.title, 80)}"). Focus on that topic.` : '',
     UNTRUSTED_RULES(),
@@ -115,12 +128,35 @@ function preloaded(tools) {
   return PRELOADED.filter(n => names.has(n));
 }
 
+// Declared with full schemas from the start on gated models (see gated); everything else waits for tool_info.
+const GATE = ['plan', 'done', 'need', 'find', 'checkpoint', 'tool_info', ...PRELOADED];
+
 function phaseTools(step) {
   if (plain()) return [];
   const base = toolSpecs(settings.tools).filter(t => !(step && t.name === 'note'));
   const h = tasks.HARNESS_SPECS;
-  if (managed()) return [...base, tasks.MANAGED_SPECS.plan, ...(step ? [h.done] : []), h.need, h.find, tasks.MANAGED_SPECS.checkpoint];
-  return [...base, h.plan, ...(step ? [h.done] : []), h.need, h.find];
+  const info = gated() ? [tasks.TOOL_INFO_SPEC] : [];
+  if (managed()) return [...base, tasks.MANAGED_SPECS.plan, ...(step ? [h.done] : []), h.need, h.find, ...info, tasks.MANAGED_SPECS.checkpoint];
+  return [...base, h.plan, ...(step ? [h.done] : []), h.need, h.find, ...info];
+}
+
+// Tokens the tool definitions take: fenced small models see only names and looked-up one-liners (~300);
+// gated models the GATE tools plus `known`; everyone else every schema.
+function toolCost(tools, known = []) {
+  if (lite() && !native()) return 300;
+  if (gated()) return estTokens(JSON.stringify(tools.filter(t => GATE.includes(t.name) || known.includes(t.name))));
+  return estTokens(JSON.stringify(tools));
+}
+
+// When the instructions and tool definitions alone leave no room for a reply, say that plainly instead of
+// failing later with the generic "conversation got too long" (which compressing history can't fix).
+function checkOverhead(system, toolTokens) {
+  const sys = estTokens(system);
+  if (sys + toolTokens + Math.min(MAX_OUTPUT, 700) <= settings.contextSize) return;
+  const fixes = ['raise the context window in Settings', ...(smallModeSwitchable() && !smallMode() ? ['turn on Small-model mode for this model'] : []), 'turn off some tools'];
+  const e = new Error(`The instructions (about ${sys} tokens) and tool definitions (about ${toolTokens}) leave no room for a reply in this model's ${settings.contextSize}-token window, so shortening the conversation won't help. To fix it, ${fixes.join(', or ')}.`);
+  e.overhead = true;
+  throw e;
 }
 
 // A recipe, written for the prompt.
@@ -172,7 +208,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
         if (task) await turn.steps(task);
       }
     } catch (e) {
-      const msg = /too many tokens|context|kv.?cache|exceed/i.test(String(e && e.message || e))
+      const msg = e && e.overhead ? e.message : /too many tokens|context|kv.?cache|exceed/i.test(String(e && e.message || e))
         ? 'The conversation got too long for the model\'s context window. Start a new chat, or raise the context window in Settings.'
         : (e.message || e);
       turn.prefix += `\n\n⚠️ ${msg}`;
@@ -312,7 +348,9 @@ class Turn {
   // ── Chat phase: answer directly, or make a plan ─────────────────────────
   async chat() {
     const tools = phaseTools(false);
-    const toolTokens = lite() && !native() ? 300 : estTokens(JSON.stringify(tools));
+    const toolTokens = toolCost(tools);
+    checkOverhead(systemPrompt(this.threadId, this.session), toolTokens);
+    this.declaredNames = new Set(tools.map(t => t.name).filter(n => !gated() || GATE.includes(n)));
     // History gets about half the window; the rest stays free for this turn's
     // tool results and the reply (a full window made turns fail at the start).
     // Small models get a quarter: on a 4K phone window half left too little room for a lookup.
@@ -322,7 +360,7 @@ class Turn {
     this.reply.context = ctx.report;
     // Plain chat: only the recent messages; extra sections would be read as instructions.
     if (plain()) ctx.system = '';
-    this.conv = await engine.conversation({ system: ctx.system, messages: ctx.messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: preloaded(tools) });
+    this.conv = await engine.conversation({ system: ctx.system, messages: ctx.messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: preloaded(tools), gate: gated() ? GATE : null });
     let used = estTokens(ctx.system) + estTokens(JSON.stringify(ctx.messages)) + toolTokens + estTokens(this.shown);
     const room = () => Math.max(0, (settings.contextSize - used - Math.min(MAX_OUTPUT, 700)) * 3);
     // Attachments: a note, then the start of each extract using up to half
@@ -364,6 +402,7 @@ class Turn {
         if (out.ask) return null;  // `need` with nothing found: the question is the reply
         let response = out.response;
         if (chatCalls === CHAT_PLAN_NUDGE) response = { ...response, tip: 'This is taking several steps. If there is more to do, call plan so you can work through it one step at a time.' };
+        used += this.declare(tools, call, response);
         used += estTokens(JSON.stringify(response)) + 10;
         this.grow(used);
         response = { ...response, context_left: `about ${Math.max(0, Math.round((settings.contextSize - used) / 100) * 100)} of ${settings.contextSize} tokens` };
@@ -378,6 +417,8 @@ class Turn {
   startPlan(args = {}) {
     const task = tasks.newTask({ msg: this.userMsg.id, thread: this.threadId, request: this.shown, goal: args.goal, steps: args.steps, recipe: this.recipe ? this.recipe.id : null });
     if (this.attNote) task.attachNote = this.attNote;
+    // Gated models: tools looked up before planning stay declared in the steps.
+    if (gated() && this.declaredNames) { const extra = [...this.declaredNames].filter(n => !GATE.includes(n)); if (extra.length) task.tools = extra; }
     if (this.recipe) { try { recipes.touch(this.recipe.id); } catch {} }
     this.task = task;
     sessions.saveTask(this.session, task);
@@ -494,6 +535,21 @@ class Turn {
     this.grow(used);
   }
 
+  // Gated models: a call to an undeclared tool, or a find/tool_info result naming tools, declares them from the
+  // next request on (NativeConversation does the same). Returns their schema tokens, which also go on the
+  // window's tool definitions.
+  declare(tools, call, response) {
+    if (!gated() || !this.declaredNames) return 0;
+    const names = [call && call.function && call.function.name, ...(response && Array.isArray(response.tools) ? response.tools : [])];
+    const add = tools.filter(t => names.includes(t.name) && !this.declaredNames.has(t.name));
+    if (!add.length) return 0;
+    for (const t of add) this.declaredNames.add(t.name);
+    const n = estTokens(JSON.stringify(add));
+    const w = this.reply.context && this.reply.context.window;
+    if (w) w.parts.tools += n;
+    return n;
+  }
+
   grow(used) {
     const w = this.reply.context && this.reply.context.window;
     if (!w) return;
@@ -504,18 +560,21 @@ class Turn {
 
   async runStep(task, step) {
     const tools = phaseTools(true);
-    const toolTokens = lite() && !native() ? 300 : estTokens(JSON.stringify(tools));
+    const known = [...new Set([...preloaded(tools), ...(task.tools || [])])];
+    const toolTokens = toolCost(tools, known);
+    checkOverhead(systemPrompt(this.threadId, this.session, 'step'), toolTokens);
+    this.declaredNames = new Set(tools.map(t => t.name).filter(n => !gated() || GATE.includes(n) || known.includes(n)));
     // The step prompt gets under half the window; the rest is for the step's
     // own tool calls and output (a phone has 4096 tokens in all).
     const maxTokens = Math.max(600, Math.floor(settings.contextSize * 0.45) - toolTokens);
     const sections = await this.stepSections(task, step);
-    const prompt = tasks.stepPrompt(systemPrompt(this.threadId, this.session), task, sections, { maxTokens });
+    const prompt = tasks.stepPrompt(systemPrompt(this.threadId, this.session, 'step'), task, sections, { maxTokens });
     const system = prompt.text;
     const n = tasks.stepIndex(task, step) + 1;
     this.reply.context = { mode: 'step', budget: settings.contextSize, used: estTokens(system),
       items: [{ kind: 'plan', label: `Step ${n}: ${truncate(step.text, 80)} (goal, plan and results)`, tokens: estTokens(tasks.stepSystem('', task)) },
         ...sections.filter(x => prompt.shown.includes(x.title)).map(x => ({ kind: 'section', label: x.title, tokens: estTokens(x.text) }))] };
-    this.conv = await engine.conversation({ system, messages: [], tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: [...new Set([...preloaded(tools), ...(task.tools || [])])] });
+    this.conv = await engine.conversation({ system, messages: [], tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known, gate: gated() ? GATE : null });
     const reserve = Math.min(MAX_OUTPUT, 700);
     let pending = tasks.stepUser(task);
     let used = estTokens(system) + estTokens(pending) + toolTokens;
@@ -605,6 +664,7 @@ class Turn {
           if (out.ask) return 'ask';
           let response = out.response;
           if (step.calls === tasks.STEP_SOFT_CAP) response = { ...response, note: `This step has used ${step.calls} tool calls. Finish it now with done (what you have), or call need.` };
+          used += this.declare(tools, call, response);
           used += estTokens(JSON.stringify(response)) + 10;
           this.grow(used);
           if (managed()) response = { ...response, context_left: `about ${Math.max(0, Math.round((settings.contextSize - used) / 100) * 100)} of ${settings.contextSize} tokens`, ...(settings.contextSize - used - reserve < tasks.LOW_ROOM ? { low_room: tasks.lowRoomNote() } : {}) };
@@ -648,7 +708,7 @@ class Turn {
     this.finishedNow = true;
     this.ui.onPlan && this.ui.onPlan(task);
     const maxTokens = Math.max(600, settings.contextSize - Math.min(MAX_OUTPUT, 1024) - 300);
-    this.conv = await engine.conversation({ system: tasks.finalSystem(systemPrompt(this.threadId, this.session), task, { maxTokens }), messages: [], tools: [], maxOutputTokens: MAX_OUTPUT });
+    this.conv = await engine.conversation({ system: tasks.finalSystem(systemPrompt(this.threadId, this.session, 'final'), task, { maxTokens }), messages: [], tools: [], maxOutputTokens: MAX_OUTPUT });
     if (this.prefix && !/\n\n$/.test(this.prefix)) this.prefix += '\n\n';
     const r = await this.respond(tasks.finalUser(task));
     this.prefix += r.text || '';
@@ -687,6 +747,7 @@ class Turn {
       this.toolEvent({ name, label: `${name === 'need' ? 'looked for what was missing' : 'searched'}: "${truncate(query, 60)}"${empty ? ' (nothing)' : ''}`, ok: true });
       return { response: { found: text, ...(tools.length ? { tools } : {}) } };
     }
+    if (name === 'tool_info') return { response: this.toolInfo(args, task, step) };
     if (name === 'done') return { response: { error: 'There is no step to finish yet. Call plan first, or just answer.' } };
     const res = await runTool(call, { session: this.session, threadId: this.threadId, room, pageCards: lite() && !plain(), approve: (req) => askApproval(req, this.ui, this.signal) });
     this.toolEvent({ name: res.name, label: res.label, ok: res.ok, args: res.args, error: res.model && res.model.error });
@@ -697,6 +758,23 @@ class Turn {
     if (task) tasks.logCall(task, step, { name: res.name, args: res.args, ok: res.ok, label: res.label, text: json.replace(STRIP_UNTRUSTED, '') });
     if (task) sessions.saveTask(this.session, task);
     return { response };
+  }
+
+  // `tool_info`: declares the named tools (their schemas reach the model through the tool list, so the
+  // result only confirms). Unknown names get the list back.
+  toolInfo(args, task, step) {
+    let want = args.names !== undefined ? args.names : (args.name !== undefined ? args.name : args.tools);
+    if (typeof want === 'string') want = want.split(/[\s,]+/);
+    want = [...new Set((Array.isArray(want) ? want : []).map(s => String(s).trim()).filter(Boolean))];
+    const avail = toolSpecs(settings.tools).map(t => t.name).filter(n => !(step && n === 'note'));
+    const found = want.filter(n => avail.includes(n));
+    const missing = want.filter(n => !avail.includes(n) && !GATE.includes(n));
+    if (task && found.length) task.tools = [...new Set([...(task.tools || []), ...found])];
+    const response = found.length ? { tools: found, ready: `${found.join(', ')} ${found.length === 1 ? 'is' : 'are'} ready to call now.` } : {};
+    if (missing.length || !want.length) response.error = `${want.length ? `No tool named ${missing.join(', ')}.` : 'Give the names of the tools you want.'} Tools you can ask about: ${avail.filter(n => !GATE.includes(n)).join(', ')}.`;
+    if (task) tasks.logCall(task, step, { name: 'tool_info', args, ok: found.length > 0, label: `tool_info ${found.join(', ') || '(nothing)'}` });
+    this.toolEvent({ name: 'tool_info', label: found.length ? `looked up how to call ${found.join(', ')}` : 'looked up tools (none matched)', ok: found.length > 0, args, error: response.error });
+    return response;
   }
 
   // `find`: tools, recipes, memory, past chats and this task, in one search.

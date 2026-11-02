@@ -228,8 +228,8 @@ and parses it.
   E2B/E4B, the cloud model, tiny Gemma 4, Qwen3.5). Switched on, those models get `LITE_SYSTEM_NATIVE`:
   `LITE_SYSTEM`'s first three lines, without the ```` ```tool_call ```` line (their own template declares
   the tools), plus "Start with plan, done, need and find; find tells you which of your other tools fits."
-  They still get every tool declared natively. Context budgets and background jobs follow the runtime
-  (wllama or not), not this switch.
+  Big models still get every tool declared natively; small native models are gated (next section). Context
+  budgets and background jobs follow the runtime (wllama or not), not this switch.
   Tools the model has looked up are appended as
   `Tools you have looked up:\n- name(arg, optional?): first sentence of the description`.
 
@@ -240,6 +240,32 @@ and parses it.
   times (and says so in the reply), and uses repeat penalty 1.15.
 - `find` results come back as `{"found": "<text>", "tools": [names]}`; the
   engine describes those tools from then on (and carries them into later steps).
+
+## Tool names up front (small native models)
+
+Small models on wllama that call tools in their own template (`native: true`: Qwen3.5 0.8B, tiny Gemma 4)
+used to get every schema declared, about 3.4k tokens of a 4K phone window, which no context mode can shrink.
+Now (agent.js `gated()`):
+
+- Declared with full schemas from the start (`GATE`): `plan`, `done` (steps), `need`, `find`, `tool_info`,
+  `web_search`, `fetch_url` (and `checkpoint` in AI-managed mode). About 600 tokens (by `estTokens`), plus
+  about 110 for the name line below, against about 3.4k before.
+- Every other enabled tool is one line of bare names in the system prompt (both the full prompt and
+  `LITE_SYSTEM_NATIVE`): `Other tools: list_files, read_file, … Before calling one, get how with
+  tool_info(names); ask for every one you expect to need at once.` Not in the final reply's prompt (no tools).
+- `tool_info(names)` answers `{"tools": [names], "ready": "… ready to call now."}`, or an error listing the
+  valid names. The schema itself reaches the model through the declared tools on the next request, so the
+  result stays short. `find` results that name tools declare them the same way.
+- Declared tools stay declared for the rest of the chat phase or step (`NativeConversation.active`); tools looked
+  up before a plan, or in a step, are carried into later steps (`task.tools`, passed as `known`).
+- A call to a listed tool that wasn't looked up still runs and declares it, if the template and llama.cpp's
+  parser let it through (they may constrain calls to declared names, so `tool_info` is the reliable path).
+- The window meter's tool definitions grow by each newly declared schema.
+- Not for the fenced format (Squiggle Small: `LITE_SYSTEM` is training text) or LiteRT/cloud models (their tool
+  lists are fixed per conversation).
+
+When the instructions plus tool definitions leave no room for a reply (`checkOverhead`), the turn fails with
+that explanation instead of the generic "conversation got too long", since shortening history can't help.
 
 ## What the fine-tune should learn (training targets)
 

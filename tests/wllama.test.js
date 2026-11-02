@@ -305,3 +305,31 @@ test('NativeConversation: passes the tools to llama.cpp, streams text, returns t
   assert.equal(sent[sent.length - 1].role, 'tool');
   assert.equal(sent[sent.length - 1].tool_call_id, 'x1');
 });
+
+test('NativeConversation with a gate: declares only gated tools until tool_info, find or a call turns others up', async () => {
+  const { NativeConversation } = await import('../app/src/engine-wllama.js');
+  const seen = [];
+  let deltas = [{ tool_calls: [{ index: 0, id: 'c1', function: { name: 'tool_info', arguments: '{"names":["read_file"]}' } }] }];
+  const w = { createChatCompletion: async (p) => { seen.push(p); const d = deltas; return (async function* () { for (const x of d) yield { choices: [{ delta: x }] }; })(); } };
+  const all = [...TOOLS, { type: 'function', function: { name: 'tool_info', description: 'Get how to call tools.', parameters: { properties: { names: {} }, required: ['names'] } } }];
+  const conv = new NativeConversation(w, { preface: { messages: [{ role: 'system', content: 'S' }], tools: all, gate: ['web_search', 'tool_info'] }, sessionConfig: {} });
+  const names = (i) => (seen[i].tools || []).map(t => t.function.name).sort();
+  for await (const x of conv.sendMessageStreaming('Read my notes')) void x;
+  assert.deepEqual(names(0), ['tool_info', 'web_search']);
+  // tool_info's result names read_file: declared from the next request on.
+  deltas = [{ tool_calls: [{ index: 0, id: 'c2', function: { name: 'remember', arguments: '{"fact":"x"}' } }] }];
+  for await (const x of conv.sendMessageStreaming([{ role: 'tool', content: [{ name: 'tool_info', response: { tools: ['read_file'], ready: 'read_file is ready to call now.' } }] }])) void x;
+  assert.deepEqual(names(1), ['read_file', 'tool_info', 'web_search']);
+  // A tool called without looking it up (remember) stays declared too.
+  deltas = [{ content: 'Saved.' }];
+  for await (const x of conv.sendMessageStreaming([{ role: 'tool', content: [{ name: 'remember', response: { ok: true } }] }])) void x;
+  assert.deepEqual(names(2), ['read_file', 'remember', 'tool_info', 'web_search']);
+});
+
+test('NativeConversation without a gate declares every tool, and known tools start declared with a gate', async () => {
+  const { NativeConversation } = await import('../app/src/engine-wllama.js');
+  const w = { createChatCompletion: async () => (async function* () {})() };
+  assert.equal(new NativeConversation(w, { preface: { messages: [], tools: TOOLS }, sessionConfig: {} }).declared(), TOOLS);
+  const gated = new NativeConversation(w, { preface: { messages: [], tools: TOOLS, gate: ['web_search'], known: ['remember'] }, sessionConfig: {} });
+  assert.deepEqual(gated.declared().map(t => t.function.name), ['web_search', 'remember']);
+});

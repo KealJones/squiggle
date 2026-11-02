@@ -398,11 +398,19 @@ export function nativeMessages(messages) {
   return out;
 }
 
+// Names a tool result says are now usable: `find`'s tools and `tool_info`'s.
+const foundNames = (input) => (Array.isArray(input) ? input : []).flatMap(m => (Array.isArray(m.content) ? m.content : [])
+  .flatMap(p => (p && p.response && Array.isArray(p.response.tools) ? p.response.tools.map(String) : [])));
+
 export class NativeConversation {
   constructor(w, { preface, sessionConfig }) {
     this.w = w;
     this.messages = [...preface.messages];
     this.tools = preface.tools || [];
+    // Gated (preface.gate): only the gate's tools and ones looked up or called are declared to the template;
+    // the agent lists the rest by name in the system prompt (docs/harness.md, "Tool names up front").
+    this.gate = preface.gate ? new Set(preface.gate) : null;
+    this.active = new Set(preface.known || []);
     this.thinking = Boolean(preface.extra_context && preface.extra_context.enable_thinking);
     this.max = Math.min(sessionConfig.maxOutputTokens || MAX_OUTPUT, MAX_OUTPUT);
     this.greedy = Boolean(sessionConfig.samplerParams && sessionConfig.samplerParams.type === 3);
@@ -417,9 +425,19 @@ export class NativeConversation {
   }
   async delete() {}
 
+  // The tools sent with the next request.
+  declared() {
+    if (!this.gate) return this.tools;
+    return this.tools.filter(t => { const n = nameOf(t); return this.gate.has(n) || this.active.has(n); });
+  }
+
   async *sendMessageStreaming(input) {
     if (typeof input === 'string') this.messages.push({ role: 'user', content: input });
-    else for (const m of input) this.messages.push(m);
+    else {
+      for (const m of input) this.messages.push(m);
+      for (const n of foundNames(input)) this.active.add(n);
+    }
+    const tools = this.declared();
     const ctrl = this.ctrl = new AbortController();
     const t0 = performance.now();
     let tFirst = 0, pieces = 0, text = '', reasoning = '', checked = 0, looped = false;
@@ -427,7 +445,7 @@ export class NativeConversation {
     try {
       const stream = await this.w.createChatCompletion({
         messages: nativeMessages(this.messages),
-        ...(this.tools.length ? { tools: this.tools } : {}),
+        ...(tools.length ? { tools } : {}),
         chat_template_kwargs: { enable_thinking: this.thinking },
         stream: true,
         max_tokens: this.max,
@@ -469,6 +487,7 @@ export class NativeConversation {
     this.messages.push({ role: 'assistant', content: text,
       ...(calls.length ? { tool_calls: calls.map(c => ({ id: c.id, type: 'function', function: { name: c.function.name, arguments: JSON.stringify(c.function.arguments) } })) } : {}) });
     if (ctrl.signal.aborted && !looped) return;
+    for (const c of calls) this.active.add(c.function.name);   // a tool it called without looking up stays declared
     if (calls.length) yield { tool_calls: calls };
   }
 }
