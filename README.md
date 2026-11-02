@@ -24,7 +24,7 @@ few GitHub requests browsers aren't allowed to make directly.
 - **Memory**: a small graph of facts about you and your projects (`memory/facts.jsonl`), learned as you chat or added by hand, reviewable in the Memory panel. The agent can `remember`, `recall` and `forget`.
 - **Voice**: a call button for talking with it hands-free, with replies read aloud on-device (Kokoro-82M on computers, KittenTTS nano on phones, both downloaded once).
 - **Attachments**: attach files to a message (up to 10, 20 MB each). Text is read directly, PDFs have their text extracted, and images are read with OCR.
-- **Context for small models**: Settings → Context picks how the model's context is managed: Compress (rolling summary + recent messages), Smart (the default: also retrieves the most relevant earlier messages, web pages and files for each question) or AI-managed (experimental). You can also bring in other chats. "What the model saw" on any reply shows exactly what went in.
+- **Context for small models**: Settings → Context picks how the model's context is managed: Compress (rolling summary + recent messages), Smart (the default: also retrieves the most relevant earlier messages, web pages and files for each question) or AI-managed (experimental). You can also bring in other chats. "What the model saw" on any reply shows exactly what went in, and the chat details sidebar shows how full the context window is (by part, live while a reply runs), the current plan, and what the chat has used and made.
 - **Search**: search all your chats from the sidebar; the agent can search them too (`search_history`).
 - **Web and code**: `fetch_url` reads pages, `web_search` searches the web, `calculate` does maths and `run_js` runs JavaScript in an isolated sandbox.
 

@@ -29,6 +29,7 @@
     <symbol id="i-thread" viewBox="0 0 24 24"><path d="M5 5h14v10H11l-4 4v-4H5z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" fill="none"/></symbol>
     <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" fill="none"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M5 15V6a1 1 0 011-1h9" stroke="currentColor" stroke-width="1.8" fill="none"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="2" stroke="currentColor" stroke-width="1.8" fill="none"/><path d="M14.5 4.5v15" stroke="currentColor" stroke-width="1.8" fill="none"/></symbol>
     <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z" stroke="currentColor" stroke-width="1.8" fill="none"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8" fill="none"/></symbol>
   </svg>
 
@@ -61,6 +62,7 @@
       <header class="topbar">
         <button class="icon-btn only-mobile" id="open-sidebar" aria-label="Show chats"><svg><use href="#i-menu"/></svg></button>
         <h1 id="chat-title">New chat</h1>
+        <button class="icon-btn" id="toggle-side" aria-label="Chat details" aria-controls="ctx-side" aria-expanded="false" title="Chat details"><svg><use href="#i-panel"/></svg></button>
       </header>
       <div class="banner" id="model-banner" hidden></div>
       <div class="banner" id="voice-banner" hidden></div>
@@ -74,6 +76,15 @@
         <div class="note" id="composer-note"></div>
       </form>
     </section>
+
+    <!-- Chat details: model, context window, progress, what was used and made -->
+    <aside class="ctx-side" id="ctx-side" aria-label="Chat details" hidden>
+      <header class="topbar">
+        <h2>This chat</h2>
+        <button class="icon-btn" id="close-side" aria-label="Hide chat details"><svg><use href="#i-close"/></svg></button>
+      </header>
+      <div class="side-body" id="ctx-side-body"></div>
+    </aside>
 
     <aside class="drawer" id="drawer" hidden>
       <header class="topbar">

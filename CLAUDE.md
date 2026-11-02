@@ -14,7 +14,7 @@ app/                    static app, plain ES modules, no build step
   index.html styles.css sandbox.html sw.js manifest.webmanifest
   vendor/               bundled libs (isomorphic-git, lightning-fs, marked, DOMPurify) — `npm run vendor`
   src/
-    main.js             UI: setup wizard, sessions sidebar + search, chat, threads, panels
+    main.js             UI: setup wizard, sessions sidebar + search, chat, threads, panels, chat details sidebar
     agent.js            turn loop (docs/harness.md): chat phase → plan → one fresh prompt per step → final reply; need/find; recipes learned after
     tasks.js            step-mode task state, step/final prompts (budgeted), resume rules
     recipes.js          memory/recipes.jsonl: how finished tasks were solved, matched to new requests, forgotten after 90 days unused
@@ -73,6 +73,17 @@ tests/e2e/              Chromium end-to-end: real git server, real Worker code, 
   `<file>.remote-<date>-<device>`.
 - Session objects are mutated in place on sync (`sessions.reload` merges into
   the cached object) so views holding a reference stay valid.
+
+## Chat details sidebar
+
+The right-hand aside (`#ctx-side`, main.js `renderSide`): model and how it runs, the context window, the
+latest plan, tools/files/pages used and outputs (files, commits, pushes, PRs, notes) for the open chat.
+The window comes from `reply.context.window = { size, parts: {instructions, tools, conversation, memory,
+recalled, message, turn}, used }` (agent.js `windowOf`/`setWindow`/`grow`), set when each chat-phase or step
+call starts and grown with each response and tool result; `ui.onContext` redraws it live (a microtask, so it
+draws even when a turn never yields). Saved with the reply. Docked and open by default at ≥1200 px
+(open/closed and collapsed sections remembered in localStorage), an overlay below that, hidden while a drawer
+panel is open at ≤1500 px. Replies saved before this show just the total.
 
 ## Data model
 

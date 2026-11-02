@@ -1069,6 +1069,73 @@ await check('AI-managed context: budget line, steps attach earlier results, chec
   await D.page.evaluate(async () => { (await import('/src/agent.js')).settings.contextMode = 'smart'; });
 });
 
+await check('chat details sidebar: model, context window breakdown (live and saved), progress, tools used; collapsible and remembered', async () => {
+  const D = await device('side');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  // Docked and open by default on a wide screen.
+  assert.equal(await D.page.isVisible('#ctx-side'), true);
+  await D.page.click('#new-chat');
+  assert.match(await D.page.textContent('#ctx-side'), /Send a message to see what goes into the model's context/);
+  // Live updates: record what the sidebar draws during the turn.
+  await D.page.evaluate(() => {
+    window.__sideSeen = [];
+    new MutationObserver(() => { const t = document.querySelector('#ctx-side [data-sec="context"] .ctx-total'); if (t) window.__sideSeen.push(t.title); })
+      .observe(document.querySelector('#ctx-side-body'), { childList: true, subtree: true });
+  });
+  await D.page.fill('#input', 'PLANTEST kill whatever is on port 8080');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => /it is free now/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 20000 });
+  await D.page.waitForFunction(() => /Status\s*ready/.test(document.querySelector('#ctx-side').textContent));
+  const r = await D.page.evaluate(() => {
+    const side = document.querySelector('#ctx-side');
+    const sec = (k) => side.querySelector(`[data-sec="${k}"]`);
+    return {
+      model: sec('model').textContent,
+      total: sec('context').querySelector('.ctx-total').textContent,
+      rows: [...sec('context').querySelectorAll('.ctx-rows li')].map(li => li.children[1].textContent),
+      bar: sec('context').querySelectorAll('.ctx-bar > span').length,
+      progress: sec('progress').querySelector('summary').textContent,
+      used: sec('used').textContent,
+      seen: [...new Set(window.__sideSeen)],
+    };
+  });
+  assert.match(r.model, /Model.*Runs\s*this device.*Context\s*Smart/s, r.model);
+  assert.match(r.total, /^[\d.]+k? of [\d.]+k? tokens$/);
+  assert.ok(r.rows.includes('Instructions') && r.rows.includes('Free space') && r.rows.includes('Request'), JSON.stringify(r.rows));
+  assert.equal(r.bar, r.rows.length - 1, 'one bar segment per part (free space is the empty track)');
+  assert.match(r.progress, /Progress\s*2\/2/);
+  assert.ok(r.seen.length >= 3, 'the breakdown updated while the reply ran: ' + JSON.stringify(r.seen));
+  if (shotsDir) await D.page.screenshot({ path: `${shotsDir}/chat-details.png` });
+  // The saved reply carries the breakdown, so it survives a reload.
+  const w = await D.page.evaluate(async () => {
+    const s = (await import('/src/sessions.js')).list().find(x => x.messages.some(m => /PLANTEST/.test(m.content)));
+    return s.messages.filter(m => m.role === 'assistant').pop().context.window;
+  });
+  assert.ok(w && w.size > 0 && w.parts.instructions > 0 && w.used > 0, JSON.stringify(w));
+  const total = Object.values(w.parts).reduce((a, b) => a + b, 0);
+  assert.equal(w.used, total);
+  // Collapse a section and hide the sidebar: both are remembered.
+  await D.page.click('#ctx-side [data-sec="used"] summary');
+  await D.page.click('#close-side');
+  assert.equal(await D.page.isVisible('#ctx-side'), false);
+  assert.equal(await D.page.getAttribute('#toggle-side', 'aria-expanded'), 'false');
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  assert.equal(await D.page.isVisible('#ctx-side'), false);
+  await D.page.click('#toggle-side');
+  assert.equal(await D.page.isVisible('#ctx-side'), true);
+  assert.equal(await D.page.evaluate(() => document.querySelector('#ctx-side [data-sec="used"]').open), false);
+  // A panel on a not-so-wide screen covers it rather than squeezing the chat.
+  await D.page.click('.side-nav [data-panel="notes"]');
+  assert.equal(await D.page.isVisible('#ctx-side'), false);
+  await D.page.click('#close-drawer');
+  assert.equal(await D.page.isVisible('#ctx-side'), true);
+});
+
 await check('step mode through the UI: plan, live checklist, find, done, final reply, recipe; need asks and resumes', async () => {
   const D = await device('steps');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));

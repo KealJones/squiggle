@@ -335,11 +335,13 @@ class Turn {
     used += estTokens(att.text);
     const reserve = Math.min(MAX_OUTPUT, 700);
     if (managed()) pending += `\n\n${tasks.budgetLine(used, settings.contextSize, reserve)}`;
+    this.setWindow(windowOf(ctx.report, { system: plain() ? 0 : estTokens(ctx.system), tools: toolTokens, message: estTokens(this.shown) + estTokens(att.text) }), used);
     let chatCalls = 0, full = false;
     for (;;) {
       const r = await this.respond(pending);
       if (r.text) this.prefix += r.text + (r.toolCalls.length ? '\n\n' : '');
       used += estTokens((r.text || '') + (r.thinking || '') + JSON.stringify(r.toolCalls || [])) - (r.saved || 0);
+      this.grow(used);
       if (!r.toolCalls.length || this.aborted) return null;
       // A plan switches to step mode (anything else in the same reply waits for its step).
       const planCall = r.toolCalls.find(c => c.function && c.function.name === 'plan');
@@ -363,6 +365,7 @@ class Turn {
         let response = out.response;
         if (chatCalls === CHAT_PLAN_NUDGE) response = { ...response, tip: 'This is taking several steps. If there is more to do, call plan so you can work through it one step at a time.' };
         used += estTokens(JSON.stringify(response)) + 10;
+        this.grow(used);
         response = { ...response, context_left: `about ${Math.max(0, Math.round((settings.contextSize - used) / 100) * 100)} of ${settings.contextSize} tokens` };
         if (managed() && settings.contextSize - used - reserve < tasks.LOW_ROOM) response = { ...response, low_room: tasks.lowRoomNote() };
         results.push(toolResult(call, response));
@@ -482,6 +485,23 @@ class Turn {
     return sections;
   }
 
+  // The context window for the sidebar: what the prompt is made of (fixed when the
+  // call starts) plus "this turn" (thinking, tool calls and results, the reply so far).
+  setWindow(w, used) {
+    if (!this.reply.context) return;
+    this.reply.context.window = w;
+    this.windowBase = used - windowTotal(w);
+    this.grow(used);
+  }
+
+  grow(used) {
+    const w = this.reply.context && this.reply.context.window;
+    if (!w) return;
+    w.parts.turn = Math.max(0, used - windowTotal({ parts: { ...w.parts, turn: 0 } }) - this.windowBase);
+    w.used = windowTotal(w);
+    this.ui.onContext && this.ui.onContext(this.reply.context);
+  }
+
   async runStep(task, step) {
     const tools = phaseTools(true);
     const toolTokens = lite() && !native() ? 300 : estTokens(JSON.stringify(tools));
@@ -501,12 +521,14 @@ class Turn {
     let used = estTokens(system) + estTokens(pending) + toolTokens;
     if (managed()) { pending = tasks.stepUser(task, { budget: tasks.budgetLine(used + 30, settings.contextSize, reserve) }); used += 30; }
     const room = () => Math.max(0, (settings.contextSize - used - reserve) * 3);
+    this.setWindow(windowOf(this.reply.context, { system: estTokens(system), tools: toolTokens, message: estTokens(pending) }), used);
     const label = `Step ${n}: ${step.text}`;
     let said = '', blank = 0, idle = 0, warnedFull = false;
     try {
       for (;;) {
         const r = await this.respond(pending, { show: false });
         used += estTokens((r.text || '') + (r.thinking || '') + JSON.stringify(r.toolCalls || []));
+        this.grow(used);
         const looped = LOOPED.test(r.text || '');
         const text = (r.text || '').replace(LOOPED, '').trim();
         if (text) { said = text; this.addThinking(`${label}\n${text}`); }
@@ -584,6 +606,7 @@ class Turn {
           let response = out.response;
           if (step.calls === tasks.STEP_SOFT_CAP) response = { ...response, note: `This step has used ${step.calls} tool calls. Finish it now with done (what you have), or call need.` };
           used += estTokens(JSON.stringify(response)) + 10;
+          this.grow(used);
           if (managed()) response = { ...response, context_left: `about ${Math.max(0, Math.round((settings.contextSize - used) / 100) * 100)} of ${settings.contextSize} tokens`, ...(settings.contextSize - used - reserve < tasks.LOW_ROOM ? { low_room: tasks.lowRoomNote() } : {}) };
           results.push(toolResult(call, response));
         }
@@ -863,3 +886,26 @@ async function refineDrafts() {
   const better = await refineRecipe(d, (d.examples || [])[0]);
   recipes.update(d.id, { title: better.title, when: better.when, steps: better.steps, draft: false });
 }
+
+// Context window breakdown (shown in the sidebar). Parts, in the order drawn:
+// instructions, tools, conversation, memory, recalled, message, turn.
+const CONVERSATION_KINDS = new Set(['recent', 'pinned', 'summary', 'message', 'actions', 'thread', 'chat', 'section']);
+const MEMORY_KINDS = new Set(['fact', 'note', 'recipe', 'refs', 'observation']);
+export function windowOf(report, { system = 0, tools = 0, message = 0 } = {}) {
+  const parts = { instructions: 0, tools, conversation: 0, memory: 0, recalled: 0, message, turn: 0 };
+  let inSystem = 0;
+  for (const it of (report && report.items) || []) {
+    const t = it.tokens || 0;
+    if (it.placed) { parts.recalled += t; continue; }
+    if (CONVERSATION_KINDS.has(it.kind)) parts.conversation += t;
+    else if (MEMORY_KINDS.has(it.kind)) parts.memory += t;
+    else continue;
+    // Recent messages are sent as messages; everything else is part of the system text.
+    if (it.kind !== 'recent') inSystem += t;
+  }
+  // Instructions: the rest of the system text (the base prompt and harness sections).
+  parts.instructions = Math.max(0, system - inSystem);
+  return { size: settings.contextSize, parts, used: 0 };
+}
+
+export const windowTotal = (w) => Object.values((w && w.parts) || {}).reduce((a, b) => a + (b || 0), 0);
