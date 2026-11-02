@@ -1192,8 +1192,8 @@ function showCrashBanner(c) {
   } }, next === S.model ? 'Use lighter settings' : `Use lighter settings (${nm.label}, ${nm.size})`);
   // Settings may have become lighter since the crash (e.g. phones moved to a phone model).
   const changed = c.model !== S.model || c.contextSize !== S.contextSize || Boolean(c.fast) !== Boolean(S.fastDecode)
-    || Boolean(c.small && c.small.gpu) !== Boolean(S.smallGpu && engine.MODELS[S.model].runtime === 'wllama')
-    || Boolean(c.small && c.small.threads) !== Boolean(S.smallThreads && engine.MODELS[S.model].runtime === 'wllama');
+    || Boolean(c.small && c.small.gpu) !== Boolean(S.smallGpu && engine.MODELS[S.model].runtime === 'wllama' && !engine.MODELS[S.model].backend)
+    || Boolean(c.small && c.small.threads) !== Boolean(S.smallThreads && engine.MODELS[S.model].runtime === 'wllama' && !engine.MODELS[S.model].backend);
   // The experimental GPU / all-cores settings are the first suspects: offer to turn them off.
   const risky = c.model === S.model && c.small && (c.small.gpu || c.small.threads) && (S.smallGpu || S.smallThreads);
   const plain = risky ? h('button', { class: 'btn primary', onclick: async () => {
@@ -1322,7 +1322,7 @@ function updateComposerNote() {
 function smallHow() {
   const i = engine.isLite() ? engine.smallInfo() : null;
   if (!i) return '';
-  const parts = [i.gpu ? 'GPU' : `${i.threads} CPU core${i.threads === 1 ? '' : 's'}`];
+  const parts = [i.webllm ? 'GPU, WebLLM' : i.gpu ? 'GPU' : `${i.threads} CPU core${i.threads === 1 ? '' : 's'}`];
   if (i.compat) parts.push('Safari compatibility build');
   if (i.asked && i.asked.gpu && !i.gpu) parts.push('no WebGPU here');
   if (i.asked && i.asked.threads && i.threads === 1) parts.push(i.asked.isolated ? 'threads unavailable' : 'cores need a reload');
@@ -1349,7 +1349,7 @@ async function loadModel() {
   banner(h('div', { class: 'dl' }, h('div', { class: 'dl-head' }, squiggleWait(), h('span', {}, cloud ? 'Connecting to the cloud model…' : `Loading ${engine.MODELS[S.model].label}…`)), step));
   // The marker is rewritten at every step (localStorage writes are synchronous,
   // so it survives the tab being killed) and says where a crash happened.
-  const small = engine.MODELS[S.model].runtime === 'wllama' ? { gpu: Boolean(S.smallGpu), threads: Boolean(S.smallThreads) } : null;
+  const small = engine.MODELS[S.model].runtime === 'wllama' && !engine.MODELS[S.model].backend ? { gpu: Boolean(S.smallGpu), threads: Boolean(S.smallThreads) } : null;
   const marker = { model: S.model, contextSize: S.contextSize, fast: S.fastDecode, small, at: Date.now(), stage: 'starting', gpu: cloud ? '' : await engine.gpuSummary(), ua: navigator.userAgent };
   setCrashMarker(marker);
   try {
@@ -1835,10 +1835,10 @@ function renderSettingsPanel() {
       h('input', { type: 'checkbox', checked: S.fastDecode ? true : null, onchange: async (e) => { S.fastDecode = e.target.checked; saveSettings(); if (engine.engineReady()) await loadModel(); } }),
       h('span', {}, h('strong', {}, 'Speed boost'), h('span', { class: 'hint', style: 'display:block' }, 'Replies come noticeably faster, but it loads an extra helper model and needs more memory. Off by default on phones.')))),
 
-    engine.MODELS[S.model].runtime !== 'wllama' ? '' : h('div', { class: 'field' }, h('label', { class: 'toggle' },
+    (engine.MODELS[S.model].runtime !== 'wllama' || engine.MODELS[S.model].backend) ? '' : h('div', { class: 'field' }, h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: S.smallGpu ? true : null, onchange: async (e) => { S.smallGpu = e.target.checked; saveSettings(); if (engine.engineReady()) await loadModel(); } }),
       h('span', {}, h('strong', {}, 'Use the GPU (experimental)'), h('span', { class: 'hint', style: 'display:block' }, 'Runs this model on WebGPU instead of the CPU: could be much faster, or could crash the tab. If it crashes, Squiggle offers to turn it off.')))),
-    engine.MODELS[S.model].runtime !== 'wllama' ? '' : h('div', { class: 'field' }, h('label', { class: 'toggle' },
+    (engine.MODELS[S.model].runtime !== 'wllama' || engine.MODELS[S.model].backend) ? '' : h('div', { class: 'field' }, h('label', { class: 'toggle' },
       h('input', { type: 'checkbox', checked: S.smallThreads ? true : null, onchange: async (e) => {
         S.smallThreads = e.target.checked; saveSettings();
         const ok = await setIsolation(S.smallThreads);

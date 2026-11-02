@@ -37,6 +37,16 @@ export const MODELS = {
   Q35: { label: 'Test: Qwen3.5 0.8B', size: '507 MB', note: 'stock Qwen3.5 0.8B with tools in its own tool format (no Squiggle training). Thinks a lot, so it\'s slow on a phone. Experimental', phone: true, runtime: 'wllama', tools: true, native: true,
     url: HF + 'unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_0.gguf', bytes: 507154688 },
   // Not on this device: runs on the relay (only listed when the relay offers it).
+  // WebLLM (MLC) on WebGPU (engine-webllm.js, Keal 2026-11-02): the same small-model path as the
+  // wllama models (runtime 'wllama', so isLite and the small-model harness apply), compiled for the
+  // GPU. Measured on an iPhone (app/memtest.html): 5-12x faster than wllama's CPU build for about
+  // twice the memory; 1B fits, Qwen3.5 2B loaded but died on its first reply. Sizes are approximate.
+  WL1: { label: 'Llama 3.2 1B (GPU, fast)', size: '~700 MB', note: 'stock Llama 3.2 1B on WebLLM (WebGPU): about 30 words a second on an iPhone, much faster than the CPU models, but it uses about twice the memory. Chat only, no tools. Experimental', phone: true, runtime: 'wllama', backend: 'webllm',
+    mlc: 'Llama-3.2-1B-Instruct-q4f16_1-MLC', bytes: 700000000 },
+  WQ06: { label: 'Qwen3 0.6B (GPU, fast)', size: '~350 MB', note: 'stock Qwen3 0.6B on WebLLM (WebGPU) with tools in Qwen\'s own format: about 30 words a second on an iPhone, for about twice the memory of the CPU models. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'qwen3',
+    mlc: 'Qwen3-0.6B-q4f16_1-MLC', bytes: 350000000 },
+  WQ35: { label: 'Qwen3.5 0.8B (GPU)', size: '~500 MB', note: 'stock Qwen3.5 0.8B on WebLLM (WebGPU) with tools in its own format: about 14 words a second on an iPhone (3x the CPU build). Thinks a lot. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'qwen35',
+    mlc: 'Qwen3.5-0.8B-q4f16_1-MLC', bytes: 500000000 },
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true },
 };
 
@@ -117,6 +127,10 @@ const recSize = (r) => (r == null ? 0 : r.size ?? r.byteLength);
 
 export async function downloadInfo(id) {
   const wm = MODELS[id];
+  if (wm && wm.backend === 'webllm') {
+    const done = await (await import('./engine-webllm.js')).isDownloaded(wm.mlc);
+    return { total: wm.bytes, stored: done ? wm.bytes : 0, complete: done };
+  }
   if (wm && wm.runtime === 'wllama') {
     const done = await (await import('./engine-wllama.js')).isDownloaded(wm.url);
     return { total: wm.bytes, stored: done ? wm.bytes : 0, complete: done };
@@ -150,6 +164,11 @@ export async function download(id, onProgress, signal, { onWaiting } = {}) {
 
 async function downloadUnlocked(id, onProgress, signal) {
   if ((await downloadInfo(id)).complete) return;
+  if (MODELS[id].backend === 'webllm') {
+    try { await navigator.storage?.persist?.(); } catch {}
+    const total = MODELS[id].bytes;
+    return (await import('./engine-webllm.js')).downloadModel(MODELS[id].mlc, (done, all) => onProgress && onProgress(Math.round(total * done / all), total), signal);
+  }
   if (MODELS[id].runtime === 'wllama') {
     try { await navigator.storage?.persist?.(); } catch {}
     return (await import('./engine-wllama.js')).downloadModel(MODELS[id].url, onProgress, signal);
@@ -250,6 +269,7 @@ async function storedBytes(url) {
 }
 
 export async function deleteModel(id) {
+  if (MODELS[id] && MODELS[id].backend === 'webllm') return (await import('./engine-webllm.js')).removeModel(MODELS[id].mlc);
   if (MODELS[id] && MODELS[id].runtime === 'wllama') return (await import('./engine-wllama.js')).removeModel(MODELS[id].url);
   for (const { url } of modelFiles(id)) {
     for (const off of await chunkOffsets(url)) await kv.del([url, off], 'model');
@@ -313,7 +333,9 @@ export async function load(id, contextSize, { fast = true, onStage = () => {}, s
     return;
   }
   if (MODELS[id].runtime === 'wllama') {
-    engine = await (await import('./engine-wllama.js')).createEngine(MODELS[id].url, contextSize, onStage, { ...small, native: Boolean(MODELS[id].native) });
+    const m = MODELS[id];
+    engine = await (await import('./engine-wllama.js')).createEngine(m.url, contextSize, onStage,
+      { ...small, native: Boolean(m.native), ...(m.backend === 'webllm' ? { webllm: m.mlc, toolFormat: m.toolFormat || null } : {}) });
     loadedModel = id; engineContext = contextSize; engineFast = fast; engineSmall = smallKey;
     return;
   }

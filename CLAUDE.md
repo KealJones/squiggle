@@ -173,6 +173,17 @@ use (GPU / N cores / Safari's slower compatibility build, which wllama picks whe
 reply's speed. Size-test models (Q06, LF12, LL1) are plain chat. TG4 (tiny Gemma 4, lm-experiments experiments/tiny-gemma4, distilled from E2B) sets `native: true`: wllama loads it with `jinja: true` and `NativeConversation` sends real `tools` through the GGUF's own Gemma 4 chat template, reading back llama.cpp's parsed `tool_calls`; the agent gives it E2B's system prompt, but small-model budgets and no background jobs. Its tools are gated (`agent.js gated()`, docs/harness.md "Tool names up front"): a few declared up front, the rest listed by name and declared when `tool_info(names)` or `find` asks for them, since every schema filled ~83% of a 4K window. Settings → Small-model mode (per model, `settings.smallMode`) switches any model with tools except the fenced-format ones (always on) to the find-first `LITE_SYSTEM_NATIVE` prompt (docs/harness.md). Q35 (stock Qwen3.5 0.8B, unsloth's Q4_0 GGUF) uses the same native path with Qwen's own template. `node tests/e2e/wllama-bench.mjs [--model SQ]` loads a
 real model in headless Chromium: one thread vs all cores vs WebGPU.
 
+WebLLM (`engine-webllm.js`, @mlc-ai/web-llm 0.2.87 from jsDelivr): WL1 (Llama 3.2 1B, chat only), WQ06 (Qwen3 0.6B) and
+WQ35 (Qwen3.5 0.8B) are MLC builds on WebGPU. They keep `runtime: 'wllama'` (so isLite, chatOnly, nativeTools and the
+small-model harness apply) and add `backend: 'webllm'` + `mlc`. `createShim` gives Conversation/NativeConversation the
+slice of wllama's API they use; WebLLM has no jinja, so for native models it renders Qwen's tool block into the system
+prompt (`toolFormat` 'qwen3' JSON or 'qwen35' XML), sends results as `<tool_response>` user turns and parses
+`<tool_call>` back into `delta.tool_calls`. It can't continue an assistant turn, so a prefilled loop retry starts fresh.
+q4f16 needs `shader-f16`, else the q4f32 build. WebLLM stores files in Cache Storage `webllm/{config,model,wasm}` (sw.js
+keeps them); "download" loads once and unloads. Measured on an iPhone with `app/memtest.html` (2026-11-02, ~2 GB tab
+budget shared by JS and GPU memory): Llama 3.2 1B ~30 tok/s and ~1.3 GB vs wllama CPU ~2.6 tok/s and ~0.6 GB; Qwen3 0.6B
+~34 tok/s; Qwen3.5 0.8B ~14 tok/s; Qwen3.5 2B loaded but died on its first reply. The GPU/cores toggles don't apply.
+
 ## Cloud model (engine-cloud.js, worker /api/ai/*)
 
 - Gemma 4 26B A4B on Workers AI via the relay; off unless the Worker has the AI binding, the
