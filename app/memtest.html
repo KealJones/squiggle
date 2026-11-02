@@ -81,15 +81,21 @@
       </label>
     </div>
     <div class="row" style="margin-top:12px">
-      <button class="primary" id="run">Run test</button>
-      <button id="copy">Copy results</button>
-      <button id="clear">Clear results</button>
+      <button class="primary" id="auto">Run everything</button>
+      <button id="stop" hidden>Stop</button>
+      <button id="run">Run just this one</button>
     </div>
+    <p id="autonote" style="margin-top:10px">Runs the baselines, then every engine with every model, smallest first. The tab will die and reload many times; that's the test. If Safari shows an error page instead of reloading, tap reload and it carries on. Keep the phone awake and on Wi-Fi: it downloads about 6 GB the first time.</p>
     <div id="status" style="margin-top:12px">Ready.</div>
   </section>
 
   <section>
     <h2>Results</h2>
+    <div class="row" style="margin-bottom:10px">
+      <button class="primary" id="export">Export results</button>
+      <button id="copy">Copy</button>
+      <button id="clear">Clear results</button>
+    </div>
     <div class="tablewrap"><table>
       <thead><tr><th>engine</th><th>model</th><th>load s</th><th>tok/s</th><th>left after</th><th>outcome</th></tr></thead>
       <tbody id="results"></tbody>
@@ -203,12 +209,76 @@ function recoverCrash() {
     outcome: probing ? 'tab died at the memory limit (expected)' : `tab died while ${run.stage}`,
     cls: probing ? 'ok' : 'bad', facts: run.facts };
   addResult(r);
+  autoAfter(run, r);
   const b = $('crash'); b.hidden = false;
   b.textContent = probing
     ? `Last run finished: the tab hit its limit with about ${run.mb} MB of ${run.probe.toUpperCase()} memory still free after the model. Saved below.`
     : `The last run's tab died while ${run.stage} (${run.engine}, ${MODELS[run.model]?.label || run.model}). Saved below.`;
 }
 const pick = (run) => ({ engine: run.engine, model: run.model, probe: run.probe, loadS: run.loadS, tokS: run.tokS, ts: run.ts });
+
+// ── Run everything ────────────────────────────────────────────────────────
+// The queue lives in localStorage so it survives the tab being killed. Each step reloads the page
+// first, so every measurement starts from a clean tab.
+const KEY_AUTO = 'memtest-auto';
+const ENGINES = ['wllama-cpu', 'wllama-gpu', 'webllm'];
+const MODEL_ORDER = ['q06', 'q35', 'll1', 'q2b'];   // smallest first
+function buildQueue() {
+  const gpu = FACTS.WebGPU !== 'no' && FACTS.WebGPU !== 'no adapter' && !String(FACTS.WebGPU).startsWith('error');
+  const q = [{ engine: 'none', model: 'q06', probe: 'js' }];
+  if (gpu) q.push({ engine: 'none', model: 'q06', probe: 'gpu' });
+  // ?engines=wllama-cpu,webllm and ?models=q06,q35 narrow the run (handy for a quick check).
+  const onlyE = params.get('engines')?.split(','), onlyM = params.get('models')?.split(',');
+  for (const engine of ENGINES) {
+    if (engine !== 'wllama-cpu' && !gpu) continue;
+    if (onlyE && !onlyE.includes(engine)) continue;
+    for (const model of MODEL_ORDER) if (!onlyM || onlyM.includes(model)) q.push({ engine, model, probe: engine === 'wllama-cpu' ? 'js' : 'gpu' });
+  }
+  return q;
+}
+// After a step ends (finished, errored or killed): move on, and if the engine couldn't even load
+// this model, skip its bigger models.
+function autoAfter(run, result) {
+  const auto = store.get(KEY_AUTO, null);
+  if (!auto || run.autoIndex == null || run.autoIndex !== auto.i) return;
+  const failedEarly = /while (downloading|loading|starting)/.test(result.outcome);
+  if (failedEarly && run.engine !== 'none') auto.dead[run.engine] = MODEL_ORDER.indexOf(run.model);
+  auto.i += 1;
+  store.set(KEY_AUTO, auto);
+}
+function nextAutoStep() {
+  const auto = store.get(KEY_AUTO, null);
+  if (!auto) return null;
+  while (auto.i < auto.queue.length) {
+    const s = auto.queue[auto.i];
+    const deadAt = auto.dead[s.engine];
+    if (deadAt != null && MODEL_ORDER.indexOf(s.model) > deadAt) {
+      addResult({ ...s, ts: new Date().toISOString(), outcome: `skipped: ${MODELS[MODEL_ORDER[deadAt]].label} already failed to load`, cls: 'warn' });
+      auto.i += 1; store.set(KEY_AUTO, auto); continue;
+    }
+    return { step: s, index: auto.i, total: auto.queue.length };
+  }
+  store.del(KEY_AUTO);
+  store.set('memtest-auto-done', true);
+  return null;
+}
+let autoTimer = null;
+function resumeAuto() {
+  const next = nextAutoStep();
+  $('stop').hidden = !next; $('auto').hidden = Boolean(next);
+  if (!next) {
+    if (store.get('memtest-auto-done', false)) { store.del('memtest-auto-done'); say('All done. Tap "Export results" and send the file to Claude.'); }
+    return;
+  }
+  let left = 3;
+  const tick = () => {
+    say(`Step ${next.index + 1} of ${next.total}: ${label(next.step)}. Starting in ${left}s… (tap Stop to pause)`);
+    if (left-- <= 0) { autoTimer = null; runTest(next.step, next.index); return; }
+    autoTimer = setTimeout(tick, 1000);
+  };
+  tick();
+}
+const label = (s) => s.engine === 'none' ? `baseline, ${s.probe.toUpperCase()} memory` : `${s.engine}, ${MODELS[s.model].label}`;
 
 // ── Engines ───────────────────────────────────────────────────────────────
 async function runWllama(run, gpu) {
@@ -321,13 +391,14 @@ async function probeGPU(run) {
 }
 
 // ── Run ───────────────────────────────────────────────────────────────────
-async function runTest() {
-  const choice = { engine: $('engine').value, model: $('model').value, probe: $('probe').value };
-  store.set('memtest-choice', choice);
+async function runTest(step, autoIndex) {
+  const choice = step || { engine: $('engine').value, model: $('model').value, probe: $('probe').value };
+  if (!step) store.set('memtest-choice', choice);
   if (choice.engine === 'none' && choice.probe === 'off') { say('Pick JS or GPU to measure for a baseline.'); return; }
-  for (const b of document.querySelectorAll('button, select')) b.disabled = true;
+  for (const b of document.querySelectorAll('button, select')) if (b.id !== 'stop') b.disabled = true;
   $('crash').hidden = true;
-  const run = { ...choice, ts: new Date().toISOString(), facts: FACTS };
+  const run = { ...choice, ts: new Date().toISOString(), facts: FACTS, autoIndex };
+  let result = null;
   let session = null;
   try {
     if (choice.engine === 'wllama-cpu') session = await runWllama(run, false);
@@ -337,29 +408,59 @@ async function runTest() {
     if (choice.probe === 'js') left = await probeJS(run);
     if (choice.probe === 'gpu') left = await probeGPU(run);
     store.del(KEY_RUN);
-    addResult({ ...pick(run), ...left, outcome: left.how ? `finished (${left.how})` : 'loaded and answered', cls: 'ok', sample: run.sample, compat: run.compat, facts: FACTS });
+    result = { ...pick(run), ...left, outcome: left.how ? `finished (${left.how})` : 'loaded and answered', cls: 'ok', sample: run.sample, compat: run.compat, mlcId: run.mlcId, facts: FACTS };
+    addResult(result);
     say(`Done.${run.sample ? `\nIt said: “${run.sample}…”` : ''}`);
   } catch (e) {
     store.del(KEY_RUN);
-    addResult({ ...pick(run), outcome: `error while ${run.stage || 'starting'}: ${e.message}`, cls: 'bad', facts: FACTS });
+    result = { ...pick(run), outcome: `error while ${run.stage || 'starting'}: ${e && e.message || e}`, cls: 'bad', mlcId: run.mlcId, facts: FACTS };
+    addResult(result);
     say('Error: ' + (e && e.message || e));
   } finally {
     if (session) await session.unload();
     for (const b of document.querySelectorAll('button, select')) b.disabled = false;
   }
+  if (autoIndex != null) {
+    autoAfter(run, result);
+    // Reload so the next step starts from a clean tab (wasm and GPU memory aren't reliably given back).
+    setTimeout(() => location.reload(), 1500);
+  }
 }
 
-$('run').onclick = runTest;
+$('run').onclick = () => runTest();
+$('auto').onclick = () => {
+  store.set(KEY_AUTO, { queue: buildQueue(), i: 0, dead: {}, started: new Date().toISOString() });
+  location.reload();
+};
+$('stop').onclick = () => {
+  if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
+  store.del(KEY_AUTO);
+  $('stop').hidden = true; $('auto').hidden = false;
+  say('Stopped. Results so far are kept. If a step was running, it finishes first.');
+};
 $('clear').onclick = () => { store.del(KEY_RESULTS); renderResults(); say('Results cleared.'); };
+const exportText = () => JSON.stringify({ exported: new Date().toISOString(), page: location.href, device: FACTS, results: store.get(KEY_RESULTS, []) }, null, 1);
 $('copy').onclick = async () => {
-  const text = JSON.stringify({ device: FACTS, results: store.get(KEY_RESULTS, []) }, null, 1);
-  try { await navigator.clipboard.writeText(text); say('Copied. Paste it back to Claude.'); }
-  catch { say(text); }
+  try { await navigator.clipboard.writeText(exportText()); say('Copied. Paste it back to Claude.'); }
+  catch { say(exportText()); }
+};
+// Export: the share sheet on phones (save to Files, AirDrop, Messages…), a file download elsewhere.
+$('export').onclick = async () => {
+  const name = `memtest-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.json`;
+  const file = new File([exportText()], name, { type: 'application/json' });
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: 'Phone memory test results' }); say('Shared.'); return; }
+  } catch (e) { if (e && e.name === 'AbortError') return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file); a.download = name; document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  say(`Saved ${name}.`);
 };
 
 const FACTS = await deviceFacts();
 recoverCrash();
 renderResults();
+resumeAuto();
 window.memtestReady = true;
 </script>
 </body>
