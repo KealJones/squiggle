@@ -92,9 +92,8 @@ test('createCall: utterance → send → spoken in chunks, recognition paused wh
   class SR { constructor() { recs.push(this); this.running = false; } start() { this.running = true; this.onstart?.(); } abort() { this.running = false; setTimeout(() => this.onend?.(), 0); } }
   class U { constructor(t) { this.text = t; } }
   const synth = { getVoices: () => [], speak: (u) => { if (u.text) { spoken.push({ text: u.text, recRunning: recs[0].running }); setTimeout(() => u.onend(), 5); } }, cancel() {} };
-  let call;
   const states = [];
-  call = createCall({
+  const call = createCall({
     SR, synth, Utterance: U, silenceMs: 20, resumeDelayMs: 10, onChange: (s) => states.push(s.state),
     send: async (text) => { call.feed('You said: ' + text + '. Second sentence here for you.'); call.finish('You said: ' + text + '. Second sentence here for you.'); },
   });
@@ -150,8 +149,7 @@ test('realTimeFactor averages the last chunks', () => {
 
 test('natural voice: primes both voices in the tap, synthesizes ahead while playing, never uses system speech', async () => {
   const P = fakeCallParts(), N = fakeNatural({ synthMs: 5, playMs: 20 });
-  let call;
-  call = createCall({ SR: P.SR, speaker: N.speaker, fallback: P.system, silenceMs: 10, resumeDelayMs: 5,
+  const call = createCall({ SR: P.SR, speaker: N.speaker, fallback: P.system, silenceMs: 10, resumeDelayMs: 5,
     send: async () => { call.feed(REPLY); call.finish(REPLY); } });
   call.start();
   assert.ok(P.spoken.primed, 'system speech primed');
@@ -171,8 +169,7 @@ test('natural voice: primes both voices in the tap, synthesizes ahead while play
 
 test('natural voice still loading: that reply uses the system voice; the next one is natural', async () => {
   const P = fakeCallParts(), N = fakeNatural({ ready: false });
-  let call;
-  call = createCall({ SR: P.SR, speaker: N.speaker, fallback: P.system, silenceMs: 10, resumeDelayMs: 5,
+  const call = createCall({ SR: P.SR, speaker: N.speaker, fallback: P.system, silenceMs: 10, resumeDelayMs: 5,
     send: async () => { call.feed(REPLY); call.finish(REPLY); } });
   call.start();
   P.recs[0].onresult({ resultIndex: 0, results: [Object.assign([{ transcript: 'hi' }], { isFinal: true })] });
@@ -190,8 +187,7 @@ test('natural voice still loading: that reply uses the system voice; the next on
 test('natural voice fails mid-reply: the failed chunk and the rest are said by the system voice, once', async () => {
   const P = fakeCallParts(), N = fakeNatural({ fail: (t) => /Second/.test(t) });
   const fallbacks = [];
-  let call;
-  call = createCall({ SR: P.SR, speaker: N.speaker, fallback: P.system, silenceMs: 10, resumeDelayMs: 5,
+  const call = createCall({ SR: P.SR, speaker: N.speaker, fallback: P.system, silenceMs: 10, resumeDelayMs: 5,
     onFallback: (reason, detail) => fallbacks.push([reason, detail.message]),
     send: async () => { call.feed(REPLY); call.finish(REPLY); } });
   call.start();
@@ -213,8 +209,7 @@ test('natural voice fails mid-reply: the failed chunk and the rest are said by t
 test('natural voice slower than speech: after two chunks the call switches to the system voice', async () => {
   const P = fakeCallParts(), N = fakeNatural({ reportMs: 250, audioMs: 100 });
   const fallbacks = [];
-  let call;
-  call = createCall({ SR: P.SR, speaker: N.speaker, fallback: P.system, silenceMs: 10, resumeDelayMs: 5,
+  const call = createCall({ SR: P.SR, speaker: N.speaker, fallback: P.system, silenceMs: 10, resumeDelayMs: 5,
     onFallback: (reason, detail) => fallbacks.push([reason, Math.round(detail * 10) / 10]),
     send: async () => { call.feed(REPLY); call.finish(REPLY); } });
   call.start();
@@ -231,8 +226,7 @@ test('natural voice slower than speech: after two chunks the call switches to th
 
 test('natural voice: barge-in and end stop the audio and drop queued synthesis', async () => {
   const P = fakeCallParts(), N = fakeNatural({ playMs: 200 });
-  let call;
-  call = createCall({ SR: P.SR, speaker: N.speaker, fallback: P.system, silenceMs: 10, resumeDelayMs: 5,
+  const call = createCall({ SR: P.SR, speaker: N.speaker, fallback: P.system, silenceMs: 10, resumeDelayMs: 5,
     send: async () => { call.feed(REPLY); call.finish(REPLY); } });
   call.start();
   P.recs[0].onresult({ resultIndex: 0, results: [Object.assign([{ transcript: 'hi' }], { isFinal: true })] });
@@ -272,8 +266,7 @@ test('firstPiece: a long first chunk is cut at its first sentence or clause brea
 test('natural voice: the first chunk of each reply is cut short so speech starts sooner; system speech is not', async () => {
   const P = fakeCallParts(), N = fakeNatural();
   const long = 'Hi! I checked the repo, and the build is passing again. Second sentence of the reply is here.';
-  let call;
-  call = createCall({ SR: P.SR, speaker: N.speaker, fallback: P.system, silenceMs: 10, resumeDelayMs: 5,
+  const call = createCall({ SR: P.SR, speaker: N.speaker, fallback: P.system, silenceMs: 10, resumeDelayMs: 5,
     send: async () => { call.feed(long); call.finish(long); } });
   call.start();
   P.recs[0].onresult({ resultIndex: 0, results: [Object.assign([{ transcript: 'hi' }], { isFinal: true })] });
@@ -281,8 +274,7 @@ test('natural voice: the first chunk of each reply is cut short so speech starts
   assert.deepEqual(N.log.filter(l => l[0] === 'synth').map(l => l[1]), ['Hi! I checked the repo,', 'and the build is passing again.', 'Second sentence of the reply is here.']);
   call.end();
   const P2 = fakeCallParts();
-  let call2;
-  call2 = createCall({ SR: P2.SR, synth: P2.synth, Utterance: P2.U, silenceMs: 10, resumeDelayMs: 5,
+  const call2 = createCall({ SR: P2.SR, synth: P2.synth, Utterance: P2.U, silenceMs: 10, resumeDelayMs: 5,
     send: async () => { call2.feed(long); call2.finish(long); } });
   call2.start();
   P2.recs[0].onresult({ resultIndex: 0, results: [Object.assign([{ transcript: 'hi' }], { isFinal: true })] });

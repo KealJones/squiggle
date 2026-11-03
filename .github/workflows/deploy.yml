@@ -1,5 +1,8 @@
 # Deploys Squiggle on every push to main:
-#   - the app to GitHub Pages (needs Settings → Pages → Source: "GitHub Actions")
+#   - the app to GitHub Pages, by publishing it to the gh-pages branch
+#     (Settings → Pages → Source: "Deploy from a branch", gh-pages, / (root)).
+#     Pull-request previews (pr-preview.yml) live on the same branch under
+#     pr-preview/, which this deploy leaves alone.
 #   - the relay to your Cloudflare account (only if the CLOUDFLARE_API_TOKEN
 #     secret is set; otherwise deploy it yourself with `npx wrangler deploy`)
 #
@@ -77,26 +80,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+      contents: write
+    concurrency:
+      group: gh-pages
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Build site
         env:
           RELAY_URL: ${{ vars.SQUIGGLE_RELAY_URL }}
-        run: |
-          mkdir -p _site
-          cp -R app/. _site/
-          node -e 'require("fs").writeFileSync("_site/config.json", JSON.stringify({ relayUrl: process.env.RELAY_URL || "" }) + "\n")'
-          touch _site/.nojekyll
-          if [ -z "$RELAY_URL" ]; then echo "::warning::SQUIGGLE_RELAY_URL is not set; the app will ask for the relay address on first run."; fi
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+        run: node scripts/build-site.mjs _site
+      - name: Publish to gh-pages
+        uses: JamesIves/github-pages-deploy-action@v4
         with:
-          path: _site
-      - id: deploy
-        uses: actions/deploy-pages@v4
+          folder: _site
+          branch: gh-pages
+          clean: true
+          clean-exclude: pr-preview/
+          commit-message: "Deploy ${{ github.sha }}"

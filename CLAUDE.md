@@ -14,7 +14,19 @@ app/                    static app, plain ES modules, no build step
   index.html styles.css sandbox.html sw.js manifest.webmanifest
   vendor/               bundled libs (isomorphic-git, lightning-fs, marked, DOMPurify) — `npm run vendor`
   src/
-    main.js             UI: setup wizard, sessions sidebar + search, chat, threads, panels, chat details sidebar
+    main.js             entry: settings, config, sign-in state → setup wizard or the app
+    ui/                 the UI, one module per area (plain DOM, no framework)
+      dom.js            h(), icon(), md(), toast(), number formatting
+      state.js          the shared UI state object (current session, busy, model state, call, …)
+      settings.js       per-device settings (localStorage) and their one-time migrations
+      setup.js          first-run wizard: sign in, install the GitHub App, storage, model picker
+      app.js            startApp/wireApp: loads state, wires index.html to the modules, storage events
+      chat.js           sessions sidebar + search, message list, composer, send() → agent.runTurn, approval/check-in cards
+      panels.js         drawer panels: threads, notes, memory + recipes, files, "what the model saw"
+      side.js           chat details sidebar (see below)
+      settings-panel.js the Settings drawer
+      model-ui.js       model download/load with progress, crash-loop guard, banners, composer note
+      voice-ui.js       read aloud, voice calls (call bar), natural voice lifecycle and crash marker
     agent.js            turn loop (docs/harness.md): chat phase → plan → one fresh prompt per step → final reply; need/find; recipes learned after
     tasks.js            step-mode task state, step/final prompts (budgeted), resume rules
     recipes.js          memory/recipes.jsonl: how finished tasks were solved, matched to new requests, forgotten after 90 days unused
@@ -23,10 +35,15 @@ app/                    static app, plain ES modules, no build step
     engine.js           model registry, download (resumable, IndexedDB chunks), LiteRT engine, generation
     engine-cloud.js     cloud model through the relay (same conversation interface)
     engine-wllama.js    Gemma 3 270M on llama.cpp WASM (phones): prompt-based tools, <think>, anti-loop
-    context.js          context assembly: smart (default) / compact / full; report
+    context.js          context assembly: CONTEXT_MODES registry (smart default / compact / managed / full); report
     recall.js           smart mode's recalled block: earlier messages (this chat + other chats) and memory, quoted after the request; time phrases, size caps
     search.js           BM25 + blend with optional embeddings (embed.js, MiniLM on CPU)
-    tools.js            agent tools; run_js sandbox host
+    tools.js            facade over tools/ (keeps the import path)
+    tools/              agent tools (docs/extending.md)
+      registry.js       defineTool/registerTool, toolSpecs, runTool: the extension point
+      index.js          registers the built-ins in a fixed order (the order is prompt text for small models)
+      workspace.js      /home, /repos and /web path mapping shared by the tools
+      files.js notes.js git.js web.js memory.js compute.js   the tools by area (compute.js hosts the run_js sandbox)
     calc.js             `calculate` tool: safe math expression parser (no eval), % and money-friendly
     guard.js            hard limits: push policy, workflow-file check, workspace path resolution
     grants.js           remembered "always allow" push grants (synced)
@@ -111,9 +128,10 @@ A thread's context = main messages up to its parent + its own messages
 
 The design doc is the contract for agent.js/tasks.js and for the small-model fine-tune; change
 both together. Task state lives on the session (`session.tasks`, merged by id like notes).
-Context modes (`settings.contextMode`): `compact` (Compress), `smart` (default) and `managed` (AI-managed,
+Context modes (`settings.contextMode`, `context.js CONTEXT_MODES`): `compact` (Compress), `smart` (default) and `managed` (AI-managed,
 experimental: budget line, plan steps with `needs`/`kind: 'summarize'`, `checkpoint`). Everything AI-managed adds
 is behind `managed()`; the other modes must stay unchanged (Squiggle Small's prompt is its training text).
+The registry drives the Settings dropdown and the sidebar labels; `registerContextMode` adds one (docs/extending.md).
 
 ## Natural voice (voice.js, tts*.js)
 
@@ -140,7 +158,7 @@ is behind `managed()`; the other modes must stay unchanged (Squiggle Small's pro
 
 ## Verifying changes
 
-`npm test`, `node tests/e2e/run.mjs` and `node tests/e2e/run.mjs --split`
+`npm run check` (ESLint + unit tests), `npm run test:e2e` and `npm run test:e2e:split`
 (app and relay on different origins; set `PLAYWRIGHT_BROWSERS_PATH` if needed; `E2E_ONLY=<part of a
 check name>` runs a subset). The e2e suite swaps `src/engine.js` for `tests/e2e/fake-engine.js` and
 `src/tts-worker.js` for a scripted fake; real-model behaviour needs a WebGPU device and is checked

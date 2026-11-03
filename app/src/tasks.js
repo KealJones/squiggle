@@ -211,7 +211,7 @@ export function stepPrompt(base, task, sections = [], { maxTokens = Infinity } =
     for (const s of secs) out.push(`## ${s.title}\n${String(s.text).trim()}`);
     return out.join('\n\n');
   };
-  let secs = live.slice();
+  const secs = live.slice();
   let text = build(secs, 120);
   // Sections marked keep (a checkpoint, attachments the model asked for; already sized) are never dropped.
   const lastDroppable = () => { for (let i = secs.length - 1; i >= 0; i--) if (!secs[i].keep) return i; return -1; };

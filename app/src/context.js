@@ -19,7 +19,33 @@ import { wrapUntrusted } from './untrusted.js';
 import { replayNote } from './attachments.js';
 import { recallBlock } from './recall.js';
 
-const RECENT_SHARE = { smart: 0.45, compact: 0.6, managed: 0.55, full: 1 };
+// Context modes (settings.contextMode). Each says how the preface is built:
+//   recentShare  share of the budget for the most recent turns, replayed verbatim
+//   summary      include the rolling summary of older turns
+//   retrieve     smart retrieval (older messages, tool output, thread outcomes, other chats)
+//   offered      shown in Settings → Context (full is for tests and tooling)
+// The UI reads label/short/hint from here; registerContextMode adds a custom one.
+export const CONTEXT_MODES = {
+  compact: { label: 'Compress', short: 'Compress', recentShare: 0.6, summary: true, retrieve: false, offered: true,
+    hint: 'A summary of the chat so far plus the recent messages.' },
+  smart: { label: 'Smart', short: 'Smart', recentShare: 0.45, summary: true, retrieve: true, offered: true,
+    hint: 'Also brings back a few earlier messages that fit the question ("that", "yesterday", "what I said about…"), quoted after your message, plus relevant web pages and files from this chat. Plain chat like "hi" gets nothing extra.' },
+  managed: { label: 'AI-managed (experimental)', short: 'AI-managed', recentShare: 0.55, summary: true, retrieve: false, offered: true,
+    hint: 'The model runs its own context: it sees how much room is left, plan steps say which earlier results, files or notes they need attached, big pages get a summarize step, and when room runs low it checkpoints and carries on fresh. Experimental: models haven\'t been trained for it yet.' },
+  full: { label: 'Full history', short: 'Full', recentShare: 1, summary: false, retrieve: false, offered: false,
+    hint: 'As many recent turns as fit, nothing retrieved.' },
+};
+
+/** Adds (or replaces) a context mode. Unknown fields are kept for the caller's own use. */
+export function registerContextMode(name, def) {
+  if (!/^[a-z][a-z0-9_-]*$/.test(String(name))) throw new Error(`Bad context mode name: ${name}`);
+  CONTEXT_MODES[name] = { ...CONTEXT_MODES.smart, label: name, short: name, hint: '', offered: true, ...def };
+  return CONTEXT_MODES[name];
+}
+
+/** The mode's definition; unknown names fall back to smart. */
+export const contextMode = (name) => CONTEXT_MODES[name] || CONTEXT_MODES.smart;
+
 const MIN_RECENT = 2;
 const OBS_MIN_SCORE = 0.9;
 const MIN_SCORE = 0.18;
@@ -70,7 +96,7 @@ export function chunk(text, maxTokens = CHUNK_TOKENS) {
  * @param {string|null} o.threadId
  * @param {string}   o.query       the new user message
  * @param {number}   o.budget      tokens available for the preface (system + history)
- * @param {string}   o.mode        'smart' | 'compact' | 'managed' (AI-managed: like compact; the model fetches the rest) | 'full'
+ * @param {string}   o.mode        a CONTEXT_MODES key: 'smart' | 'compact' | 'managed' (AI-managed: like compact; the model fetches the rest) | 'full'
  * @param {string}   o.system      base system prompt
  * @param {Function} [o.recall]    async (query, k) => [{ fact, score }]
  * @param {Function} [o.embed]     async (texts) => Float32Array[] | null
@@ -83,6 +109,7 @@ export function chunk(text, maxTokens = CHUNK_TOKENS) {
  */
 export async function assembleContext(o) {
   const { line, session, threadId = null, query, budget, mode = 'smart', system } = o;
+  const M = contextMode(mode);
   const report = { mode, budget, items: [] };
   let used = estTokens(system) + estTokens(query) + 40;
   report.items.push({ kind: 'system', label: 'System prompt', tokens: estTokens(system) });
@@ -94,7 +121,7 @@ export async function assembleContext(o) {
   }
 
   // 1. Recent window, newest first, at least MIN_RECENT messages.
-  const recentCap = Math.floor((budget - used) * (RECENT_SHARE[mode] || 0.45));
+  const recentCap = Math.floor((budget - used) * M.recentShare);
   const recent = [];
   let recentTokens = 0;
   for (let i = line.length - 1; i >= 0; i--) {
@@ -149,7 +176,7 @@ export async function assembleContext(o) {
 
   // 3. Rolling summary of what's no longer in the window.
   const summary = pickSummary(session, threadId, line);
-  if (older.length && summary && mode !== 'full') {
+  if (older.length && summary && M.summary) {
     const body = `## Earlier in this conversation (summary)\n${summary.text}`;
     const t = estTokens(body);
     if (used + t < budget) {
@@ -196,7 +223,7 @@ export async function assembleContext(o) {
   }
 
   // 5. Smart retrieval from older messages, tool output and thread outcomes.
-  if (mode === 'smart') {
+  if (M.retrieve) {
     const cands = [];
     const pinnedIds = new Set(pinned.map(m => m.id));
     // Messages (this chat's older ones and other chats') go to the recalled

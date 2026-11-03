@@ -15,7 +15,6 @@ const MAX_OUTPUT = 1024;
 const REPEAT_PENALTY = 1.15;
 const LOOP_WORDS = 8;     // a run of this many words…
 const LOOP_TIMES = 3;     // …written this many times stops the reply
-const FENCE = '```tool_call';
 
 let lib = null;
 const getLib = async () => lib || (lib = await import(LIB));
