@@ -138,7 +138,7 @@ export async function start(gitRoot, env = {}, { split = false } = {}) {
       res.end(TEST_PAGES[u.pathname] || 'not found');
       return;
     }
-    let p = normalize(join(APP_DIR, u.pathname === '/' ? 'index.html' : u.pathname));
+    const p = normalize(join(APP_DIR, u.pathname === '/' ? 'index.html' : u.pathname));
     if (!p.startsWith(APP_DIR) || !existsSync(p) || statSync(p).isDirectory()) { res.writeHead(404); res.end(); return; }
     res.writeHead(200, { 'Content-Type': TYPES[extname(p)] || 'application/octet-stream' });
     let body = readFileSync(p);

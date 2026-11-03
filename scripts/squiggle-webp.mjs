@@ -35,7 +35,7 @@ const HUMP = (() => {
     pts.push([3 * v * v * u * 3 + 3 * v * u * u * 7 + u * u * u * 11, 3 * v * v * u * 6 + 3 * v * u * u * 6]);
   }
   return (s) => { // height above the midline at distance s (0..11) into a hump
-    let i = pts.findIndex(([x]) => x >= s);
+    const i = pts.findIndex(([x]) => x >= s);
     if (i <= 0) return 0;
     const [ax, ay] = pts[i - 1], [bx, by] = pts[i];
     return ay + (by - ay) * (s - ax) / (bx - ax || 1);

@@ -55,7 +55,7 @@ export function speakable(md) {
 export function splitSentences(plain, { max = 240, min = 28 } = {}) {
   const pieces = [];
   for (const line of String(plain || '').split('\n')) {
-    let s = line.trim();
+    const s = line.trim();
     if (!s) continue;
     let start = 0;
     const re = /[.!?…]+["'”’)\]]*(?=\s|$)/g;

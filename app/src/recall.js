@@ -47,7 +47,7 @@ export function timeWindow(text, now = Date.now()) {
   if ((m = s.match(/\blast month\b/))) return w(today - 62 * DAY, today - 7 * DAY, m[0]);
   if ((m = s.match(new RegExp(`\\b(?:on |last )?(${WEEKDAYS.join('|')})\\b`)))) {
     const want = WEEKDAYS.indexOf(m[1]);
-    let back = (new Date(today).getDay() - want + 7) % 7 || 7;
+    const back = (new Date(today).getDay() - want + 7) % 7 || 7;
     const d = today - back * DAY;
     return w(d - DAY / 2, d + DAY + DAY / 2, m[0]);
   }

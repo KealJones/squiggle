@@ -223,7 +223,7 @@ test('search: LangSearch first when its key is set; DuckDuckGo when it fails; th
   const html = readFileSync(new URL('./fixtures/ddg-lite.html', import.meta.url), 'utf8');
   const orig = globalThis.fetch;
   const calls = [];
-  let ls = { ok: true, body: { code: 200, data: { webPages: { value: [
+  const ls = { ok: true, body: { code: 200, data: { webPages: { value: [
     { name: 'Pokémon Horizons: The Series', url: 'https://en.wikipedia.org/wiki/Pok%C3%A9mon_Horizons', snippet: 'The <b>latest</b> Pokémon anime series.' },
     { name: 'no url' },
   ] } } } };

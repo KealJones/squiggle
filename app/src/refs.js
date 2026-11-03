@@ -165,7 +165,7 @@ export function extractMentions(raw, known = { repos: new Set(), names: new Map(
   ];
   for (const [re, g] of pathRes) {
     for (const m of t.matchAll(re)) {
-      let v = trimPunct(m[g]);
+      const v = trimPunct(m[g]);
       if (!v || NOT_FILES.has(v.toLowerCase())) continue;
       const isDirOnly = v.endsWith('/');
       if (/^\/(home|repos|usr|etc|var|tmp|opt|mnt|Users)?\/?$/.test(v)) continue;     // "/" and "/home" alone say nothing
