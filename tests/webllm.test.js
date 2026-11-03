@@ -90,3 +90,67 @@ test('Conversation (fenced format) over the shim passes plain text through and n
   await w.exit();
   assert.ok(fake.seen.unloaded);
 });
+
+// ── Gemma 4 (tiny Gemma 4 on WebLLM) ─────────────────────────────────────
+import { gemma4Prompt, parseGemmaCalls, splitGemma } from '../app/src/engine-webllm.js';
+import { readFileSync } from 'node:fs';
+
+const GEMMA_FIXTURES = JSON.parse(readFileSync(new URL('./fixtures/gemma4-template.json', import.meta.url), 'utf8'));
+
+test('gemma4Prompt matches Gemma 4\'s own chat template exactly (system, tools, thinking, calls, results in the model turn)', () => {
+  for (const [name, c] of Object.entries(GEMMA_FIXTURES)) {
+    assert.equal(gemma4Prompt(c.messages, c.tools || [], { thinking: Boolean(c.enable_thinking) }), c.expected, name);
+  }
+});
+
+test('parseGemmaCalls reads Gemma 4 calls: strings with braces, numbers, arrays, nested objects, several calls', () => {
+  assert.deepEqual(parseGemmaCalls('ok<|tool_call>call:web_search{count:3,query:<|"|>Phoenix, AZ {weather}<|"|>}<tool_call|><|tool_call>call:tool_info{names:[<|"|>recall<|"|>,<|"|>grep<|"|>],opt:{a:true,b:null}}<tool_call|>'),
+    [{ name: 'web_search', arguments: { count: 3, query: 'Phoenix, AZ {weather}' } }, { name: 'tool_info', arguments: { names: ['recall', 'grep'], opt: { a: true, b: null } } }]);
+  assert.deepEqual(parseGemmaCalls('no calls here'), []);
+});
+
+test('splitGemma separates the thought channel, waits on half-written markers, and handles a thought the prompt opened', () => {
+  assert.deepEqual(splitGemma('<|chan'), { thinking: '', text: '', pending: true });
+  assert.deepEqual(splitGemma('<|channel>thought\nSearch first.<chan'), { thinking: 'Search first.', text: '', pending: true });
+  assert.deepEqual(splitGemma('<|channel>thought\nSearch first.\n<channel|>It is 61°F.'), { thinking: 'Search first.', text: 'It is 61°F.' });
+  assert.deepEqual(splitGemma('Just an answer.'), { thinking: '', text: 'Just an answer.' });
+  assert.deepEqual(splitGemma('read the result<channel|>Sunny.', true), { thinking: 'read the result', text: 'Sunny.' });
+});
+
+// A stand-in for WebLLM's raw completions API (what the Gemma 4 path uses).
+function fakeCompletionEngine(text) {
+  const seen = { requests: [], resets: 0 };
+  return {
+    seen,
+    completions: { async create(req) {
+      seen.requests.push(req);
+      return (async function* () { for (let i = 0; i < text.length; i += 4) yield { choices: [{ text: text.slice(i, i + 4) }] }; })();
+    } },
+    async resetChat() { seen.resets++; },
+    interruptGenerate() {},
+    async unload() {},
+  };
+}
+
+test('NativeConversation over the WebLLM shim with Gemma 4: one rendered prompt, thinking, text, then a parsed native call', async () => {
+  const fake = fakeCompletionEngine('<|channel>thought\nThe name is in this turn.\n<channel|>Searching.<|tool_call>call:web_search{query:<|"|>patrick stewart<|"|>}<tool_call|>');
+  const w = await createShim('tiny-gemma4-heal4a-q4f16_1-MLC', 4096, () => {}, { format: 'gemma4', engine: fake });
+  const conv = new NativeConversation(w, { preface: { messages: [{ role: 'system', content: 'You are Squiggle.' }], tools: TOOLS, extra_context: { enable_thinking: true } }, sessionConfig: { maxOutputTokens: 256 } });
+  const got = { thinking: '', text: '', calls: [] };
+  for await (const x of conv.sendMessageStreaming('look up an actor: patrick stewart')) {
+    if (x.thinking) got.thinking += x.thinking;
+    if (x.content) got.text += x.content;
+    if (x.tool_calls) got.calls.push(...x.tool_calls);
+  }
+  const req = fake.seen.requests[0];
+  assert.equal(fake.seen.resets, 1);
+  assert.ok(req.prompt.startsWith('<|turn>system\n<|think|>\nYou are Squiggle.<|tool>declaration:web_search{'), req.prompt.slice(0, 120));
+  assert.ok(req.prompt.endsWith('<|turn>user\nlook up an actor: patrick stewart<turn|>\n<|turn>model\n'));
+  assert.deepEqual(req.stop, ['<turn|>', '<|tool_response>']);
+  assert.match(got.thinking, /The name is in this turn\./);
+  assert.equal(got.text.trim(), 'Searching.');
+  assert.equal(got.calls.length, 1);
+  const f = got.calls[0].function || got.calls[0];
+  assert.equal(f.name, 'web_search');
+  assert.deepEqual(typeof f.arguments === 'string' ? JSON.parse(f.arguments) : f.arguments, { query: 'patrick stewart' });
+});

@@ -33,6 +33,11 @@ export const MODELS = {
   // E2B's own answers and tool calls (lm-experiments experiments/tiny-gemma4, heal 3).
   TG4: { label: 'Test: Tiny Gemma 4', size: '778 MB', note: 'Gemma 4 E2B cut down for phones (0.6B core) and healed on E2B\'s own answers. Answers short questions, calls Gemma 4\'s tools; still often wrong. Experimental', phone: true, runtime: 'wllama', tools: true, native: true,
     url: HF + 'kealjones/tiny-gemma4-test/resolve/main/tiny-gemma4-heal3-v2-Q4_0.gguf', bytes: 778158496 },
+  // Heal 4 pilot A (lm-experiments experiments/tiny-gemma4, 2026-11-03): heal 3 + 750 steps on Toucan's multi-turn
+  // tool conversations with real results. In tests it answers from tool results (heal 3 replied with nothing) and
+  // handles a failed search, but plain text got a little worse. Same size and runtime as TG4.
+  TG4A: { label: 'Test: Tiny Gemma 4 (heal 4)', size: '778 MB', note: 'tiny Gemma 4 trained further on tool conversations with real results: it now answers from what a search returns. Plain answers got a little worse than heal 3. Experimental', phone: true, runtime: 'wllama', tools: true, native: true,
+    url: HF + 'kealjones/tiny-gemma4-test/resolve/main/tiny-gemma4-heal4a-Q4_0.gguf', bytes: 778158496 },
   // Stock Qwen3.5 0.8B (Keal, 2026-10-31): tools through Qwen's own chat template, like TG4 (native), no fine-tune.
   Q35: { label: 'Test: Qwen3.5 0.8B', size: '507 MB', note: 'stock Qwen3.5 0.8B with tools in its own tool format (no Squiggle training). Thinks a lot, so it\'s slow on a phone. Experimental', phone: true, runtime: 'wllama', tools: true, native: true,
     url: HF + 'unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_0.gguf', bytes: 507154688 },
@@ -122,13 +127,19 @@ export const modelFitsDevice = (id) => !isMobile() || Boolean(MODELS[id] && MODE
 
 // ── Download (resumable, chunked into IndexedDB) ──────────────────────────
 
+// WebLLM, with our own MLC builds (a model's `mlcRecord`) registered so its calls can find them.
+async function webllm() {
+  const w = await import('./engine-webllm.js');
+  for (const m of Object.values(MODELS)) if (m.mlcRecord) w.registerModel({ model_id: m.mlc, ...m.mlcRecord });
+  return w;
+}
 const metaKey = (url) => 'model-meta:' + url;
 const recSize = (r) => (r == null ? 0 : r.size ?? r.byteLength);
 
 export async function downloadInfo(id) {
   const wm = MODELS[id];
   if (wm && wm.backend === 'webllm') {
-    const done = await (await import('./engine-webllm.js')).isDownloaded(wm.mlc);
+    const done = await (await webllm()).isDownloaded(wm.mlc);
     return { total: wm.bytes, stored: done ? wm.bytes : 0, complete: done };
   }
   if (wm && wm.runtime === 'wllama') {
@@ -167,7 +178,7 @@ async function downloadUnlocked(id, onProgress, signal) {
   if (MODELS[id].backend === 'webllm') {
     try { await navigator.storage?.persist?.(); } catch {}
     const total = MODELS[id].bytes;
-    return (await import('./engine-webllm.js')).downloadModel(MODELS[id].mlc, (done, all) => onProgress && onProgress(Math.round(total * done / all), total), signal);
+    return (await webllm()).downloadModel(MODELS[id].mlc, (done, all) => onProgress && onProgress(Math.round(total * done / all), total), signal);
   }
   if (MODELS[id].runtime === 'wllama') {
     try { await navigator.storage?.persist?.(); } catch {}
@@ -269,7 +280,7 @@ async function storedBytes(url) {
 }
 
 export async function deleteModel(id) {
-  if (MODELS[id] && MODELS[id].backend === 'webllm') return (await import('./engine-webllm.js')).removeModel(MODELS[id].mlc);
+  if (MODELS[id] && MODELS[id].backend === 'webllm') return (await webllm()).removeModel(MODELS[id].mlc);
   if (MODELS[id] && MODELS[id].runtime === 'wllama') return (await import('./engine-wllama.js')).removeModel(MODELS[id].url);
   for (const { url } of modelFiles(id)) {
     for (const off of await chunkOffsets(url)) await kv.del([url, off], 'model');
@@ -335,7 +346,7 @@ export async function load(id, contextSize, { fast = true, onStage = () => {}, s
   if (MODELS[id].runtime === 'wllama') {
     const m = MODELS[id];
     engine = m.backend === 'webllm'
-      ? await (await import('./engine-webllm.js')).createEngine(m.mlc, contextSize, onStage, { native: Boolean(m.native), toolFormat: m.toolFormat || null })
+      ? await (await webllm()).createEngine(m.mlc, contextSize, onStage, { native: Boolean(m.native), toolFormat: m.toolFormat || null })
       : await (await import('./engine-wllama.js')).createEngine(m.url, contextSize, onStage, { ...small, native: Boolean(m.native) });
     loadedModel = id; engineContext = contextSize; engineFast = fast; engineSmall = smallKey;
     return;

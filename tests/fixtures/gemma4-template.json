@@ -1,0 +1,395 @@
+{
+ "plain_user": {
+  "messages": [
+   {
+    "role": "user",
+    "content": "  hi there  "
+   }
+  ],
+  "expected": "<|turn>user\nhi there<turn|>\n<|turn>model\n"
+ },
+ "system_tools_user_think": {
+  "messages": [
+   {
+    "role": "system",
+    "content": "You are Squiggle."
+   },
+   {
+    "role": "user",
+    "content": "look up patrick stewart"
+   }
+  ],
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for"
+       },
+       "count": {
+        "type": "number",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "tool_info",
+     "description": "Get how to call tools.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "names": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Tool names"
+       }
+      },
+      "required": [
+       "names"
+      ]
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "plan",
+     "description": "Make a plan.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "goal": {
+        "type": "string",
+        "description": "Goal"
+       },
+       "steps": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "text": {
+           "type": "string",
+           "description": "Step"
+          },
+          "kind": {
+           "type": "string",
+           "enum": [
+            "summarize"
+           ],
+           "description": "Kind"
+          }
+         },
+         "required": [
+          "text"
+         ]
+        },
+        "description": "Steps"
+       }
+      },
+      "required": [
+       "goal",
+       "steps"
+      ]
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "done",
+     "description": "Finish.",
+     "parameters": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   }
+  ],
+  "enable_thinking": true,
+  "expected": "<|turn>system\n<|think|>\nYou are Squiggle.<|tool>declaration:web_search{description:<|\"|>Search the web. Returns titles, links and snippets.<|\"|>,parameters:{properties:{count:{description:<|\"|>How many results<|\"|>,type:<|\"|>NUMBER<|\"|>},query:{description:<|\"|>What to search for<|\"|>,type:<|\"|>STRING<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:tool_info{description:<|\"|>Get how to call tools.<|\"|>,parameters:{properties:{names:{description:<|\"|>Tool names<|\"|>,items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>}},required:[<|\"|>names<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:plan{description:<|\"|>Make a plan.<|\"|>,parameters:{properties:{goal:{description:<|\"|>Goal<|\"|>,type:<|\"|>STRING<|\"|>},steps:{description:<|\"|>Steps<|\"|>,items:{properties:{kind:{description:<|\"|>Kind<|\"|>,enum:[<|\"|>summarize<|\"|>],type:<|\"|>STRING<|\"|>},text:{description:<|\"|>Step<|\"|>,type:<|\"|>STRING<|\"|>}},required:[<|\"|>text<|\"|>],type:<|\"|>OBJECT<|\"|>},type:<|\"|>ARRAY<|\"|>}},required:[<|\"|>goal<|\"|>,<|\"|>steps<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:done{description:<|\"|>Finish.<|\"|>,parameters:{type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nlook up patrick stewart<turn|>\n<|turn>model\n"
+ },
+ "multi_turn": {
+  "messages": [
+   {
+    "role": "system",
+    "content": "S"
+   },
+   {
+    "role": "user",
+    "content": "look up an actor"
+   },
+   {
+    "role": "assistant",
+    "content": "Sure, which actor?"
+   },
+   {
+    "role": "user",
+    "content": "patrick stewart"
+   }
+  ],
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for"
+       },
+       "count": {
+        "type": "number",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   }
+  ],
+  "expected": "<|turn>system\nS<|tool>declaration:web_search{description:<|\"|>Search the web. Returns titles, links and snippets.<|\"|>,parameters:{properties:{count:{description:<|\"|>How many results<|\"|>,type:<|\"|>NUMBER<|\"|>},query:{description:<|\"|>What to search for<|\"|>,type:<|\"|>STRING<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nlook up an actor<turn|>\n<|turn>model\nSure, which actor?<turn|>\n<|turn>user\npatrick stewart<turn|>\n<|turn>model\n"
+ },
+ "after_tool_result": {
+  "messages": [
+   {
+    "role": "system",
+    "content": "S"
+   },
+   {
+    "role": "user",
+    "content": "weather?"
+   },
+   {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+     {
+      "id": "c1",
+      "type": "function",
+      "function": {
+       "name": "web_search",
+       "arguments": {
+        "query": "Phoenix weather",
+        "count": 3
+       }
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c1",
+    "name": "web_search",
+    "content": "{\"results\":[{\"title\":\"61F\"}]}"
+   }
+  ],
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for"
+       },
+       "count": {
+        "type": "number",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   }
+  ],
+  "expected": "<|turn>system\nS<|tool>declaration:web_search{description:<|\"|>Search the web. Returns titles, links and snippets.<|\"|>,parameters:{properties:{count:{description:<|\"|>How many results<|\"|>,type:<|\"|>NUMBER<|\"|>},query:{description:<|\"|>What to search for<|\"|>,type:<|\"|>STRING<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nweather?<turn|>\n<|turn>model\n<|tool_call>call:web_search{count:3,query:<|\"|>Phoenix weather<|\"|>}<tool_call|><|tool_response>response:web_search{value:<|\"|>{\"results\":[{\"title\":\"61F\"}]}<|\"|>}<tool_response|>"
+ },
+ "after_tool_result_think": {
+  "messages": [
+   {
+    "role": "user",
+    "content": "weather?"
+   },
+   {
+    "role": "assistant",
+    "content": "Let me check.",
+    "tool_calls": [
+     {
+      "id": "c1",
+      "type": "function",
+      "function": {
+       "name": "web_search",
+       "arguments": {
+        "query": "Phoenix weather"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c1",
+    "name": "web_search",
+    "content": "sunny"
+   }
+  ],
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for"
+       },
+       "count": {
+        "type": "number",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   }
+  ],
+  "enable_thinking": true,
+  "expected": "<|turn>system\n<|think|>\n<|tool>declaration:web_search{description:<|\"|>Search the web. Returns titles, links and snippets.<|\"|>,parameters:{properties:{count:{description:<|\"|>How many results<|\"|>,type:<|\"|>NUMBER<|\"|>},query:{description:<|\"|>What to search for<|\"|>,type:<|\"|>STRING<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\nweather?<turn|>\n<|turn>model\n<|tool_call>call:web_search{query:<|\"|>Phoenix weather<|\"|>}<tool_call|><|tool_response>response:web_search{value:<|\"|>sunny<|\"|>}<tool_response|>Let me check.<turn|>\n<|channel>thought\n"
+ },
+ "two_calls_then_answer_then_user": {
+  "messages": [
+   {
+    "role": "user",
+    "content": "a"
+   },
+   {
+    "role": "assistant",
+    "content": null,
+    "tool_calls": [
+     {
+      "id": "c1",
+      "type": "function",
+      "function": {
+       "name": "web_search",
+       "arguments": {
+        "query": "x"
+       }
+      }
+     },
+     {
+      "id": "c2",
+      "type": "function",
+      "function": {
+       "name": "tool_info",
+       "arguments": {
+        "names": [
+         "recall",
+         "grep"
+        ]
+       }
+      }
+     }
+    ]
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c1",
+    "name": "web_search",
+    "content": "r1"
+   },
+   {
+    "role": "tool",
+    "tool_call_id": "c2",
+    "name": "tool_info",
+    "content": "r2"
+   },
+   {
+    "role": "assistant",
+    "content": "Found it."
+   },
+   {
+    "role": "user",
+    "content": "thanks"
+   }
+  ],
+  "tools": [
+   {
+    "type": "function",
+    "function": {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for"
+       },
+       "count": {
+        "type": "number",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   },
+   {
+    "type": "function",
+    "function": {
+     "name": "tool_info",
+     "description": "Get how to call tools.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "names": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Tool names"
+       }
+      },
+      "required": [
+       "names"
+      ]
+     }
+    }
+   }
+  ],
+  "expected": "<|turn>system\n<|tool>declaration:web_search{description:<|\"|>Search the web. Returns titles, links and snippets.<|\"|>,parameters:{properties:{count:{description:<|\"|>How many results<|\"|>,type:<|\"|>NUMBER<|\"|>},query:{description:<|\"|>What to search for<|\"|>,type:<|\"|>STRING<|\"|>}},required:[<|\"|>query<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><|tool>declaration:tool_info{description:<|\"|>Get how to call tools.<|\"|>,parameters:{properties:{names:{description:<|\"|>Tool names<|\"|>,items:{type:<|\"|>STRING<|\"|>},type:<|\"|>ARRAY<|\"|>}},required:[<|\"|>names<|\"|>],type:<|\"|>OBJECT<|\"|>}}<tool|><turn|>\n<|turn>user\na<turn|>\n<|turn>model\n<|tool_call>call:web_search{query:<|\"|>x<|\"|>}<tool_call|><|tool_call>call:tool_info{names:[<|\"|>recall<|\"|>,<|\"|>grep<|\"|>]}<tool_call|><|tool_response>response:web_search{value:<|\"|>r1<|\"|>}<tool_response|><|tool_response>response:tool_info{value:<|\"|>r2<|\"|>}<tool_response|>Found it.<turn|>\n<|turn>user\nthanks<turn|>\n<|turn>model\n"
+ }
+}
