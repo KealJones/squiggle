@@ -1,0 +1,370 @@
+// The chat: sessions sidebar (with search), the message list, the composer,
+// sending a turn through agent.runTurn, and the cards a turn can show
+// (approval, check-in). Threads render through the same pieces (panels.js).
+import * as storage from '../storage.js';
+import * as sessions from '../sessions.js';
+import * as tasks from '../tasks.js';
+import * as agent from '../agent.js';
+import * as attachments from '../attachments.js';
+import { checkFiles, fmtSize } from '../attachments.js';
+import * as voice from '../voice.js';
+import { bm25 } from '../search.js';
+import { $, h, icon, md, ago, squiggleWait, iconButton, scrollDown } from './dom.js';
+import { state } from './state.js';
+import { openThread, openPanel, closeDrawer, renderThreadPanel, renderNotesPanel } from './panels.js';
+import { renderSide } from './side.js';
+import { toggleReadAloud } from './voice-ui.js';
+import { ensureModel, loadCrashMarker, updateComposerNote } from './model-ui.js';
+
+export const closeSidebar = () => $('#sidebar').classList.remove('open');
+
+export function setSync() {
+  const st = storage.syncStatus();
+  const line = $('#sync-line');
+  if (!line) return;
+  const cfg = storage.storageConfig();
+  const dot = h('span', { class: 'sync-dot' + (st.syncing ? ' busy' : st.lastError ? ' err' : '') });
+  const text = st.syncing ? 'Syncing…' : st.lastError ? `Sync failed: ${st.lastError}` : st.lastSync ? `Synced ${ago(st.lastSync)}` : 'Not synced yet';
+  line.replaceChildren(dot, h('span', { title: cfg ? `${cfg.owner}/${cfg.name}` : '' }, text));
+}
+
+// ── Sessions sidebar (with search) ─────────────────────────────────────────
+export function renderSessions() {
+  const ul = $('#session-list');
+  const q = $('#session-search').value.trim();
+  ul.replaceChildren();
+  if (q) return renderSearch(ul, q);
+  for (const s of sessions.list()) {
+    ul.append(h('li', {}, h('button', { 'aria-current': String(state.current && s.id === state.current.id), onclick: () => { openSession(s); closeSidebar(); } },
+      h('span', { class: 't' }, s.title), h('span', { class: 'when' }, ago(s.updated)))));
+  }
+  if (!ul.children.length) ul.append(h('li', { class: 'muted', style: 'padding: 8px 10px' }, 'No chats yet.'));
+}
+
+function renderSearch(ul, q) {
+  const docs = [];
+  for (const s of sessions.list()) {
+    if (s.title) docs.push({ id: `${s.id}|`, text: s.title, s });
+    for (const m of s.messages) if (m.content) docs.push({ id: `${s.id}|${m.id}`, text: m.content, s, m });
+  }
+  const scores = bm25(docs)(q);
+  const hits = docs.filter(d => scores.has(d.id)).sort((a, b) => scores.get(b.id) - scores.get(a.id)).slice(0, 30);
+  if (!hits.length) { ul.append(h('li', { class: 'muted', style: 'padding: 8px 10px' }, 'No matches.')); return; }
+  for (const d of hits) {
+    const snip = d.m ? snippet(d.m.content, q) : 'Title match';
+    ul.append(h('li', {}, h('button', { onclick: () => { openSession(d.s, d.m); closeSidebar(); } },
+      h('span', { class: 't' }, d.s.title), h('span', { class: 'when', style: 'display:block' }, (d.m && d.m.thread ? 'In a thread: ' : '') + snip))));
+  }
+}
+
+function snippet(text, q) {
+  const t = String(text).replace(/\s+/g, ' ');
+  const w = q.toLowerCase().split(/\s+/).find(x => t.toLowerCase().includes(x));
+  const i = w ? t.toLowerCase().indexOf(w) : 0;
+  const start = Math.max(0, i - 30);
+  return (start ? '…' : '') + t.slice(start, start + 90) + (t.length > start + 90 ? '…' : '');
+}
+
+// ── Chat ───────────────────────────────────────────────────────────────────
+export function openSession(s, focusMessage) {
+  state.current = s;
+  closeDrawer();
+  renderSessions();
+  renderChat();
+  if (focusMessage) {
+    if (focusMessage.thread) openThread(focusMessage.thread, focusMessage.id);
+    else requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-mid="${focusMessage.id}"]`);
+      if (el) { el.scrollIntoView({ block: 'center' }); el.animate([{ background: 'var(--marker)' }, { background: 'transparent' }], { duration: 1400 }); }
+    });
+  }
+}
+
+export function renderChat() {
+  const current = state.current;
+  $('#chat-title').textContent = current.title;
+  renderSide();
+  const inner = $('#messages-inner');
+  inner.replaceChildren();
+  const line = sessions.lineMessages(current, null);
+  if (!line.length) { inner.append(emptyState()); return; }
+  for (const m of line) inner.append(messageEl(m, { inThread: false }));
+  scrollDown($('#messages'));
+}
+
+function emptyState() {
+  const ideas = ['What do you remember about me?', 'Clone one of my repos and summarize it', 'Read https://example.com and tell me what it says'];
+  return h('div', { class: 'empty' },
+    icon('squiggle'),
+    h('h2', {}, 'What are we working on?'),
+    h('p', {}, 'Squiggle runs on this device and picks up where you left off on any other.'),
+    h('div', { class: 'suggestions' }, ideas.map(t => h('button', { onclick: () => { $('#input').value = t; $('#input').focus(); } }, t))));
+}
+
+export function messageEl(m, { inThread, streaming, session }) {
+  const current = state.current;
+  const el = h('div', { class: `msg ${m.role}`, 'data-mid': m.id || '' });
+  const col = h('div', { style: m.role === 'user' ? 'display:flex;flex-direction:column;align-items:flex-end;width:100%' : '' });
+  if (m.role === 'assistant') {
+    const owner = session || current;
+    const task = m.task && owner && owner.tasks && owner.tasks[m.task];
+    if (task) col.append(planEl(task, { live: false }));
+    if (m.tools && m.tools.length) col.append(toolTrail(m.tools));
+    // Saved thinking stays viewable (collapsed); it's never sent back to the model.
+    if (m.thinking) col.append(h('details', { class: 'thinking' }, h('summary', {}, 'Thinking'), h('div', {}, m.thinking)));
+    col.append(h('div', { class: 'body', html: md(agent.scrubFakeToolNotes(m.content)) }));
+  } else {
+    col.append(h('div', { class: 'body' }, m.content));
+    if (m.attachments && m.attachments.length) {
+      col.append(h('div', { class: 'attach-chips sent' }, m.attachments.map(a => h('span', { class: 'chip', title: a.path ? a.path : (a.error || 'not saved') },
+        icon('i-attach'), h('span', { class: 'chip-name' }, a.name), h('span', { class: 'chip-size' }, fmtSize(a.size))))));
+    }
+  }
+  if (!streaming && m.id) {
+    const actions = h('div', { class: 'msg-actions' + (m.pinned ? ' pinned' : '') });
+    if (!inThread) actions.append(iconButton('i-thread', 'Reply in thread', () => openThread(null, null, m)));
+    actions.append(iconButton('i-pin', m.pinned ? 'Unpin' : 'Pin (always keep in context)', () => {
+      sessions.updateMessage(current, m, { pinned: !m.pinned });
+      rerender();
+    }, m.pinned));
+    actions.append(iconButton('i-copy', 'Copy', () => navigator.clipboard?.writeText(m.content || '')));
+    if (m.role === 'assistant' && m.content && voice.support(window).synthesis) {
+      const on = Boolean(state.reader && state.reader.id === m.id);
+      const b = iconButton(on ? 'i-stop' : 'i-speaker', on ? 'Stop reading' : 'Read aloud', () => toggleReadAloud(m), on);
+      b.classList.add('read-aloud');
+      b.dataset.msg = m.id;
+      actions.append(b);
+    }
+    if (m.role === 'assistant' && m.context) actions.append(iconButton('i-eye', 'What the model saw', () => openPanel('context', m)));
+    col.append(actions);
+    if (!inThread) {
+      const t = sessions.threadOf(current, m.id);
+      if (t) {
+        const n = current.messages.filter(x => x.thread === t.id).length;
+        col.append(h('button', { class: 'thread-link', onclick: () => openThread(t.id) },
+          icon('squiggle'), h('span', { class: 'count' }, `${n} ${n === 1 ? 'reply' : 'replies'}`),
+          t.summary ? h('span', { class: 'sum' }, t.summary) : ''));
+      }
+    }
+  }
+  el.append(col);
+  return el;
+}
+
+// The plan as a checklist: live above the reply while it runs, then a
+// compact "N/M steps" chip that expands to the same list.
+export function planEl(task, { live }) {
+  const { done, total } = tasks.progress(task);
+  const now = tasks.current(task);
+  const st = task.status === 'done' ? 'done' : task.waiting ? 'waiting for your answer' : task.status === 'stopped' ? 'paused' : 'working';
+  const list = h('ol', { class: 'plan-steps' }, task.steps.map(s => h('li', { class: `step ${s.status}${s === now && task.status === 'active' ? ' now' : ''}` },
+    h('span', { class: 'mark', 'aria-hidden': 'true' }, s.status === 'done' ? '✓' : s.status === 'blocked' ? '?' : s === now && live && task.status === 'active' && !task.waiting ? '' : '○'),
+    s === now && live && task.status === 'active' && !task.waiting && s.status !== 'blocked' ? squiggleWait() : '',
+    h('span', { class: 'text' }, s.text,
+      s.result ? h('span', { class: 'result' }, s.result) : '',
+      s.need ? h('span', { class: 'result' }, 'Needs: ' + s.need) : ''))));
+  const head = [h('strong', {}, task.goal), ' ', h('span', { class: 'muted' }, `${done}/${total} steps · ${st}`)];
+  if (live) return h('div', { class: 'plan live', role: 'status', 'aria-live': 'polite' }, h('div', { class: 'plan-head' }, ...head), list);
+  return h('details', { class: 'plan chip' }, h('summary', {}, `${done}/${total} steps`, h('span', { class: 'muted' }, ` · ${task.goal}`)), list);
+}
+
+// "Keep going?" after every 60 tool calls (never "say continue").
+function checkInCard(task, calls, decide) {
+  const card = h('div', { class: 'approval checkin', role: 'group', 'aria-label': 'Keep going?' },
+    h('p', { class: 'q' }, `Squiggle has made ${calls} tool calls on this. Keep going?`),
+    task ? planEl(task, { live: false }) : '');
+  card.append(h('div', { class: 'row' },
+    h('button', { class: 'btn primary', onclick: () => card.settle(true) }, 'Keep going'),
+    h('button', { class: 'btn ghost', onclick: () => card.settle(false) }, 'Stop here')));
+  let settled = false;
+  card.settle = (go) => {
+    if (settled) return;
+    settled = true;
+    decide(go);
+    card.replaceChildren(h('p', { class: 'muted' }, go ? 'Kept going.' : 'Paused. Say "continue" to pick it up again.'));
+    card.classList.add('settled');
+  };
+  return card;
+}
+
+// Permission card for actions outside the agent's own space (pushing to a
+// non-agent branch). The decision comes only from these buttons.
+function approvalCard(req, decide) {
+  const commits = req.commits || [];
+  const wf = req.workflowFiles || [];
+  const card = h('div', { class: 'approval', role: 'group', 'aria-label': 'Permission needed' },
+    h('p', { class: 'q' }, 'Push to ', h('strong', {}, req.branch), ' in ', h('strong', {}, req.repo), '?'),
+    wf.length ? h('p', { class: 'warn' }, `This changes GitHub Actions workflow ${wf.length === 1 ? 'file' : 'files'} (${wf.join(', ')}). Workflows run code on GitHub with this repo's secrets, so Squiggle asks every time.`) : '',
+    commits.length ? h('ul', { class: 'commits' }, commits.slice(0, 5).map(c => h('li', {}, h('code', {}, c.oid), ' ', c.message)),
+      commits.length > 5 ? h('li', { class: 'muted' }, `and ${commits.length - 5} more`) : '') : h('p', { class: 'muted' }, 'No new commits; this updates the branch on GitHub.'),
+  );
+  const row = h('div', { class: 'row' },
+    h('button', { class: 'btn primary', onclick: () => card.settle('once') }, 'Allow once'),
+    wf.length ? '' : h('button', { class: 'btn', onclick: () => card.settle('always') }, `Always allow ${req.branch}`),
+    h('button', { class: 'btn ghost', onclick: () => card.settle('deny') }, 'Don\'t allow'));
+  card.append(row);
+  let settled = false;
+  card.settle = (d, text) => {
+    if (settled) return;
+    settled = true;
+    decide(d);
+    const label = text || { once: 'Allowed once', always: `Always allowed for ${req.branch} in ${req.repo} (change in Settings)`, deny: 'Not allowed' }[d];
+    card.replaceChildren(h('p', { class: 'muted' }, `Push to ${req.branch}: ${label}.`));
+    card.classList.add('settled');
+  };
+  return card;
+}
+
+export function toolTrail(tools) {
+  return h('div', { class: 'tool-trail' }, tools.map(t => h('div', { class: 'tool' + (t.ok === false ? ' fail' : ''), title: t.args ? `${t.name}(${JSON.stringify(t.args)})` : null },
+    t.running ? squiggleWait() : h('span', { 'aria-hidden': 'true' }, t.ok === false ? '✕' : '✓'),
+    h('span', {}, t.label || t.name, t.error ? h('span', { class: 'tool-error' }, t.error) : null))));
+}
+
+export function rerender() {
+  renderChat();
+  if (state.openThreadId) renderThreadPanel();
+}
+
+// ── Composer ───────────────────────────────────────────────────────────────
+export function setupComposer(form, input, onSend) {
+  const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, innerHeight * 0.4) + 'px'; };
+  input.addEventListener('input', grow);
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !matchMedia('(hover: none)').matches) { e.preventDefault(); form.requestSubmit(); }
+  });
+
+  // Attachments: chosen with the paperclip, dropped on the composer or pasted.
+  let files = [];
+  const inner = form.querySelector('.composer-inner');
+  const chips = h('div', { class: 'attach-chips', hidden: true });
+  const notice = h('div', { class: 'attach-notice', role: 'status', hidden: true });
+  const picker = h('input', { type: 'file', multiple: true, hidden: true, 'aria-hidden': 'true', tabindex: '-1', class: 'attach-input' });
+  const renderChips = () => {
+    chips.hidden = !files.length;
+    chips.replaceChildren(...files.map(f => h('span', { class: 'chip' }, h('span', { class: 'chip-name' }, f.name), h('span', { class: 'chip-size' }, fmtSize(f.size)),
+      h('button', { type: 'button', class: 'chip-x', 'aria-label': `Remove ${f.name}`, onclick: () => { files = files.filter(x => x !== f); renderChips(); } }, icon('i-close')))));
+  };
+  const add = (list) => {
+    const { ok, problems } = checkFiles([...list], files.length);
+    files = files.concat(ok);
+    renderChips();
+    notice.hidden = !problems.length;
+    notice.textContent = problems.join(' ');
+  };
+  picker.addEventListener('change', () => { add(picker.files); picker.value = ''; });
+  inner.insertBefore(h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Attach files', title: 'Attach files', onclick: () => picker.click() }, icon('i-attach')), input);
+  form.insertBefore(chips, inner);
+  form.insertBefore(notice, inner);
+  form.append(picker);
+  input.addEventListener('paste', (e) => {
+    const pasted = e.clipboardData && e.clipboardData.files;
+    if (pasted && pasted.length) { e.preventDefault(); add(pasted); }
+  });
+  form.addEventListener('dragover', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { e.preventDefault(); form.classList.add('dragging'); } });
+  form.addEventListener('dragleave', (e) => { if (!form.contains(e.relatedTarget)) form.classList.remove('dragging'); });
+  form.addEventListener('drop', (e) => {
+    form.classList.remove('dragging');
+    if (e.dataTransfer && e.dataTransfer.files.length) { e.preventDefault(); add(e.dataTransfer.files); }
+  });
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (state.busy) { state.controller && state.controller.abort(); return; }
+    const text = input.value.trim();
+    if (!text && !files.length) return;
+    const sending = files;
+    input.value = ''; grow();
+    files = []; renderChips(); notice.hidden = true;
+    onSend(text, sending);
+  });
+}
+
+function setBusy(on) {
+  state.busy = on;
+  for (const btn of document.querySelectorAll('.composer button[type="submit"]')) {
+    btn.replaceChildren(icon(on ? 'i-stop' : 'i-send'));
+    btn.setAttribute('aria-label', on ? 'Stop' : 'Send');
+  }
+  renderSide();
+}
+
+// ── A turn ─────────────────────────────────────────────────────────────────
+export async function send(text, threadId, files = []) {
+  if (state.busy) return;
+  if (state.modelState !== 'ready') {
+    if (loadCrashMarker()) return; // the crash banner is showing; let the person choose
+    const ok = await ensureModel();
+    if (!ok) return;
+  }
+  const session = state.current;
+  const container = threadId ? $('#thread-messages') : $('#messages-inner');
+  const scroller = threadId ? $('#thread-scroll') : $('#messages');
+  if (!threadId && !session.messages.some(m => !m.thread)) container.replaceChildren();
+  let live = null, body = null, trail = null, think = null, plan = null;
+  const vc = !threadId && state.call ? state.call.ctl : null; // a voice call speaks this reply as it streams
+  const liveTools = [];
+  if (!threadId) state.liveTurn = { ctx: null, tools: liveTools, task: null };
+  setBusy(true);
+  const controller = state.controller = new AbortController();
+  try {
+    const atts = await readFiles(files, session);
+    await agent.runTurn({
+      session, threadId, text, attachments: atts, signal: controller.signal,
+      ui: {
+        onUser: (m) => { container.append(messageEl(m, { inThread: Boolean(threadId) })); scrollDown(scroller); renderSessions(); },
+        onStart: () => {
+          live = h('div', { class: 'msg assistant' });
+          trail = h('div');
+          think = h('details', { class: 'thinking', hidden: true }, h('summary', {}, 'Thinking'), h('div'));
+          plan = h('div', { hidden: true });
+          body = h('div', { class: 'body' }, squiggleWait());
+          live.append(plan, trail, think, body);
+          container.append(live);
+          scrollDown(scroller);
+        },
+        onThinking: (t) => { think.hidden = false; think.lastChild.textContent = t; },
+        onText: (t) => { const clean = agent.scrubFakeToolNotes(t); body.innerHTML = md(clean); scrollDown(scroller); if (vc) vc.feed(clean); },
+        onTool: (t) => {
+          if (t.name === 'note' && !t.running && state.drawerPanel === 'notes') renderNotesPanel();
+          const existing = liveTools.find(x => x.running && x.name === t.name);
+          if (existing) Object.assign(existing, t); else liveTools.push({ ...t });
+          trail.replaceChildren(toolTrail(liveTools));
+          scrollDown(scroller);
+          if (!threadId) renderSide();
+        },
+        onPlan: (task) => { plan.hidden = false; plan.replaceChildren(planEl(task, { live: true })); scrollDown(scroller); if (!threadId) { state.liveTurn.task = task; renderSide(); } },
+        onContext: (ctx) => { if (!threadId) { state.liveTurn.ctx = ctx; renderSide(); } },
+        onCheckIn: ({ task, calls }, decide) => {
+          const card = checkInCard(task, calls, decide);
+          controller.signal.addEventListener('abort', () => card.settle(false), { once: true });
+          live.insertBefore(card, body);
+          scrollDown(scroller);
+          card.querySelector('button').focus({ preventScroll: true });
+        },
+        onApproval: (req, decide) => {
+          const card = approvalCard(req, (d) => decide(d));
+          controller.signal.addEventListener('abort', () => card.settle('deny', 'Stopped'), { once: true });
+          live.insertBefore(card, body);
+          scrollDown(scroller);
+          card.querySelector('button').focus({ preventScroll: true });
+        },
+        onDone: (m) => { if (vc) vc.finish(agent.scrubFakeToolNotes(m.content)); live.replaceWith(messageEl(m, { inThread: Boolean(threadId), session })); if (!threadId) $('#chat-title').textContent = session.title; state.liveTurn = null; renderSide(); },
+      },
+    });
+  } finally {
+    setBusy(false);
+    state.controller = null;
+    if (!threadId) { state.liveTurn = null; renderSide(); }
+    if (threadId) renderChat(); // refresh reply count on the parent
+    updateComposerNote();       // small models: the last reply's speed
+  }
+}
+
+// Reads the chosen files (PDF text extraction can take a moment).
+async function readFiles(files, session) {
+  const out = [];
+  const taken = new Set(session.messages.flatMap(m => (m.attachments || []).map(a => String(a.path || a.name).split('/').pop().toLowerCase())));
+  for (const f of files) out.push(await attachments.readAttachment(f, taken, session.id));
+  return out;
+}
