@@ -41,14 +41,19 @@ const GATED_SYSTEM = SYSTEM + '\nOther tools: recall, remember, read_file, write
 
 // The app's own setup for tiny Gemma with Settings → Small-model mode on (agent.js LITE_SYSTEM_NATIVE + the gated
 // tool names; GATE's tools declared: plan, done, need, find, checkpoint, tool_info, web_search, fetch_url).
-const APP_SMALL_SYSTEM = [
+const SMALL_PROMPT = (lines) => [
   'You are Squiggle, an assistant that figures things out. Think first. If you',
   'don\'t know something, don\'t guess: find it or look it up. For anything with',
   'more than one step, make a plan, then do one step at a time.',
-  'Start with plan, done, need and find; find tells you which of your other tools fits.',
-  'Arguments: plan(goal, steps), done(result), need(what), find(query).',
+  ...lines,
   'Other tools: recall, remember, read_file, write_file, grep, calculate, git_clone. Before calling one, get how with tool_info(names); ask for every one you expect to need at once.',
 ].join('\n');
+const APP_SMALL_SYSTEM = SMALL_PROMPT(['Start with plan, done, need and find; find tells you which of your other tools fits.',
+  'Arguments: plan(goal, steps), done(result), need(what), find(query).']);
+// Proposed replacement (2026-11-02): the old line told the model to start with plan/need/find, and heal 3
+// obeyed it literally (a plan instead of the search it makes with a plain prompt).
+const FIXED_SMALL_SYSTEM = SMALL_PROMPT(['Look things up with web_search and fetch_url. Use find when you need a tool you don\'t see, a recipe or something from memory.',
+  'Plan only when the request takes more than one step.']);
 const HARNESS = [
   fn('plan', 'Make a plan for a request that takes more than one step, then work it one step at a time. Calling it again revises the plan; finished steps keep their results.', S({ goal: { type: 'string', description: 'What the user wants, in one line' }, steps: { type: 'array', items: { type: 'string' }, description: 'Short imperative steps, e.g. "Find where the login form is defined"' } }, ['goal', 'steps'])),
   fn('done', 'Finish the current step. result = the facts the rest of the task needs (paths, numbers, names, decisions), one to three lines.', S({ result: { type: 'string', description: 'What this step found or did' } }, ['result'])),
@@ -90,6 +95,12 @@ const PROBES = [
     said('Sure. Do you remember anything else about him, like which Star Trek series he was in?'), user('literally just search the web for like "death star trek" and look for the latest results man')], tools: [...HARNESS, TOOL_INFO, ...BASE], pass: call('web_search', 'star trek') },
   { name: '4c app small mode: 61F as a tool result', messages: [sys(APP_SMALL_SYSTEM), user("what's it like outside in phoenix rn"), searchedFor('Phoenix weather now'), result(weather(61, 'light rain'))], tools: [...HARNESS, TOOL_INFO, ...BASE], pass: answers('61', '97') },
   { name: '4d app small mode: remember about me', messages: [sys(APP_SMALL_SYSTEM), user('What do you remember about me?')], tools: [...HARNESS, TOOL_INFO, ...BASE], pass: (r) => r.calls.length === 1 && ((r.calls[0].name === 'tool_info' && JSON.stringify(r.calls[0].args).includes('recall')) || (r.calls[0].name === 'find' && /me|user|remember|memory/i.test(JSON.stringify(r.calls[0].args)))) },
+  // 5. 4a-4d again with the proposed small-mode prompt.
+  { name: '5a fixed small mode: name given in turn 2', messages: [sys(FIXED_SMALL_SYSTEM), user('look up an actor for me'), said('Sure, which actor?'), user('just use the web_search tool for "patrick stewart"')], tools: [...HARNESS, TOOL_INFO, ...BASE], pass: call('web_search', 'stewart') },
+  { name: '5b fixed small mode: star trek, detail in turn 2', messages: [sys(FIXED_SMALL_SYSTEM), user('can you find out the name of the man who was in star trek that recently died?'),
+    said('Sure. Do you remember anything else about him, like which Star Trek series he was in?'), user('literally just search the web for like "death star trek" and look for the latest results man')], tools: [...HARNESS, TOOL_INFO, ...BASE], pass: call('web_search', 'star trek') },
+  { name: '5c fixed small mode: 61F as a tool result', messages: [sys(FIXED_SMALL_SYSTEM), user("what's it like outside in phoenix rn"), searchedFor('Phoenix weather now'), result(weather(61, 'light rain'))], tools: [...HARNESS, TOOL_INFO, ...BASE], pass: answers('61', '97') },
+  { name: '5d fixed small mode: remember about me', messages: [sys(FIXED_SMALL_SYSTEM), user('What do you remember about me?')], tools: [...HARNESS, TOOL_INFO, ...BASE], pass: (r) => r.calls.length === 1 && ((r.calls[0].name === 'tool_info' && JSON.stringify(r.calls[0].args).includes('recall')) || (r.calls[0].name === 'find' && /me|user|remember|memory/i.test(JSON.stringify(r.calls[0].args)))) },
 ].filter(p => !ONLY || p.name.includes(ONLY));
 
 const PAGE = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${CSP}"><title>model probes</title>
