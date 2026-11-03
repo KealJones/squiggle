@@ -1,0 +1,46 @@
+# A live preview of the app for every pull request from this repo, at
+#   https://<owner>.github.io/<repo>/pr-preview/pr-<number>/
+# It is published to the gh-pages branch next to the deployed app (deploy.yml),
+# linked from a comment on the PR, and removed when the PR closes.
+#
+# The preview is a full copy of the app on the production origin, so it uses the
+# same relay (SQUIGGLE_RELAY_URL) and the same sign-in and settings in your
+# browser as the deployed app. Pull requests from forks get no preview: they
+# can't be trusted with the write token this needs.
+
+name: PR preview
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
+
+concurrency:
+  group: pr-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        if: github.event.action != 'closed'
+        with:
+          node-version: 22
+      - name: Build site
+        if: github.event.action != 'closed'
+        env:
+          RELAY_URL: ${{ vars.SQUIGGLE_RELAY_URL }}
+        run: node scripts/build-site.mjs _site
+      - name: Publish or remove the preview
+        uses: rossjrw/pr-preview-action@v1
+        with:
+          source-dir: _site
+          preview-branch: gh-pages
+          umbrella-dir: pr-preview
+          action: auto
