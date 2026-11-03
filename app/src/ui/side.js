@@ -8,11 +8,12 @@ import * as engine from '../engine.js';
 import * as agent from '../agent.js';
 import { fmtSize } from '../attachments.js';
 import { contextMode } from '../context.js';
-import { $, h, icon, fmtTok, fmtPct } from './dom.js';
+import { $, h, icon, fmtTok, fmtPct, toast } from './dom.js';
 import { state } from './state.js';
 import { planEl } from './chat.js';
 import { openPanel } from './panels.js';
-import { smallHow } from './model-ui.js';
+import { smallHow, sessionModel, switchModel } from './model-ui.js';
+import { openSession, renderSessions } from './chat.js';
 
 const SIDE_KEY = 'squiggle-side';
 export const sideOverlay = () => matchMedia('(max-width: 1199px)').matches;
@@ -68,7 +69,7 @@ function drawSide() {
   const ctx = (liveTurn && liveTurn.ctx) || (lastCtx && lastCtx.context) || null;
   const open = [...body.querySelectorAll('.side-sec')].map(d => d.dataset.sec);
   const scroll = body.scrollTop;
-  body.replaceChildren(sideModel(), sideContext(ctx, liveTurn && liveTurn.ctx ? null : lastCtx), sideProgress(line), ...sideUsage(line));
+  body.replaceChildren(sideModel(), sideContext(ctx, liveTurn && liveTurn.ctx ? null : lastCtx), sideProgress(line), ...sideUsage(line), sideNotes(), sideActions());
   if (open.length) body.scrollTop = scroll;
 }
 
@@ -83,11 +84,26 @@ function sideModel() {
   items.push(['Context', contextMode(agent.settings.contextMode).short]);
   if (agent.smallModeSwitchable() && agent.smallMode()) items.push(['Mode', 'Small-model']);
   const kv = h('dl', { class: 'kv' }, items.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]));
+  // Which model this chat uses: the device default, or its own.
+  const session = state.current;
+  const ids = Object.keys(engine.MODELS).filter(id => engine.modelFitsDevice(id) && (!engine.MODELS[id].needsRelay || state.cloudOffered));
+  const def = engine.MODELS[agent.settings.defaultModel] ? agent.settings.defaultModel : agent.settings.model;
+  const pick = h('select', { class: 'side-select', 'aria-label': 'Model for this chat', disabled: state.busy ? true : null, onchange: async (e) => {
+    const v = e.target.value;
+    if (v) session.model = v; else delete session.model;
+    sessions.touch(session);
+    await switchModel(sessionModel(session));
+    renderSide();
+  } },
+    h('option', { value: '', selected: !session.model ? true : null }, `Default (${engine.MODELS[def] ? engine.MODELS[def].label : def})`),
+    ...ids.map(id => h('option', { value: id, selected: session.model === id ? true : null }, engine.MODELS[id].label)));
+  const chooser = h('div', { class: 'side-field' }, h('label', {}, 'Model for this chat'), pick,
+    h('span', { class: 'side-hint' }, session.model ? 'This chat always uses this model; other chats keep the default.' : 'Change the default in Settings.'));
   if (M && M.runtime !== 'cloud' && engine.isLite() && state.modelState === 'ready') engine.smallSpeed().then((sp) => {
     if (!sp || !kv.isConnected) return;
     kv.append(h('dt', {}, 'Last reply'), h('dd', {}, `first token ${(sp.waitMs / 1000).toFixed(1)} s${sp.perSec ? `, ${sp.perSec} tok/s` : ''}`));
   }).catch(() => {});
-  return sideSection('model', 'Model', '', kv);
+  return sideSection('model', 'Model', '', kv, chooser);
 }
 
 function sideContext(ctx, msg) {
@@ -126,6 +142,32 @@ function sideProgress(line) {
   const el = planEl(task, { live: Boolean(liveTurn) });
   if (el.tagName === 'DETAILS') el.open = true;  // a finished plan: still show the steps here
   return sideSection('progress', 'Progress', `${done}/${total}`, el);
+}
+
+// The agent's notepad for this chat (read-only; it edits them with the note tool).
+function sideNotes() {
+  const notes = state.current ? sessions.liveNotes(state.current) : [];
+  const link = h('button', { class: 'side-link', onclick: () => openPanel('notes') }, icon('i-note'), 'Open notes');
+  return sideSection('notes', 'Notes', notes.length ? String(notes.length) : '',
+    notes.length ? h('ul', { class: 'use-list notes' }, notes.slice(-6).map(n => h('li', {}, h('span', { class: 'label', title: n.text }, n.text)))) : h('p', { class: 'empty-line' }, 'The agent keeps short notes here while it works.'),
+    notes.length ? link : '');
+}
+
+// Archive or delete this chat.
+function sideActions() {
+  const s = state.current;
+  const archive = h('button', { class: 'btn', onclick: () => {
+    sessions.archive(s, !s.archived);
+    toast(s.archived ? 'Chat archived.' : 'Chat restored.');
+    if (s.archived) openSession(sessions.list()[0] || sessions.newSession()); else { renderSessions(); renderSide(); }
+  } }, icon('i-archive'), s.archived ? 'Unarchive' : 'Archive');
+  const del = h('button', { class: 'btn danger', onclick: () => {
+    if (!confirm(`Delete "${s.title}"? This removes the chat from all your devices.`)) return;
+    sessions.remove(s);
+    toast('Chat deleted.');
+    openSession(sessions.list()[0] || sessions.newSession());
+  } }, icon('i-trash'), 'Delete');
+  return sideSection('actions', 'This chat', s.archived ? 'archived' : '', h('div', { class: 'row side-actions' }, archive, del));
 }
 
 // Tools grouped by name, plus what came in (attachments, pages, repos) and what went out (files, commits, pushes, PRs).

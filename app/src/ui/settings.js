@@ -43,12 +43,24 @@ export function loadSettings() {
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
   if (saved.tools) agent.settings.tools = new Set(saved.tools);
+  // The saved model is the device default. In memory, settings.model is whatever is
+  // loaded right now: a chat with its own model (session.model) changes it while
+  // that chat is open, and saveSettings writes the default back, never that.
+  agent.settings.defaultModel = agent.settings.model;
   applyTheme();
 }
 
 export function saveSettings() {
-  const s = { ...agent.settings, tools: agent.settings.tools ? [...agent.settings.tools] : null };
+  const { defaultModel, ...rest } = agent.settings;
+  const s = { ...rest, model: defaultModel || agent.settings.model, tools: agent.settings.tools ? [...agent.settings.tools] : null };
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+}
+
+/** Changes the device default (and the loaded model, since the default is what loads next). */
+export function setDefaultModel(id) {
+  agent.settings.model = id;
+  agent.settings.defaultModel = id;
+  saveSettings();
 }
 
 export function applyTheme() {

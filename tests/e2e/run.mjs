@@ -1130,7 +1130,7 @@ await check('chat details sidebar: model, context window breakdown (live and sav
   assert.equal(await D.page.isVisible('#ctx-side'), true);
   assert.equal(await D.page.evaluate(() => document.querySelector('#ctx-side [data-sec="used"]').open), false);
   // A panel on a not-so-wide screen covers it rather than squeezing the chat.
-  await D.page.click('.side-nav [data-panel="notes"]');
+  await D.page.click('.side-nav [data-panel="memory"]');
   assert.equal(await D.page.isVisible('#ctx-side'), false);
   await D.page.click('#close-drawer');
   assert.equal(await D.page.isVisible('#ctx-side'), true);

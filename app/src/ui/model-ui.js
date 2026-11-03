@@ -8,7 +8,7 @@ import { loadEmbedder, embed } from '../embed.js';
 import { contextMode } from '../context.js';
 import { $, h, squiggleWait, gb, eta } from './dom.js';
 import { state } from './state.js';
-import { saveSettings } from './settings.js';
+import { saveSettings, setDefaultModel } from './settings.js';
 import { renderSide } from './side.js';
 
 export async function initModel() {
@@ -18,7 +18,7 @@ export async function initModel() {
     .then((n) => n && console.info(`Freed ${(n / 1e9).toFixed(1)} GB of old model downloads.`)).catch(() => {});
   if (engine.MODELS[agent.settings.model].runtime === 'cloud') {
     if (!state.cloudOffered) {
-      agent.settings.model = engine.deviceModel(); saveSettings();
+      setDefaultModel(engine.deviceModel());
       return initModel();
     }
     return loadModel();
@@ -27,7 +27,7 @@ export async function initModel() {
     const gpu = await engine.webgpuStatus();
     if (!gpu.ok) {
       // No WebGPU: Squiggle Small runs on the CPU instead.
-      agent.settings.model = 'SQ'; saveSettings();
+      setDefaultModel('SQ');
       return initModel();
     }
   }
@@ -82,8 +82,8 @@ function showCrashBanner(c) {
   const next = lighterModel(S.model) || S.model;
   const nm = engine.MODELS[next];
   const lighter = h('button', { class: 'btn primary', onclick: async () => {
-    Object.assign(agent.settings, { model: next, contextSize: 4096, fastDecode: false });
-    saveSettings(); setCrashMarker(null);
+    Object.assign(agent.settings, { contextSize: 4096, fastDecode: false });
+    setDefaultModel(next); setCrashMarker(null);
     state.modelPromise = null; ensureModel(); // downloads the lighter model first if needed, then loads
   } }, next === S.model ? 'Use lighter settings' : `Use lighter settings (${nm.label}, ${nm.size})`);
   // Settings may have become lighter since the crash (e.g. phones moved to a phone model).
@@ -181,6 +181,28 @@ export function ensureModel() {
     }
   })();
   return state.modelPromise;
+}
+
+/** Loads a different model (the Settings picker, or a chat with its own model). */
+export async function switchModel(id) {
+  if (!engine.MODELS[id] || id === agent.settings.model) return;
+  agent.settings.model = id;
+  state.modelState = 'unknown';
+  await engine.unload();
+  await initModel();
+}
+
+// A chat can have its own model (session.model); otherwise the device default
+// applies. Called when a chat opens and before each turn. Never mid-reply.
+export function sessionModel(session) {
+  const own = session && session.model;
+  const fits = (id) => engine.MODELS[id] && engine.modelFitsDevice(id) && (!engine.MODELS[id].needsRelay || state.cloudOffered);
+  return fits(own) ? own : (fits(agent.settings.defaultModel) ? agent.settings.defaultModel : agent.settings.model);
+}
+export async function useSessionModel(session) {
+  if (state.busy) return;
+  const want = sessionModel(session);
+  if (want !== agent.settings.model) await switchModel(want);
 }
 
 export function updateComposerNote() {

@@ -6,7 +6,7 @@ import * as engine from '../engine.js';
 import * as agent from '../agent.js';
 import { $, h, squiggleWait } from './dom.js';
 import { state } from './state.js';
-import { saveSettings } from './settings.js';
+import { setDefaultModel } from './settings.js';
 import { startApp } from './app.js';
 import { checkCloud, ensureModel } from './model-ui.js';
 
@@ -198,9 +198,8 @@ async function setupModel(body) {
   if (engine.isMobile()) {
     // Gemma 4 doesn't fit a phone browser tab; phones run Gemma 3 270M on the
     // CPU (no WebGPU needed), or the cloud model when the relay offers it.
-    if (!engine.modelFitsDevice(agent.settings.model) || (agent.settings.model === 'cloud' && !state.cloudOffered)) agent.settings.model = engine.deviceModel();
-    saveSettings();
-    const picker = modelPicker(agent.settings.model, (id) => { agent.settings.model = id; saveSettings(); });
+    if (!engine.modelFitsDevice(agent.settings.model) || (agent.settings.model === 'cloud' && !state.cloudOffered)) setDefaultModel(engine.deviceModel());
+    const picker = modelPicker(agent.settings.model, (id) => setDefaultModel(id));
     body.append(h('h2', {}, 'On your phone'),
       h('p', {}, 'Phones run Gemma 3 270M right here: a 242 MB download, then it works offline. It\'s small, so it\'s quick but much less capable than Gemma 4, especially with tools.' +
         (state.cloudOffered ? ' For harder tasks, pick the cloud model (Gemma 4 26B on your relay, free daily limit).' : '') + ' Your computer keeps running Gemma 4 locally.'),
@@ -209,7 +208,7 @@ async function setupModel(body) {
     return;
   }
   if (!gpu.ok && state.cloudOffered) {
-    agent.settings.model = 'cloud'; saveSettings();
+    setDefaultModel('cloud');
     body.append(h('h2', {}, 'This device can\'t run a model itself'), h('p', {}, gpu.reason),
       h('p', {}, 'Squiggle will use the cloud model on your Cloudflare relay instead (free daily limit, then it pauses until midnight UTC).'),
       h('button', { class: 'btn primary', onclick: async () => { await startApp(); } }, 'Start'));
@@ -217,16 +216,15 @@ async function setupModel(body) {
   }
   if (!gpu.ok) {
     // No WebGPU: the small CPU model still runs.
-    agent.settings.model = 'SQ'; saveSettings();
+    setDefaultModel('SQ');
     body.append(h('h2', {}, 'No WebGPU on this browser'), h('p', {}, gpu.reason),
       h('p', {}, 'Squiggle will run Squiggle Small on the CPU instead: a 219 MB download, much less capable than Gemma 4.'),
       h('button', { class: 'btn primary', onclick: async () => { await startApp(); ensureModel(); } }, 'Download and start'));
     return;
   }
-  if (!engine.modelFitsDevice(agent.settings.model)) agent.settings.model = engine.deviceModel();
-  saveSettings();
+  if (!engine.modelFitsDevice(agent.settings.model)) setDefaultModel(engine.deviceModel());
   const where = engine.isMobile() ? 'phone' : 'computer';
-  const picker = modelPicker(agent.settings.model, (id) => { agent.settings.model = id; saveSettings(); });
+  const picker = modelPicker(agent.settings.model, (id) => setDefaultModel(id));
   body.append(
     h('h2', {}, 'Pick a model'),
     h('p', {}, `Squiggle runs the model right here on your ${where}. It's a one-time download, then it works offline. You can switch later in Settings.`),
