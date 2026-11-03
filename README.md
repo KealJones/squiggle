@@ -100,9 +100,11 @@ Optional, for more reliable web search: add a free [LangSearch](https://langsear
 
 **Publish the app.** In your copy of this repo on GitHub:
 
-1. **Settings → Pages → Source: GitHub Actions.**
-2. **Settings → Secrets and variables → Actions → Variables:** add `SQUIGGLE_RELAY_URL` set to the relay's address.
-3. Push to `main` (or run the **Deploy** workflow). The app appears at `https://<you>.github.io/squiggle/`, or `https://<your-domain>/squiggle/` if your Pages site has a custom domain. Use that as the GitHub App's Homepage URL.
+1. **Settings → Secrets and variables → Actions → Variables:** add `SQUIGGLE_RELAY_URL` set to the relay's address.
+2. Push to `main` (or run the **Deploy** workflow). It publishes the app to a `gh-pages` branch.
+3. **Settings → Pages → Source: Deploy from a branch**, branch `gh-pages`, folder `/ (root)`. The app appears at `https://<you>.github.io/squiggle/`, or `https://<your-domain>/squiggle/` if your Pages site has a custom domain. Use that as the GitHub App's Homepage URL.
+
+Every pull request from this repo also gets a **live preview** at `https://<you>.github.io/squiggle/pr-preview/pr-<number>/`, linked from a comment on the PR and removed when it closes (`.github/workflows/pr-preview.yml`). The preview is the app on the same origin as the deployed one, so it uses the same relay and the same sign-in and settings in your browser.
 
 GitHub Pages on a private repo needs a paid plan; the code holds no secrets, so a public repo is fine (your data lives in your private storage repo).
 
@@ -158,18 +160,20 @@ Your Worker relays git traffic and (if `ENABLE_FETCH` is on) pages the agent rea
 ## Development
 
 ```bash
-npm test                    # unit tests (guards, sync merges, context, Worker)
-node tests/e2e/run.mjs      # end to end in headless Chromium: two-device sync
+npm run check               # lint + unit tests (what to run before a commit)
+npm run lint                # ESLint (correctness rules only; no formatter)
+npm test                    # unit tests (guards, sync merges, context, tools registry, Worker)
+npm run test:e2e            # end to end in headless Chromium: two-device sync
                             # against a real git server, git tools, sandbox, a
                             # full agent turn with a scripted model
-node tests/e2e/run.mjs --split   # same, with app and relay on separate origins (the Pages setup)
+npm run test:e2e:split      # same, with app and relay on separate origins (the Pages setup)
 npm run dev                 # local Worker + app at http://localhost:8787
 npm run vendor              # rebuild app/vendor/ after changing a library version
 ```
 
-There are also two benchmarks you can run by hand: `node tests/e2e/tts-bench.mjs` (speech) and `node tests/e2e/wllama-bench.mjs` (the phone CPU models). CI (`.github/workflows/ci.yml`) runs the unit tests, the e2e suite (both modes) and a Worker dry-run.
+There are also two benchmarks you can run by hand: `node tests/e2e/tts-bench.mjs` (speech) and `node tests/e2e/wllama-bench.mjs` (the phone CPU models). CI (`.github/workflows/ci.yml`) runs lint, the unit tests, the e2e suite (both modes) and a Worker dry-run; pull requests also get a Pages preview (see above).
 
-No build step: the app is plain ES modules in `app/`. See [CLAUDE.md](CLAUDE.md) for the architecture.
+No build step: the app is plain ES modules in `app/`. See [CLAUDE.md](CLAUDE.md) for the architecture, [docs/extending.md](docs/extending.md) for adding tools and context modes, and [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow.
 
 ## Roadmap
 
