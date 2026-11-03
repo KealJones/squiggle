@@ -4,7 +4,7 @@
 // weather text pasted by the user vs returned by a tool, a tool declared vs only listed by name.
 // Not part of the e2e suite (it downloads the model).
 //
-//   node tests/e2e/model-probes.mjs [--model TG4 | --url <gguf>] [--modes greedy,app] [--tokens 320] [--only <part of a name>] [--out file.json]
+//   node tests/e2e/model-probes.mjs [--model TG4 | --url <gguf>] [--modes greedy,app] [--tokens 320] [--only <part of a name>] [--think 0|1] [--out file.json]
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import { readFileSync, existsSync, statSync, mkdtempSync, writeFileSync } from 'node:fs';
@@ -22,6 +22,7 @@ const MODES = arg('--modes', 'greedy').split(',');
 const TOKENS = Number(arg('--tokens', 320));
 const ONLY = arg('--only', '');
 const OUT = arg('--out', '');
+const THINK = arg('--think', '');                         // '0' or '1'; default: what the app sends (on with tools, unless MODELS says thinking: false)
 const APP = new URL('../../app/', import.meta.url).pathname;
 const CSP = readFileSync(join(APP, 'index.html'), 'utf8').match(/http-equiv="Content-Security-Policy" content="([^"]+)"/)[1];
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.json': 'application/json' };
@@ -120,7 +121,7 @@ const PROBE_JS = `
   // Same settings as NativeConversation: the GGUF's template with tools and thinking, llama.cpp's parsed calls.
   window.probe = async ({ messages, tools, mode, tokens }) => {
     const t0 = performance.now();
-    const stream = await w.createChatCompletion({ messages, tools, chat_template_kwargs: { enable_thinking: true }, stream: true,
+    const stream = await w.createChatCompletion({ messages, tools, chat_template_kwargs: { enable_thinking: ${THINK ? THINK !== '0' : `MODELS['${MODEL}']?.thinking !== false`} }, stream: true,
       max_tokens: tokens, temperature: mode === 'greedy' ? 0 : 0.7, top_k: 64, top_p: 0.95, penalty_repeat: 1.15, cache_prompt: false, seed: 1 });
     let text = '', thinking = ''; const parts = [];
     for await (const chunk of stream) {

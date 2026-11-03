@@ -36,7 +36,7 @@ export const MODELS = {
   // Heal 4 pilot A (lm-experiments experiments/tiny-gemma4, 2026-11-03): heal 3 + 750 steps on Toucan's multi-turn
   // tool conversations with real results. In tests it answers from tool results (heal 3 replied with nothing) and
   // handles a failed search, but plain text got a little worse. Same size and runtime as TG4.
-  TG4A: { label: 'Test: Tiny Gemma 4 (heal 4)', size: '778 MB', note: 'tiny Gemma 4 trained further on tool conversations with real results: it now answers from what a search returns. Plain answers got a little worse than heal 3. Experimental', phone: true, runtime: 'wllama', tools: true, native: true,
+  TG4A: { label: 'Test: Tiny Gemma 4 (heal 4)', size: '778 MB', note: 'tiny Gemma 4 trained further on tool conversations with real results: it now answers from what a search returns. Plain answers got a little worse than heal 3. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, thinking: false,
     url: HF + 'kealjones/tiny-gemma4-test/resolve/main/tiny-gemma4-heal4a-Q4_0.gguf', bytes: 778158496 },
   // Stock Qwen3.5 0.8B (Keal, 2026-10-31): tools through Qwen's own chat template, like TG4 (native), no fine-tune.
   Q35: { label: 'Test: Qwen3.5 0.8B', size: '507 MB', note: 'stock Qwen3.5 0.8B with tools in its own tool format (no Squiggle training). Thinks a lot, so it\'s slow on a phone. Experimental', phone: true, runtime: 'wllama', tools: true, native: true,
@@ -398,7 +398,8 @@ export async function conversation({ system, messages = [], tools = [], thinking
   if (!engine) throw new Error('Model not loaded.');
   const preface = {
     messages: [{ role: 'system', content: system }, ...messages],
-    extra_context: { enable_thinking: thinking },
+    // A model trained without thinking (thinking: false in MODELS) gets the prompt it was trained on.
+    extra_context: { enable_thinking: thinking && !(MODELS[loadedModel] && MODELS[loadedModel].thinking === false) },
   };
   if (tools.length) preface.tools = tools.map(t => ({ type: 'function', function: t }));
   // The small model only sees details of tools it has looked up (engine-wllama.js).
