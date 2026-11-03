@@ -4,7 +4,7 @@
 // weather text pasted by the user vs returned by a tool, a tool declared vs only listed by name.
 // Not part of the e2e suite (it downloads the model).
 //
-//   node tests/e2e/model-probes.mjs [--model TG4] [--modes greedy,app] [--tokens 320] [--only <part of a name>]
+//   node tests/e2e/model-probes.mjs [--model TG4 | --url <gguf>] [--modes greedy,app] [--tokens 320] [--only <part of a name>] [--out file.json]
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import { readFileSync, existsSync, statSync, mkdtempSync, writeFileSync } from 'node:fs';
@@ -17,6 +17,7 @@ try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require(
 
 const arg = (name, dflt) => process.argv.includes(name) ? process.argv[process.argv.indexOf(name) + 1] : dflt;
 const MODEL = arg('--model', 'TG4');
+const URL_OVERRIDE = arg('--url', '');                     // any GGUF, e.g. the E2B teacher, instead of a MODELS entry
 const MODES = arg('--modes', 'greedy').split(',');
 const TOKENS = Number(arg('--tokens', 320));
 const ONLY = arg('--only', '');
@@ -102,8 +103,8 @@ const PROBE_JS = `
     w = new Wllama({ default: 'https://cdn.jsdelivr.net/npm/@wllama/wllama@' + VERSION + '/esm/wasm/wllama.wasm' }, { suppressNativeLog: true });
     const n = crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
     const t0 = performance.now();
-    await w.loadModelFromUrl(MODELS['${MODEL}'].url, { n_ctx: 4096, n_gpu_layers: 0, n_threads: n, jinja: true });
-    return { loadMs: Math.round(performance.now() - t0), threads: n, label: MODELS['${MODEL}'].label };
+    await w.loadModelFromUrl(${JSON.stringify(URL_OVERRIDE)} || MODELS['${MODEL}'].url, { n_ctx: 4096, n_gpu_layers: 0, n_threads: n, jinja: true });
+    return { loadMs: Math.round(performance.now() - t0), threads: n, label: ${JSON.stringify(URL_OVERRIDE)} || MODELS['${MODEL}'].label };
   };
   // Same settings as NativeConversation: the GGUF's template with tools and thinking, llama.cpp's parsed calls.
   window.probe = async ({ messages, tools, mode, tokens }) => {
