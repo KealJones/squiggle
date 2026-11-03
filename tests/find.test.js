@@ -5,7 +5,7 @@ import { find, renderFind, rankTools, snippet, NOTHING, BARS } from '../app/src/
 import { findTools } from '../app/src/engine-wllama.js';
 import * as R from '../app/src/recipes.js';
 
-// The real tool specs (extracted from app/src/tools.js).
+// The real tool specs (extracted from app/src/tools/, in the order of tools/index.js).
 const TOOLS = JSON.parse(readFileSync(new URL('./fixtures/tool-specs.json', import.meta.url), 'utf8'));
 const wrapped = TOOLS.map(function_ => ({ type: 'function', function: function_ }));
 
