@@ -935,10 +935,12 @@ class Turn {
       const block = wrapUntrusted('earlier tool output', outside.map(t => t.text.replace(STRIP_UNTRUSTED, '')).join('\n\n'));
       text = (text === renderFind({}) ? '' : text + '\n\n') + 'Earlier tool output in this task:\n' + block;
     }
-    // Nothing of theirs (only tools, or tools for the web): search the web with the same words.
+    // Nothing of theirs: search the web with the same words, unless a tool clearly matched (named, or an intent
+    // phrase; above the description-only cap). A word like "recent" alone matched git_log ("Recent commits…")
+    // and "most recent released movie" got that instead of the web (2026-11-04).
     const own = ['recipes', 'facts', 'chats', 'task'].some(k => r[k] && r[k].length);
-    const onlyWebTools = r.tools.every(t => t.name === 'web_search' || t.name === 'fetch_url');
-    if (web && !own && onlyWebTools && !PAST_CHAT.test(String(query).toLowerCase()) && this.webOn()) {
+    const toolAsked = r.tools.some(t => t.name !== 'web_search' && t.name !== 'fetch_url' && (t.score || 0) > 4);
+    if (web && !own && !toolAsked && !PAST_CHAT.test(String(query).toLowerCase()) && this.webOn()) {
       const w = await this.webFallback(query);
       if (w) return { text: w, tools: [], empty: false, answers, web: true };
     }

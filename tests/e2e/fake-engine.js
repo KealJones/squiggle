@@ -24,6 +24,8 @@ export const needsGpu = (id) => Boolean(MODELS[id] && MODELS[id].runtime === 'li
 export const cleanupStorage = async ({ keep } = {}) => { window.__cleanup = Object.keys(MODELS).filter(id => !keep || keep(id)); return 0; };
 export const modelFitsDevice = (id) => !isMobile() || Boolean(MODELS[id] && MODELS[id].phone);
 export const deleteModel = async (id) => { (window.__deleted = window.__deleted || []).push(id); };
+// The fake phone has no WebGPU, so it keeps the CPU default (Squiggle Small).
+export const hasWebGpu = () => false;
 export const isMobile = () => /iPhone|Android/.test(navigator.userAgent);
 window.__loads = 0;
 export const downloadInfo = async (id) => (window.__noE4B && id === 'E4B' ? { total: 0, stored: 0, complete: false } : { total: 1, stored: 1, complete: true });

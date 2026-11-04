@@ -1084,7 +1084,7 @@ await check('attachments: a PDF is read with pdf.js from the pinned CDN URL', as
   assert.equal(a.error, undefined);
 });
 
-await check('a crash while loading the model is caught on the next open; phones default to Squiggle Small', async () => {
+await check('a crash while loading the model is caught on the next open; phones without WebGPU default to Squiggle Small', async () => {
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
   const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1';
   for (const phone of [false, true]) {
@@ -1107,7 +1107,7 @@ await check('a crash while loading the model is caught on the next open; phones 
     }, CFG);
     await page.reload();
     if (phone) {
-      // Phones run Squiggle Small on the CPU: the old Gemma 4 crash doesn't block it, and it loads right away.
+      // Phones without WebGPU run Squiggle Small on the CPU (with it, Qwen3 0.6B on WebLLM): the old Gemma 4 crash doesn't block it, and it loads right away.
       await page.waitForFunction(() => window.__loads === 1);
       const r = await page.evaluate(() => ({ last: window.__lastLoad, marker: localStorage.getItem('squiggle-model-loading'), saved: JSON.parse(localStorage.getItem('squiggle-settings')), cleanup: window.__cleanup }));
       assert.equal(r.last.id, 'SQ', JSON.stringify(r));
