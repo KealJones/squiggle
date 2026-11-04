@@ -238,7 +238,10 @@ const oneLine = (s, n) => {
 };
 const sourceLabel = (s) => !s || /step|result/i.test(s) ? 'earlier step' : /tool|output|obs/i.test(s) ? 'earlier tool output' : String(s);
 
-export const NOTHING = 'Nothing found. Try different words, look it up with a tool, or ask the user.';
+// No "try different words": small models took that literally and called find again and again
+// (2026-11-04, Qwen3 0.6B looking for a movie). With web_search enabled, find falls through to it
+// instead (agent.js), so this is only seen when it isn't.
+export const NOTHING = 'Nothing in your memory, recipes or past chats. For facts, use web_search; to ask the user, use need.';
 
 export function renderFind(result) {
   const r = result || {};
@@ -267,4 +270,77 @@ export function renderFind(result) {
     parts.push('This task:\n' + r.task.map(t => `- (${sourceLabel(t.source)}) ${oneLine(t.text, 240)}`).join('\n'));
   }
   return parts.length ? parts.join('\n\n') : NOTHING;
+}
+
+// ── Web results for find's fall-through ─────────────────────────────────
+
+/** Reorders web search results [{title, url, snippet}] by how well they fit
+ *  the query: the cosine of `vecs` (query first, then one per item) when given,
+ *  else BM25 over title + snippet, plus a little for the engine's own order so a
+ *  tie keeps it. Returns the best `k`, each with `fit` (0..1). */
+export function rerankWeb(query, items, { vecs = null, k = 4 } = {}) {
+  const list = (items || []).filter(x => x && x.url);
+  if (!list.length) return [];
+  let rel;
+  if (vecs && vecs.length === list.length + 1 && vecs.every(Boolean)) {
+    rel = list.map((_, i) => Math.max(0, cos(vecs[0], vecs[i + 1])));
+  } else {
+    const scores = bm25(list.map((x, i) => ({ id: i, text: `${x.title || ''} ${x.title || ''} ${x.snippet || ''}` })))(words(query).join(' '));
+    const top = Math.max(0, ...scores.values());
+    rel = list.map((_, i) => (top ? (scores.get(i) || 0) / top : 0));
+  }
+  return list.map((x, i) => ({ ...x, fit: Math.round(rel[i] * 100) / 100, score: rel[i] + 0.25 * (1 - i / list.length) }))
+    .sort((a, b) => b.score - a.score).slice(0, k).map(({ score, ...x }) => x);
+}
+function cos(a, b) {
+  let d = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) { d += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  return na && nb ? d / Math.sqrt(na * nb) : 0;
+}
+
+// ── Where URLs came from ─────────────────────────────────────────────────
+
+/** URLs in a text (trailing punctuation dropped). */
+export function urlsIn(text) {
+  return (String(text || '').match(/\bhttps?:\/\/[^\s<>"'`)\]]+/gi) || []).map(u => u.replace(/[.,;:!?]+$/, ''));
+}
+const urlKey = (u) => { try { const x = new URL(u); return (x.hostname.replace(/^www\./, '') + x.pathname.replace(/\/+$/, '') + x.search).toLowerCase(); } catch { return ''; } };
+const hostOf = (u) => { try { return new URL(u).hostname.replace(/^www\./, '').toLowerCase(); } catch { return ''; } };
+
+/** Tracks URLs the model was given (by the user, a search, a page). allows(url):
+ *  the same page, or another page on a site it was given (a made-up path there
+ *  just 404s, which fetch_url reports as a failure). */
+export function urlLedger() {
+  const pages = new Set(), hosts = new Set();
+  return {
+    add(text) { for (const u of urlsIn(text)) { const k = urlKey(u); if (k) { pages.add(k); hosts.add(hostOf(u)); } } },
+    allows(u) { return pages.has(urlKey(u)) || hosts.has(hostOf(u)); },
+    get size() { return pages.size; },
+  };
+}
+
+// ── Pushback: the user disputes an answer or asks to confirm it ──────────
+
+// A 0.6B model agreed with "No, it's Bugonia" and then "confirmed" it twice without
+// looking anything up. On these messages the agent searches first (agent.js checkClaim).
+export const PUSHBACK = /\b(no,? (it|that)('?s| is) not|(that|this|it)('?s| is) (wrong|not right|incorrect|not true|outdated)|you('?re| are) wrong|wrong answer|not correct|the (correct|right|real|actual) answer is|actually,? (it|that)('?s| is)|are you sure|double.?check|confirm\w*|verify|is (that|this|it) (right|true|correct)|prove it|what('?s| is) (your|the) source|which (site|page|source)|(page|url|link|source) (that|which) (says|said|confirm\w*|show\w*))\b/i;
+
+const KEEP = /^[\p{L}\p{N}][\p{L}\p{N}'.-]*$/u;
+const DROP = new Set(('no not it its it\'s is was that this the a an you your you\'re are correct right wrong real actual actually answer ' +
+  'sure can could please confirm confirmed verify check double tell me page url link source which site said says say what whats ' +
+  'and or of to in on for with me i my we do does did prove true incorrect').split(' '));
+const contentWords = (t) => String(t || '').replace(/[‘’]/g, "'").replace(/[“”"*_`()[\]{}<>?!,;:]/g, ' ').split(/\s+/)
+  .map(w => w.replace(/\.+$/, '')).filter(w => KEEP.test(w) && !DROP.has(w.toLowerCase().replace(/'s$/, '')));
+
+/** What to search when the user pushes back: the question they asked before, plus
+ *  the claim in their message (or, when it has none, the start of the disputed
+ *  answer). Twelve words at most; '' when there is nothing to go on. */
+export function checkQuery(message, { question = '', answer = '' } = {}) {
+  const claim = contentWords(message);
+  const base = contentWords(question);
+  const extra = claim.length >= 1 ? claim : contentWords(String(answer).split(/(?<=[.!?])\s/)[0]).slice(0, 6);
+  const seen = new Set();
+  const out = [];
+  for (const w of [...base, ...extra]) { const k = w.toLowerCase(); if (!seen.has(k)) { seen.add(k); out.push(w); } }
+  return out.slice(0, 12).join(' ');
 }

@@ -51,6 +51,13 @@ export function loadSettings() {
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
   try { localStorage.removeItem('squiggle-voice-loading'); } catch {}
+  // Other chats out of smart context by default (a 5 × 5 / 129 question got two old Emma Stone answers
+  // quoted in, one of them wrong). Once; the switch stays in Settings → Context.
+  if (!saved.noChatRecall) {
+    agent.settings.recallChats = false;
+    saved = { ...saved, recallChats: false, noChatRecall: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
   if (saved.tools) agent.settings.tools = new Set(saved.tools);
   // The saved model is the device default. In memory, settings.model is whatever is
   // loaded right now: a chat with its own model (session.model) changes it while

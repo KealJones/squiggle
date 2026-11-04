@@ -132,6 +132,8 @@ a { color: var(--action); }
 .tool-trail .tool { display: flex; gap: 6px; align-items: baseline; }
 .tool-trail .tool.fail { color: var(--danger); }
 .tool-trail .tool-error { display: block; color: var(--ink-soft); font-size: 0.8rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.tool-trail .tool-result summary { cursor: pointer; font-size: 0.8rem; }
+.tool-trail .tool-result pre { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 0.76rem/1.4 var(--mono); background: var(--code-bg); padding: 6px 8px; border-radius: var(--radius-s); margin: 4px 0; }
 .thinking { font-size: 0.86rem; color: var(--ink-soft); margin: 0 0 8px; }
 .thinking summary { cursor: pointer; }
 .thinking div { white-space: pre-wrap; max-height: 240px; overflow-y: auto; padding: 6px 0 0 12px; border-left: 2px solid var(--rule); }
@@ -422,6 +424,7 @@ a { color: var(--action); }
 .recipes { margin-top: 22px; }
 .recipes h3 { margin: 0 0 4px; font-size: 1rem; }
 .recipe-list li { align-items: flex-start; }
+.recipe-list li.pending { border-left: 3px solid var(--marker); padding-left: 8px; }
 .recipe-list .recipe { flex: 1; min-width: 0; }
 .recipe-list .recipe summary { cursor: pointer; }
 .recipe-list .recipe summary .muted { font-size: 0.8rem; }

@@ -112,11 +112,13 @@ export function renderMemoryPanel() {
 function recipeSection() {
   const all = recipes.list();
   const wrap = h('section', { class: 'recipes' }, h('h3', {}, 'Recipes'),
-    h('p', { class: 'muted' }, 'How Squiggle solved tasks before, so the next similar request is faster. Unused recipes are forgotten after 90 days unless pinned.'));
+    h('p', { class: 'muted' }, 'How Squiggle solved tasks before, so the next similar request is faster. New ones wait for your OK before Squiggle uses them. Unused recipes are forgotten after 90 days unless pinned.'));
   if (!all.length) { wrap.append(h('p', { class: 'muted' }, 'None yet. When Squiggle finishes a task it made a plan for, it saves how it did it here.')); return wrap; }
   const ul = h('ul', { class: 'fact-list recipe-list' });
-  for (const r of all) {
-    const used = r.uses ? `used ${r.uses} time${r.uses === 1 ? '' : 's'}, last ${ago(r.lastUsed)}` : `saved ${ago(r.created)}`;
+  // Possible recipes (waiting for approval) first: Squiggle doesn't use them until they're approved.
+  const sorted = [...all.filter(r => r.pending), ...all.filter(r => !r.pending)];
+  for (const r of sorted) {
+    const used = r.pending ? `possible recipe, saved ${ago(r.created)}` : r.uses ? `used ${r.uses} time${r.uses === 1 ? '' : 's'}, last ${ago(r.lastUsed)}` : `saved ${ago(r.created)}`;
     const steps = h('ol', { class: 'recipe-steps' }, (r.steps || []).map(st => h('li', {}, st)));
     const edit = () => {
       const ta = h('textarea', { class: 'recipe-edit', rows: Math.min(10, (r.steps || []).length + 2), 'aria-label': 'Recipe steps, one per line' }, (r.steps || []).join('\n'));
@@ -127,12 +129,13 @@ function recipeSection() {
       li.replaceChildren(form);
       title.focus();
     };
-    const li = h('li', {},
+    const li = h('li', { class: r.pending ? 'pending' : null },
       h('details', { class: 'recipe' },
-        h('summary', {}, h('span', { class: 'fact' }, r.title), ' ', h('span', { class: 'muted' }, used), r.pinned ? h('span', { class: 'auto' }, 'Pinned') : ''),
+        h('summary', {}, h('span', { class: 'fact' }, r.title), ' ', h('span', { class: 'muted' }, used), r.pending ? h('span', { class: 'auto' }, 'Needs your OK') : '', r.pinned ? h('span', { class: 'auto' }, 'Pinned') : ''),
         r.when ? h('p', { class: 'muted' }, 'For: ' + r.when) : '', steps,
         r.specifics && r.specifics.length ? h('p', { class: 'muted' }, r.specifics.join(' · ')) : ''),
       h('div', { class: 'recipe-actions' },
+        r.pending ? h('button', { class: 'btn primary small', title: 'Use this recipe for similar requests', onclick: () => recipes.approve(r.id) }, 'Approve') : '',
         iconButton('i-pin', r.pinned ? 'Unpin recipe' : 'Pin recipe (never forget it)', () => recipes.pin(r.id, !r.pinned), r.pinned),
         h('button', { class: 'btn ghost small', onclick: edit }, 'Edit'),
         iconButton('i-close', 'Delete recipe', () => recipes.remove(r.id))));
