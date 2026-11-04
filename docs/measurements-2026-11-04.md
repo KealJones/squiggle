@@ -73,6 +73,52 @@ model with no system prompt by design; nothing in the harness changes that.
   quarter minus the schemas left about 300 tokens, so the replayed window changed every turn and
   llama.cpp re-read the whole prompt (30-50 s per turn here).
 
+## Memory (the under-1 GB question for iOS Safari)
+
+Renderer RSS in headless Chromium, one browser per row, a 1,000-token prompt and 32 tokens out
+(`measureUserAgentSpecificMemory` is not in this build; RSS over-counts a little against what iOS
+charges a tab, but the differences between rows are real). The empty page is 85-113 MB of that.
+
+Qwen3.5 0.8B, Q4_0 GGUF (507 MB), 4 threads:
+
+| settings | after load | peak during inference |
+|---|---:|---:|
+| defaults (n_batch 2048, n_ubatch 512, f16 KV), 4K | 902-913 MB | 1,130-1,148 MB |
+| n_batch 512, 4K | 896 | 1,132 |
+| n_batch 512, q8 KV + flash attention, 4K | 851 | 1,106 |
+| n_batch 256, q8 KV + flash, 4K | 848 | 1,088 |
+| n_batch 64, q8 KV + flash, 4K | 841 | 1,089 |
+| n_batch 256, q8 KV + flash, 2K | 838 | 1,074 |
+| n_batch 256, q8 KV + flash, 4K, 100-token prompt | 863 | 1,108 |
+
+What the numbers say: the model's own 507 MB plus the runtime is about 740 MB; inference adds a
+fixed 240 MB that does not move with prompt length, micro-batch size, KV precision or context size,
+so it is not a buffer the app can shrink (it looks like a one-time allocation inside the WASM build at
+the first decode). KV precision and batch size together are worth about 50 MB after load and 40 at
+peak; context size 4K vs 2K about 15 MB. Load time was the same in every row (24 s cold, 3.5 s from
+the cache), and so was time to first token.
+
+So Qwen3.5 0.8B on the CPU cannot be made to fit under 1 GB with settings; it needs a smaller file
+(a Q3 quantization, or a 0.5-0.6B model). The app now loads CPU models with n_batch 512, n_ubatch
+256, an 8-bit KV cache and flash attention (`engine-wllama.js createEngine`, with a plain retry if a
+build rejects them), which is the part that is free.
+
+The same two rows for the other phone models (same prompt, 4K window, 4 threads). Where the KV cache
+is wide (Qwen3 0.6B: 8 KV heads of 128 over 28 layers, 470 MB at f16 for 4K) the lean settings are
+worth over 300 MB; where it is narrow (Qwen3.5: 2 heads) they are worth 50.
+
+| model (file) | defaults: loaded / peak | lean: loaded / peak | under 1 GB? |
+|---|---:|---:|---|
+| Qwen3 0.6B, native tools (382 MB) | 1,059 / 1,205 MB | 822 / 883 MB | yes, with the lean settings |
+| Qwen3.5 0.8B, native tools (507 MB) | 902 / 1,148 | 848 / 1,088 | no |
+| Gemma 3 270M, chat only (242 MB) | 513 / 675 | 551 / 614 | yes |
+| Squiggle Small, fenced tools (219 MB) | 483 / 627 | 430 / 488 | yes |
+| tiny Gemma 4 heal 4 (778 MB) | 1,477 / 1,522 | 1,391 / 1,409 | no, by a lot |
+
+Qwen3 0.6B was listed as a chat-only size test; it now runs with its own tool format on wllama (the
+same model already did on WebLLM as `WQ06`), which makes it the smallest tool-using model in the list
+and the one under the 1 GB line.
+
 ## Still true, and worth doing next
 
 - Prefill is the phone experience. Every token in the system prompt and the declared schemas is read
