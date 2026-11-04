@@ -43,6 +43,7 @@ function getSandbox() {
 
 export const calculate = defineTool({
   name: 'calculate',
+  group: 'maths and code',
   description: 'Calculate a math expression exactly: + - * / ^, parentheses, percentages (15% of 240), pi and e, sqrt, round(x, digits), min, max, abs, floor, ceil, pow, log, ln, exp. Use it for every sum, price, percentage or conversion; never do math in your head.',
   parameters: params({ expression: str('A math expression, e.g. "300 * 25% + (120 - 60)" or "round((72 - 32) * 5 / 9, 1)"') }, ['expression']),
   async run({ expression }) {
@@ -53,6 +54,7 @@ export const calculate = defineTool({
 
 export const runJs = defineTool({
   name: 'run_js',
+  group: 'maths and code',
   description: 'Run JavaScript in an isolated sandbox (no access to the user\'s data or files). Use for code, data processing, or checking logic, not for plain math (use calculate). Use console.log or return a value. Top-level await works.',
   parameters: params({ code: str('JavaScript code') }, ['code']),
   async run({ code }) {

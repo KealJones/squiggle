@@ -1477,7 +1477,7 @@ await check('small-model mode is a per-model switch: off gives E2B the full prom
   await D.page.waitForTimeout(500);
   const on = await send('hello again');
   assert.match(on.system, /^You are Squiggle, an assistant that figures things out\./);
-  assert.match(on.system, /find tells you which of your other tools fits/);
+  assert.match(on.system, /need\(what\) asks the user for something only they know/);
   assert.doesNotMatch(on.system, /```tool_call/, 'native tool formats don\'t get the fenced-block line');
   assert.ok(on.tools.includes('find') && on.tools.includes('plan'), JSON.stringify(on.tools));
   // Squiggle Small: shown as always on, no switch.

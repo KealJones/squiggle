@@ -29,10 +29,10 @@ const str = (description) => ({ type: 'string', description });
 
 // The tools the harness adds for every model (answered by agent.js, never by tools.js).
 export const HARNESS_SPECS = {
-  plan: { name: 'plan', description: 'Make a plan for a request that takes more than one step, then work it one step at a time. Calling it again revises the plan; finished steps keep their results.', parameters: S({ goal: str('What the user wants, in one line'), steps: { type: 'array', items: { type: 'string' }, description: 'Short imperative steps, e.g. "Find where the login form is defined"' } }, ['goal', 'steps']) },
-  done: { name: 'done', description: 'Finish the current step. result = the facts the rest of the task needs (paths, numbers, names, decisions), one to three lines.', parameters: S({ result: str('What this step found or did') }, ['result']) },
-  need: { name: 'need', description: 'Say what is missing to go on. Squiggle searches for it, and asks the user if it can\'t be found.', parameters: S({ what: str('What you need, e.g. "which repo the site lives in"') }, ['what']) },
-  find: { name: 'find', description: 'Search everything Squiggle knows: tools (and how to call them), recipes from past tasks, memory, past chats and this task\'s earlier results.', parameters: S({ query: str('What you are looking for, in plain words') }, ['query']) },
+  plan: { name: 'plan', description: 'Plan a request that takes more than one step; you then work it one step at a time. Calling it again revises the plan.', parameters: S({ goal: str('What the user wants, in one line'), steps: { type: 'array', items: { type: 'string' }, description: 'Short imperative steps' } }, ['goal', 'steps']) },
+  done: { name: 'done', description: 'Finish the current step with the facts later steps need (paths, numbers, names, decisions), one to three lines.', parameters: S({ result: str('What this step found or did') }, ['result']) },
+  need: { name: 'need', description: 'Ask for something only the user can tell you. Squiggle searches first and asks them if it finds nothing.', parameters: S({ what: str('What is missing, e.g. "which repo the site lives in"') }, ['what']) },
+  find: { name: 'find', description: 'Search what Squiggle knows: other tools (and how to call them), recipes from past tasks, memory, past chats, this task\'s results.', parameters: S({ query: str('What you are looking for') }, ['query']) },
 };
 // AI-managed context (docs/harness.md, "the model manages its own context"): plan steps can say what they
 // need attached, and `checkpoint` hands off to a fresh context instead of running out.
@@ -46,8 +46,8 @@ export const MANAGED_SPECS = {
 // Small native models (wllama with the GGUF's own template) get only a few tools declared up front and every
 // other tool as a bare name in the prompt; tool_info declares the ones it asks for (docs/harness.md, "Tool names
 // up front"). A tool stays declared for the rest of the step or chat phase.
-export const TOOL_INFO_SPEC = { name: 'tool_info', description: 'Get how to call tools from the "other tools" list. Ask for every tool you expect to need at once. They are ready to call after this.',
-  parameters: S({ names: { type: 'array', items: { type: 'string' }, description: 'Tool names from the list, e.g. ["read_file", "grep"]' } }, ['names']) };
+export const TOOL_INFO_SPEC = { name: 'tool_info', description: 'Get how to call tools from the "other tools" list; they are ready to call after this. Ask for all you expect to need at once.',
+  parameters: S({ names: { type: 'array', items: { type: 'string' }, description: 'Tool names from the list' } }, ['names']) };
 export const HARNESS = new Set([...Object.keys(HARNESS_SPECS), 'checkpoint', 'tool_info']);
 export const MAX_CHECKPOINTS = 4;   // per turn; then the person is asked whether to go on
 

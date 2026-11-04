@@ -224,10 +224,13 @@ and parses it.
 
 - **Small-model mode switch** (Settings → Small-model mode, stored per model in `settings.smallMode`):
   always on for small models in this fenced format (Squiggle Small; it's their training text and the only
-  format their engine parses), off by default and switchable for every other model with tools (Gemma 4
-  E2B/E4B, the cloud model, tiny Gemma 4, Qwen3.5). Switched on, those models get `LITE_SYSTEM_NATIVE`:
+  format their engine parses), on by default for the other wllama models (tiny Gemma 4, Qwen3.5; measured
+  2026-11-04, docs/measurements-2026-11-04.md), off by default for the big ones (Gemma 4 E2B/E4B, the cloud
+  model); switchable per model in Settings. Switched on, those models get `LITE_SYSTEM_NATIVE`:
   `LITE_SYSTEM`'s first three lines, without the ```` ```tool_call ```` line (their own template declares
-  the tools), plus "Start with plan, done, need and find; find tells you which of your other tools fits."
+  the tools), plus one line each on what web_search/fetch_url, find and need are for, and "Plan only when the
+  request takes more than one step". (The earlier "Start with plan, done, need and find" line made Qwen3.5 0.8B
+  call need for arithmetic and for facts the user had just stated; measured 2026-11-04.)
   Big models still get every tool declared natively; small native models are gated (next section). Context
   budgets and background jobs follow the runtime (wllama or not), not this switch.
   Tools the model has looked up are appended as
@@ -248,11 +251,16 @@ used to get every schema declared, about 3.4k tokens of a 4K phone window, which
 Now (agent.js `gated()`):
 
 - Declared with full schemas from the start (`GATE`): `plan`, `done` (steps), `need`, `find`, `tool_info`,
-  `web_search`, `fetch_url` (and `checkpoint` in AI-managed mode). About 600 tokens (by `estTokens`), plus
-  about 110 for the name line below, against about 3.4k before.
-- Every other enabled tool is one line of bare names in the system prompt (both the full prompt and
-  `LITE_SYSTEM_NATIVE`): `Other tools: list_files, read_file, … Before calling one, get how with
-  tool_info(names); ask for every one you expect to need at once.` Not in the final reply's prompt (no tools).
+  `web_search`, `fetch_url`, `remember`, `calculate` (and `checkpoint` in AI-managed mode). About 940 tokens
+  (by `estTokens`), plus about 110 for the name line below, against about 3.4k before. `remember` and
+  `calculate` joined on 2026-11-04: a 0.8B model told to save a fact with remember called `need` instead of
+  looking remember up first, and did arithmetic with web_search.
+- Every other enabled tool is one line of names in the system prompt (both the full prompt and
+  `LITE_SYSTEM_NATIVE`), grouped by the tool's `group` (tools/registry.js `defineTool`): `Other tools, by area:
+  files: list_files, read_file, …; git and GitHub: …; memory: remember, recall, …; maths and code: calculate,
+  run_js. Before calling one, get how with tool_info(names); ask for every one you expect to need at once.`
+  Not in the final reply's prompt (no tools). `need` and `find` called without an argument get an error back
+  (never a question to the user).
 - `tool_info(names)` answers `{"tools": [names], "ready": "… ready to call now."}`, or an error listing the
   valid names. The schema itself reaches the model through the declared tools on the next request, so the
   result stays short. `find` results that name tools declare them the same way.

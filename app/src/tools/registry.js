@@ -17,9 +17,10 @@ const registry = new Map();   // name → tool, in registration order
 
 const NAME = /^[a-z][a-z0-9_]{1,63}$/;
 
-/** Builds a tool from flat fields; the parameters default to an object with no properties. */
-export function defineTool({ name, description, parameters = params({}), run }) {
-  return { spec: { name, description, parameters }, run };
+/** Builds a tool from flat fields; the parameters default to an object with no properties.
+ *  group: a short area label ("files", "git and GitHub", …) for prompts that list tools by name. */
+export function defineTool({ name, description, parameters = params({}), run, group = 'other' }) {
+  return { spec: { name, description, parameters }, run, group };
 }
 
 /** Adds a tool (or replaces one with the same name in place, keeping its position). */

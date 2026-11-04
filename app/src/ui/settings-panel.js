@@ -115,8 +115,7 @@ function smallModeField(S) {
   }
   return h('div', { class: 'field' }, h('label', { class: 'toggle' },
     h('input', { type: 'checkbox', checked: agent.smallMode(id) ? true : null, onchange: (e) => {
-      S.smallMode = { ...(S.smallMode || {}), [id]: e.target.checked };
-      if (!e.target.checked) delete S.smallMode[id];
+      S.smallMode = { ...(S.smallMode || {}), [id]: e.target.checked };   // an explicit false overrides the default
       saveSettings(); updateComposerNote();
     } }),
     h('span', {}, h('strong', {}, 'Small-model mode'), h('span', { class: 'hint', style: 'display:block' },

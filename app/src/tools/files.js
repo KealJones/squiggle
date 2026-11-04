@@ -9,6 +9,7 @@ import { MAX_READ, realPath, isAttachmentPath, isWebPath, readAgentFile, writeAg
 
 export const listFiles = defineTool({
   name: 'list_files',
+  group: 'files',
   description: 'List files in the workspace. /home is your own synced space; /repos/<name> are git clones.',
   parameters: params({ path: str('Folder, e.g. /home or /repos/myrepo/src') }),
   async run({ path = '/' }) {
@@ -19,6 +20,7 @@ export const listFiles = defineTool({
 
 export const readFile = defineTool({
   name: 'read_file',
+  group: 'files',
   description: 'Read lines of a text file from the workspace, with line numbers. Long files come in parts: use grep to find the lines you need, then read just that range.',
   parameters: params({ path: str('File path, e.g. /home/notes.md or /repos/app/README.md'), start_line: num('First line to read (default 1)'), end_line: num('Last line to read (default start_line + 150)') }, ['path']),
   async run({ path, start_line = 1, end_line }, ctx = {}) {
@@ -41,6 +43,7 @@ const BINARY = /\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|woff2?|ttf|wasm|lock|map|mi
 
 export const grep = defineTool({
   name: 'grep',
+  group: 'files',
   description: 'Search files for a word or regular expression. Returns matching lines as path:line: text. Use it to find where something is before reading.',
   parameters: params({ pattern: str('Text or regular expression, e.g. "function send" or "TODO|FIXME"'), path: str('Folder or file to search, e.g. /repos/app or /repos/app/src (default /home)'), ignore_case: bool('Case-insensitive (default true)'), skip: num('Skip this many matches (to get the next page)') }, ['pattern']),
   async run({ pattern, path = '/home', ignore_case = true, skip = 0 }, ctx = {}) {
@@ -79,6 +82,7 @@ export const grep = defineTool({
 
 export const writeFile = defineTool({
   name: 'write_file',
+  group: 'files',
   description: 'Create a text file, or replace a whole file. To change part of an existing file, use edit_file. Files under /home sync to all the user\'s devices.',
   parameters: params({ path: str('File path'), content: str('Full file contents'), overwrite: bool('Set true to replace an existing file with much shorter content') }, ['path', 'content']),
   async run({ path, content, overwrite = false }) {
@@ -101,6 +105,7 @@ export const writeFile = defineTool({
 
 export const editFile = defineTool({
   name: 'edit_file',
+  group: 'files',
   description: 'Change part of a text file: replaces old_text with new_text. old_text must match the file exactly (copy it from read_file, without the line numbers) and appear only once, so include a few lines around the change.',
   parameters: params({ path: str('File path'), old_text: str('Exact text to replace, copied from the file'), new_text: str('What to put in its place (empty to delete it)'), replace_all: bool('Replace every occurrence instead of exactly one') }, ['path', 'old_text', 'new_text']),
   async run({ path, old_text, new_text = '', replace_all = false }) {
@@ -131,6 +136,7 @@ export const editFile = defineTool({
 
 export const deleteFile = defineTool({
   name: 'delete_file',
+  group: 'files',
   description: 'Delete a file (or folder) in the workspace.',
   parameters: params({ path: str('Path to delete') }, ['path']),
   async run({ path }) {
