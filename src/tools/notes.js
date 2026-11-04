@@ -5,6 +5,7 @@ import { defineTool, params, str, oneOf } from './registry.js';
 
 export const note = defineTool({
   name: 'note',
+  group: 'notes',
   description: 'Your notepad for this chat. Save what matters for the task (findings, file locations, decisions, next steps) so you don\'t need old tool output again; update or delete notes as they stop being relevant. Your notes are always shown to you.',
   parameters: params({ action: oneOf(['add', 'update', 'delete'], 'add a note, update one by id, or delete one by id'), id: str('Note id (for update/delete)'), text: str('Note text (for add/update); keep it short') }, ['action']),
   async run({ action, id, text }, ctx = {}) {

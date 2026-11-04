@@ -13,7 +13,7 @@ import { find as findAll, renderFind, PAST_CHAT } from './find.js';
 import { buildEntities, resolve as resolveRefs, renderRefs } from './refs.js';
 import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes } from './context.js';
 export { scrubFakeToolNotes };
-import { toolSpecs, runTool } from './tools.js';
+import { toolSpecs, listTools, runTool } from './tools.js';
 import { UNTRUSTED_RULES, wrapUntrusted } from './untrusted.js';
 import { embed } from './embed.js';
 import { bm25, tokenize } from './search.js';
@@ -37,6 +37,7 @@ export const settings = {
 
 const MAX_OUTPUT = 1536;
 const CHAT_PLAN_NUDGE = 6;  // tool calls without a plan before the model is reminded it can make one
+const LITE_CHAT_NUDGE = 3;  // small models: nudged to answer after this many, no more lookups after twice this
 
 // The small model's whole system prompt: the exact text the fine-tune trains
 // on (docs/harness.md, "Small-model format"). Tool names appear only in the
@@ -52,14 +53,16 @@ export const LITE_SYSTEM = [
 
 // The same prompt for models that call tools in their own native format (Gemma 4, Qwen, the cloud model):
 // the first three lines are LITE_SYSTEM's, the fenced-block line is left out (their template declares the
-// tools). It used to say "start with plan, done, need and find", which a small model took as an order to
-// call those before anything else: told "use web_search", it argued with the prompt until its output ran
-// out. Now: call the tool you need; find is for when you don't know which. Gated models get the names of
-// what is ready and what needs tool_info first (toolNamesLine), so nothing usable is left unnamed.
+// tools). It used to say "start with plan, done, need and find", which small models obeyed literally: a 0.6B
+// told "use web_search" argued with the prompt until its output ran out, and a 0.8B called need for arithmetic
+// and for things the user had just said (measured 2026-11-04, docs/measurements-2026-11-04.md). Now each
+// harness tool says what it is for, and gated models get the names of what is ready and what needs tool_info
+// first (toolNamesLine), so nothing usable is left unnamed.
 export const LITE_SYSTEM_NATIVE = [
   ...LITE_SYSTEM.split('\n').slice(0, 3),
-  'Call a tool as soon as you know which one you need; when you don\'t, find tells you which fits.',
-  'Arguments: plan(goal, steps), done(result), need(what), find(query).',
+  'Look things up with web_search and fetch_url. find(query) searches your other tools, recipes, memory and',
+  'past chats when you need one of them; need(what) asks the user for something only they know.',
+  'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
 ].join('\n');
 
 // Which prompt dialect this model gets (tasks.js DIALECT): the frozen fenced one for Squiggle Small, v3
@@ -83,9 +86,10 @@ const nativeId = (id) => Boolean(engine.nativeTools && engine.nativeTools(id));
 const chatOnlyId = (id) => Boolean(engine.chatOnly && engine.chatOnly(id));
 const fencedId = (id) => engine.isLite(id) && !nativeId(id) && !chatOnlyId(id);
 export const smallModeSwitchable = (id = settings.model) => Boolean(engine.MODELS[id]) && !chatOnlyId(id) && !fencedId(id);
-// The switch's default: on for every small model (the full prompt plus every schema took half of a phone's
-// 4K window and a 0.8B model answered the instructions instead of the person), off for big ones. A saved
-// true/false for the model wins.
+// The switch's default: on for every small model, off for big ones. A saved true/false for the model wins.
+// (The full prompt plus every schema took half of a phone's 4K window and a 0.8B model answered the
+// instructions instead of the person; measured 2026-11-04 with Qwen3.5 0.8B: 430 more tokens, about 40 s of
+// prefill on a phone-class CPU, and no better.)
 export const smallModeDefault = (id = settings.model) => engine.isLite(id);
 export const smallMode = (id = settings.model) => fencedId(id)
   || (smallModeSwitchable(id) && (settings.smallMode && typeof settings.smallMode[id] === 'boolean' ? settings.smallMode[id] : smallModeDefault(id)));
@@ -100,17 +104,20 @@ const UPFRONT_SMALL = 'Each step shows only what it needs: attach earlier result
 // Plain chat for small models without tool training (engine.chatOnly).
 const plain = () => Boolean(engine.chatOnly && engine.chatOnly(settings.model));
 
-// Gated models: what is declared and ready, then the tools they can ask tool_info about, by name only (phase
-// 'final' has no tools). Generated from the same sets the engine declares (phaseTools, GATE, known), so the
-// prompt never leaves a usable tool unnamed: web_search was declared but never mentioned, and the model
-// went looking for it through tool_info instead of calling it.
+// Gated models: what is declared and ready, then the tools they can ask tool_info about, by name only and
+// grouped by area (tools/registry.js `group`), so the model can tell what each is for without a schema. Phase
+// 'final' has no tools. Generated from the same sets the engine declares (phaseTools, GATE, known), so the
+// prompt never leaves a usable tool unnamed: web_search was declared but never mentioned, and a model went
+// looking for it through tool_info instead of calling it.
 function toolNamesLine(phase, known = []) {
   if (!gated() || phase === 'final') return '';
   const all = phaseTools(phase === 'step').map(t => t.name);
   const ready = all.filter(n => GATE.includes(n) || known.includes(n));
-  const names = all.filter(n => !ready.includes(n));
+  const byName = new Map(listTools().map(t => [t.spec.name, t.group || 'other']));
+  const groups = new Map();
+  for (const n of all.filter(n => !ready.includes(n))) { const g = byName.get(n) || 'other'; groups.set(g, [...(groups.get(g) || []), n]); }
   return [`Tools ready to call: ${ready.join(', ')}.`,
-    names.length ? `Other tools: ${names.join(', ')}. To use one, first call tool_info(names) with every one you expect to need.` : ''].filter(Boolean).join('\n');
+    groups.size ? `Other tools, by area: ${[...groups].map(([g, names]) => `${g}: ${names.join(', ')}`).join('; ')}. To use one, first call tool_info(names) with every one you expect to need.` : ''].filter(Boolean).join('\n');
 }
 
 function systemPrompt(threadId, session, phase = 'chat', known = []) {
@@ -118,15 +125,13 @@ function systemPrompt(threadId, session, phase = 'chat', known = []) {
   const names = toolNamesLine(phase, known);
   if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : LITE_SYSTEM_NATIVE}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
   const thread = threadId && session.threads[threadId];
+  // Kept short on purpose: with every tool schema this prompt was 99% of a 4K window (2026-11-04), and
+  // a phone CPU reads it at ~13 tokens/s before the first reply token.
   return [
     `You are Squiggle, a personal AI agent running privately on the user's own device. Today is ${new Date().toDateString()}.`,
-    `You have a workspace: /home is your own folder (synced to all the user's devices), and /repos/<name> holds git clones of the user's GitHub repos.`,
-    `Working on code: git_clone the repo, git_branch to start an agent/ branch (or switch to an existing one), edit files, git_commit, git_push, then github_open_pr if the user wants a review. agent/ branches push right away; pushing any other branch (like main) shows the user a permission prompt, so only do that when they asked for it. Never try to get around a refused push.`,
-    `For current information or anything you're unsure of, use web_search, then fetch_url to read the most relevant results before answering. Mention which sites you used.`,
-    `Don't guess. If an answer depends on a fact you don't have, look it up: find searches tools, recipes from past tasks, memory and past chats; need says what is missing (Squiggle searches for it and asks the user if it can't be found).`,
-    `For anything that takes more than one step, call plan(goal, steps) first. You then work one step at a time, each with a fresh view that shows the goal, the plan and what earlier steps found, and finish each step with done(result). Take as long as you need; thinking is shown to the user.`,
-    `When you learn something lasting about the user or their projects (preferences, decisions, names), save it with remember. Use search_history to find things from past conversations.`,
-    `Your context window is ${settings.contextSize} tokens; every tool result says how much is left, so prefer grep and line ranges when it's low. For quick tasks without a plan, keep notes with the note tool. For code, use grep to find things, then read_file with a line range.`,
+    `Workspace: /home is your own folder (synced to the user's devices); /repos/<name> holds clones of their GitHub repos. For code: git_clone, git_branch (an agent/ branch; those push freely, any other branch asks the user first, and a refused push is final), edit, git_commit, git_push, then github_open_pr if they want a review.`,
+    `Don't guess. For current information or anything you're unsure of: web_search, then fetch_url the best results, and say which sites you used. Maths goes through calculate. find(query) searches your tools, recipes from past tasks, memory and past chats; need(what) asks the user for something only they know. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`,
+    `Save lasting facts about the user or their projects (preferences, decisions, names) with remember; search_history finds past conversations. Your context window is ${settings.contextSize} tokens and every tool result says how much is left: prefer grep and read_file line ranges, and keep notes with note on longer work without a plan.`,
     managed() ? UPFRONT : '',
     names,
     `Use tools when they help; answer directly when they don't. Be concise. Never invent file contents or tool results, and never say you saved, remembered, changed or pushed something unless you called the tool for it in this reply.`,
@@ -146,7 +151,9 @@ function preloaded(tools) {
 }
 
 // Declared with full schemas from the start on gated models (see gated); everything else waits for tool_info.
-const GATE = ['plan', 'done', 'need', 'find', 'checkpoint', 'tool_info', ...PRELOADED];
+// remember and calculate are in: a 0.8B model told "save it with remember" called need instead of looking
+// remember up first (2026-11-04), and nearly every phone chat wants one of the two.
+const GATE = ['plan', 'done', 'need', 'find', 'checkpoint', 'tool_info', ...PRELOADED, 'remember', 'calculate'];
 
 function phaseTools(step) {
   if (plain()) return [];
@@ -160,6 +167,7 @@ function phaseTools(step) {
 // Tokens the tool definitions take: fenced small models see only names and looked-up one-liners (~300);
 // gated models the GATE tools plus `known`; everyone else every schema.
 function toolCost(tools, known = []) {
+  if (plain()) return 0;
   if (lite() && !native()) return 300;
   if (gated()) return estTokens(JSON.stringify(tools.filter(t => GATE.includes(t.name) || known.includes(t.name))));
   return estTokens(JSON.stringify(tools));
@@ -382,9 +390,11 @@ class Turn {
     this.declaredNames = new Set(tools.map(t => t.name).filter(n => !gated() || GATE.includes(n)));
     // History gets about half the window; the rest stays free for this turn's
     // tool results and the reply (a full window made turns fail at the start).
-    // Small models get a quarter: on a 4K phone window half left too little room for a lookup.
-    const share = lite() ? 0.25 : 0.5;
-    const budget = Math.max(lite() ? 600 : 1000, Math.min(settings.contextSize - MAX_OUTPUT - toolTokens - 200, Math.floor(settings.contextSize * share) - toolTokens));
+    // Small models get less: on a 4K phone window half left too little room for a lookup. (A quarter was
+    // too little the other way: with ~650 tokens of tool schemas the history got ~300 tokens, so the replayed
+    // window changed every turn and llama.cpp re-read the whole prompt each time; measured 2026-11-04.)
+    const share = lite() ? 0.4 : 0.5;
+    const budget = Math.max(lite() ? 800 : 1000, Math.min(settings.contextSize - MAX_OUTPUT - toolTokens - 200, Math.floor(settings.contextSize * share) - toolTokens));
     const ctx = await this.context(await this.prepare(), budget);
     this.reply.context = ctx.report;
     // Plain chat: only the recent messages; extra sections would be read as instructions.
@@ -404,6 +414,8 @@ class Turn {
     if (managed()) pending += `\n\n${tasks.budgetLine(used, settings.contextSize, reserve, dialect())}`;
     this.setWindow(windowOf(ctx.report, { system: plain() ? 0 : estTokens(ctx.system), tools: toolTokens, message: estTokens(this.shown) + estTokens(att.text) }), used);
     let chatCalls = 0, full = false;
+    this.seenCalls = new Map();
+    const maxChatCalls = lite() ? 2 * LITE_CHAT_NUDGE : Infinity;
     for (;;) {
       const r = await this.respond(pending);
       if (r.text) this.prefix += r.text + (r.toolCalls.length ? '\n\n' : '');
@@ -426,11 +438,18 @@ class Turn {
           full = true;
           continue;
         }
+        const again = this.repeated(call);
+        if (again) { results.push(toolResult(call, again)); continue; }
+        if (chatCalls >= maxChatCalls) {
+          // A small model that keeps looking things up never answers; bound the turn.
+          results.push(toolResult(call, { error: `Not run: you have made ${chatCalls} tool calls this turn. Answer now with what you have, or call plan if there is more to do.` }));
+          continue;
+        }
         const out = await this.exec(call, { room: Math.floor(room() / r.toolCalls.length) });
         chatCalls++;
         if (out.ask) return null;  // `need` with nothing found: the question is the reply
         let response = out.response;
-        if (chatCalls === CHAT_PLAN_NUDGE) response = { ...response, tip: 'This is taking several steps. If there is more to do, call plan so you can work through it one step at a time.' };
+        if (chatCalls === (lite() ? LITE_CHAT_NUDGE : CHAT_PLAN_NUDGE)) response = { ...response, tip: lite() ? `You have made ${chatCalls} tool calls. If the answer is in the results above, answer now; if there is more to do, call plan.` : 'This is taking several steps. If there is more to do, call plan so you can work through it one step at a time.' };
         used += this.declare(tools, call, response);
         used += estTokens(JSON.stringify(response)) + 10;
         this.grow(used);
@@ -568,6 +587,19 @@ class Turn {
   // Gated models: a call to an undeclared tool, or a find/tool_info result naming tools, declares them from the
   // next request on (NativeConversation does the same). Returns their schema tokens, which also go on the
   // window's tool definitions.
+  // The same tool with the same arguments twice in one phase: small models do this instead of reading the
+  // result they already have (Qwen3.5 ran web_search five times for one question). Not run again.
+  repeated(call) {
+    const fn = (call && call.function) || {};
+    if (['plan', 'done', 'checkpoint', 'need'].includes(fn.name)) return null;
+    const key = `${fn.name}:${JSON.stringify(fn.arguments || {})}`;
+    const n = (this.seenCalls.get(key) || 0) + 1;
+    this.seenCalls.set(key, n);
+    if (n === 1) return null;
+    this.toolEvent({ name: fn.name, label: `${fn.name} repeated with the same arguments (not run again)`, ok: false });
+    return { error: `You already called ${fn.name} with exactly these arguments in this turn; its result is above. Use that result, change the arguments, or answer now.` };
+  }
+
   declare(tools, call, response) {
     if (!gated() || !this.declaredNames) return 0;
     const names = [call && call.function && call.function.name, ...(response && Array.isArray(response.tools) ? response.tools : [])];
@@ -589,6 +621,7 @@ class Turn {
   }
 
   async runStep(task, step) {
+    this.seenCalls = new Map();
     const tools = phaseTools(true);
     const known = [...new Set([...preloaded(tools), ...(task.tools || [])])];
     const toolTokens = toolCost(tools, known);
@@ -691,6 +724,8 @@ class Turn {
               : 'Not run: your context for this step is almost full. Call done now with what you found (the next step starts fresh).' }));
             continue;
           }
+          const again = this.repeated(call);
+          if (again) { results.push(toolResult(call, again)); continue; }
           const out = await this.exec(call, { room: Math.floor(room() / r.toolCalls.length), task, step });
           if (out.ask) return 'ask';
           let response = out.response;
@@ -765,6 +800,17 @@ class Turn {
     this.ui.onTool && this.ui.onTool({ name, running: true });
     if (name === 'find' || name === 'need') {
       const query = String(args.query || args.what || args.q || '').trim();
+      // Small models call need/find with nothing (or echo the request) when they mean something else;
+      // an empty question must not reach the user.
+      if (!query) {
+        this.toolEvent({ name, label: `${name} without a ${name === 'need' ? 'what' : 'query'}`, ok: false });
+        return { response: { error: name === 'need' ? 'need takes what: say in words what you are missing and only the user can tell you. For a calculation use calculate; to save a fact use remember.' : 'find takes query: what you are looking for (a tool, a recipe, a memory, a past chat).' } };
+      }
+      // need("your dog is named Pip") right after the user said so: the model is restating, not asking.
+      if (name === 'need' && restates(query, this.shown)) {
+        this.toolEvent({ name, label: `need restated the request (not asked)`, ok: false });
+        return { response: { error: 'The user just told you that; it is not missing. Use it: answer, or save it with remember if it is a lasting fact.' } };
+      }
       const { text, tools, empty, answers } = await this.find(query, task);
       if (task && tools.length) task.tools = [...new Set([...(task.tools || []), ...tools])];
       if (task) tasks.logCall(task, step, { name, args, ok: true, label: `${name} "${truncate(query, 60)}"`, text });
@@ -853,6 +899,16 @@ function searchChats(query, k, skip = null) {
 }
 
 // "Keep going?" every CHECK_IN_EVERY tool calls. No UI means stop.
+// Most of `what`'s words are in the user's message: a restatement, not a question.
+export function restates(what, message) {
+  const words = (t) => new Set(String(t || '').toLowerCase().match(/[a-z0-9']+/g) || []);
+  const w = [...words(what)].filter(x => x.length > 2 && !STOP.has(x));
+  if (w.length < 2) return false;
+  const m = words(message);
+  return w.filter(x => m.has(x)).length / w.length >= 0.6;
+}
+const STOP = new Set(['the', 'and', 'that', 'this', 'what', 'which', 'your', 'you', 'please', 'remember', 'know', 'need', 'want', 'tell', 'about', 'for', 'with', 'from', 'are', 'was', 'were', 'have', 'has', 'can', 'could', 'should']);
+
 function askCheckIn(task, ui, signal, calls) {
   if (!ui.onCheckIn || (signal && signal.aborted)) return Promise.resolve(false);
   return new Promise((resolve) => {

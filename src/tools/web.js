@@ -8,6 +8,7 @@ import { MAX_READ, saveWebPage } from './workspace.js';
 
 export const fetchUrl = defineTool({
   name: 'fetch_url',
+  group: 'web',
   description: 'Read a web page by its full URL. Returns readable text. Not a search engine.',
   parameters: params({ url: str('Complete http(s) URL') }, ['url']),
   async run({ url }, ctx = {}) {
@@ -52,6 +53,7 @@ export const fetchUrl = defineTool({
 
 export const webSearch = defineTool({
   name: 'web_search',
+  group: 'web',
   description: 'Search the web (DuckDuckGo). Returns a short summary when one exists, plus titles, links and snippets. To read a result in full, pass its url to fetch_url.',
   parameters: params({ query: str('What to search for'), count: num('How many results (default 6, max 10)') }, ['query']),
   async run({ query, count = 6 }) {
