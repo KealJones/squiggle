@@ -9,9 +9,10 @@ import * as memory from './memory.js';
 import * as storage from './storage.js';
 import * as recipes from './recipes.js';
 import * as tasks from './tasks.js';
-import { find as findAll, renderFind, PAST_CHAT, PUSHBACK, checkQuery, rerankWeb, urlLedger } from './find.js';
+import { find as findAll, renderFind, PAST_CHAT, PUSHBACK, checkQuery, rerankWeb, urlLedger, rankTools } from './find.js';
+import * as prefetchLib from './prefetch.js';
 import { buildEntities, resolve as resolveRefs, renderRefs } from './refs.js';
-import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes } from './context.js';
+import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes, chunk } from './context.js';
 export { scrubFakeToolNotes };
 import { toolSpecs, listTools, runTool } from './tools.js';
 import { UNTRUSTED_RULES, wrapUntrusted } from './untrusted.js';
@@ -98,6 +99,9 @@ export const smallMode = (id = settings.model) => fencedId(id)
 // they need attached, and it can checkpoint to a fresh context (docs/harness.md, "the model manages its own
 // context"). Off in plain chat. Compress and Smart are unchanged.
 const managed = () => settings.contextMode === 'managed' && !plain();
+// Fresh context (Settings → Context: Fresh): nothing replayed; the agent looks things up first and hands the
+// model the result as a find call it already made (prefetch.js, docs/harness.md "Fresh context").
+const fresh = () => settings.contextMode === 'fresh' && !plain();
 const UPFRONT = 'You work over several turns and steps. Each one shows you only what it needs; anything earlier can be fetched with find or attached to a step (a plan step\'s needs). Don\'t try to fit everything into one turn. The last line of each prompt says how much room is left; when you\'re running low, call checkpoint and carry on fresh.';
 const UPFRONT_SMALL = 'Each step shows only what it needs: attach earlier results to a plan step (needs), or find them.\nThe last line says how much room is left; when it runs low, call checkpoint.';
 
@@ -415,12 +419,23 @@ class Turn {
     // window changed every turn and llama.cpp re-read the whole prompt each time; measured 2026-11-04.)
     const share = lite() ? 0.4 : 0.5;
     const budget = Math.max(lite() ? 800 : 1000, Math.min(settings.contextSize - MAX_OUTPUT - toolTokens - 200, Math.floor(settings.contextSize * share) - toolTokens));
-    const ctx = await this.context(await this.prepare(), budget);
+    const prep = await this.prepare();
+    const ctx = await this.context(prep, budget);
     this.reply.context = ctx.report;
     // Plain chat: only the recent messages; extra sections would be read as instructions.
     if (plain()) ctx.system = '';
-    this.conv = await engine.conversation({ system: ctx.system, messages: ctx.messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: preloaded(tools), gate: gated() ? GATE : null });
-    let used = estTokens(ctx.system) + estTokens(JSON.stringify(ctx.messages)) + toolTokens + estTokens(this.shown);
+    // Fresh: the lookup goes in as a find call the model already made, where the engine can take one; else it's
+    // a labelled system section.
+    let seed = null;
+    if (fresh()) {
+      const pf = await this.prefetch(prep.line);
+      if (pf) {
+        for (const it of pf.items) ctx.report.items.push({ ...it, placed: 'lookup before the model' });
+        if (engine.seedsToolHistory && engine.seedsToolHistory()) seed = pf;
+        else ctx.system += `\n\n## Looked up before this message (search results, not the user's words)\n${pf.text}`;
+      }
+    }
+    let used = estTokens(ctx.system) + estTokens(JSON.stringify(ctx.messages)) + toolTokens + estTokens(this.shown) + (seed ? estTokens(seed.text) : 0);
     const room = () => Math.max(0, (settings.contextSize - used - Math.min(MAX_OUTPUT, 700)) * 3);
     // Attachments: a note, then the start of each extract using up to half
     // the free room (the model reads the rest with read_file / grep).
@@ -435,8 +450,20 @@ class Turn {
     this.setWindow(windowOf(ctx.report, { system: plain() ? 0 : estTokens(ctx.system), tools: toolTokens, message: estTokens(this.shown) + estTokens(att.text) }), used);
     let chatCalls = 0, full = false, askedForAnswer = false;
     this.seenCalls = new Map();
+    let messages = ctx.messages;
+    if (seed) {
+      // The question is the only user turn; the lookup is the model's own find call and its result.
+      const call = { id: 'lookup1', type: 'function', function: { name: 'find', arguments: { query: seed.query } } };
+      messages = [{ role: 'user', content: pending }, { role: 'model', content: '', tool_calls: [{ id: call.id, type: 'function', function: { name: 'find', arguments: JSON.stringify({ query: seed.query }) } }] }];
+      pending = [toolResult(call, { found: seed.text })];
+      this.seenCalls.set(`find:${JSON.stringify({ query: seed.query })}`, 1);
+    }
+    if (fresh()) for (const q of (this.prefetched || [])) this.seenCalls.set(`web_search:${JSON.stringify({ query: q })}`, 1);
+    if (seed) chatCalls = 1;   // the lookup counts as a call (an empty reply after it gets the nudge)
+    this.conv = await engine.conversation({ system: ctx.system, messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: preloaded(tools), gate: gated() ? GATE : null });
     // "No, it's X" / "can you confirm that?": small models just agree. Search first and hand them the results.
-    const checked = await this.checkClaim();
+    // (Fresh does this in its lookup.)
+    const checked = fresh() ? '' : await this.checkClaim();
     if (checked) { pending += `\n\n${dialect().note(checked)}`; used += estTokens(checked); this.grow(used); }
     const maxChatCalls = lite() ? 2 * LITE_CHAT_NUDGE : Infinity;
     for (;;) {
@@ -969,25 +996,84 @@ class Turn {
 
   // find's fall-through: one web_search, reranked against the query (by meaning when the search model is
   // loaded, else by words), best few kept. A later web_search with the same query counts as a repeat.
-  async webFallback(query) {
+  // One web_search, reranked against the query (by meaning when the search model is loaded, else by words),
+  // best few kept: { query, items, answer } or { query, error, items: [] }. `why` goes on the tool list label.
+  async webTop(query, why = 'for find') {
     const call = { function: { name: 'web_search', arguments: { query } } };
     const res = await runTool(call, { session: this.session, threadId: this.threadId });
     this.seenCalls && this.seenCalls.set(`web_search:${JSON.stringify({ query })}`, 1);
     this.noteUrls(res);
-    this.toolEvent({ name: 'web_search', label: `${res.label} (for find)`, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
-    if (!res.ok) return `Nothing in your memory, recipes or past chats, and the web search failed: ${res.model.error}`;
+    this.toolEvent({ name: 'web_search', label: `${res.label} (${why})`, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
+    if (!res.ok) return { query, error: res.model.error, items: [] };
     if (res.observation) sessions.addObservation(this.session, { ...res.observation, thread: this.threadId });
     const items = res.items || [];
     let vecs = null;
     if (embedReady() && items.length) vecs = await embed([query, ...items.map(x => `${x.title}. ${x.snippet}`)]).catch(() => null);
-    const top = rerankWeb(query, items, { vecs, k: lite() ? 3 : 5 });
-    const a = res.answer;
+    return { query: (res.args && res.args.query) || query, items: rerankWeb(query, items, { vecs, k: lite() ? 3 : 5 }), answer: res.answer || null };
+  }
+
+  // Fresh context: before the model sees the message, look things up for it (prefetch.js). Returns
+  // { query, text, items } (items for "What the model saw"), or null when there's nothing to look up or nothing
+  // was found (small talk, bare arithmetic, no match anywhere).
+  async prefetch(line) {
+    const said = String(this.shown || '').replace(/[‘’]/g, "'");
+    if (!said.trim() || prefetchLib.smallTalk(said)) return null;
+    // The question before this one: skips "thanks!" and the like, which name nothing to borrow.
+    const asks = line.filter(m => m.role === 'user' && m.content && !prefetchLib.smallTalk(m.content));
+    const pushback = PUSHBACK.test(said);
+    // On pushback the question is the one before it, and the claim is searched (agent.js checkClaim's rule).
+    const prevQ = pushback ? [...asks].reverse().find(m => !PUSHBACK.test(String(m.content).replace(/[‘’]/g, "'"))) : asks[asks.length - 1];
+    const { query } = prefetchLib.standalone(said, { prevUser: (prevQ && prevQ.content) || '' });
+    const small = lite();
+    // Saved things: this chat's earlier exchanges and pages, other chats when that setting is on.
+    const lineThread = (o) => !o.thread || o.thread === this.threadId;
+    const pages = (this.session.observations || []).filter(lineThread).flatMap(o => chunk(o.text).slice(0, 6).map((c, i) => ({
+      id: `p:${o.id}:${i}`, kind: 'page', ts: o.ts, text: `${o.title || ''}\n${c}`, title: o.title, source: o.source, label: `${o.source}: ${o.title}` })));
+    const exchanges = prefetchLib.exchangeCandidates(line, { textOf: (m) => messageText(m) });
+    const others = settings.recallChats === true ? sessions.list().filter(x => x.id !== this.session.id).flatMap(x =>
+      prefetchLib.exchangeCandidates(x.messages, { textOf: (m) => messageText(m), max: 20 }).map(c => ({ ...c, id: `c:${x.id}:${c.ref}`, kind: 'chat', title: x.title, boost: 0 }))) : [];
+    const cands = [...exchanges, ...pages, ...others];
+    const vecs = settings.semantic && embedReady() && cands.length ? await embed([query, ...cands.map(c => truncate(c.text, 1500))]).catch(() => null) : null;
+    const found = prefetchLib.rank(query, cands, { vecs, k: small ? 4 : 8 });
+    const facts = (await memory.recall(query, 6).catch(() => [])).filter(r => r.score >= 0.3).slice(0, small ? 3 : 6);
+    // The web, unless the message is about the user's own things or clearly a job for another tool.
+    let web = null, check = '';
+    const own = PAST_CHAT.test(said.toLowerCase());
+    const toolJob = rankTools(said, toolSpecs(settings.tools)).some(t => t.name !== 'web_search' && t.name !== 'fetch_url' && t.score > 4);
+    if (this.webOn() && !own && (!toolJob || pushback)) {
+      const answer = pushback ? [...line].reverse().find(m => m.role === 'assistant' && m.content) : null;
+      const q = pushback ? checkQuery(said, { question: prevQ && prevQ.content, answer: answer && answer.content }) || query : query;
+      web = await this.webTop(q, 'looked up first');
+      this.prefetched = [q];
+      if (pushback) check = 'The user is questioning or checking an earlier answer, so the web was searched first. Answer only from these results; if they don\'t settle it, say so plainly, and don\'t agree just because the user said it.';
+    }
+    const pick = (k) => found.filter(x => x.kind === k);
+    const text = prefetchLib.render({
+      query, exchanges: pick('exchange'), chats: pick('chat'), pages: pick('page'),
+      facts: facts.map(r => memory.factText(r.fact)), web, check,
+    }, { wrap: wrapUntrusted, small });
+    const counts = [found.length && `${found.length} saved`, facts.length && `${facts.length} from memory`, web && web.items.length && `${web.items.length} from the web`].filter(Boolean);
+    this.toolEvent({ name: 'find', label: `looked up before answering: "${truncate(query, 60)}"${counts.length ? ` (${counts.join(', ')})` : ' (nothing)'}`, ok: true, args: { query } }, text || '(nothing found)');
+    if (!text) return null;
+    const items = [
+      ...found.map(x => ({ kind: x.kind === 'page' ? 'observation' : x.kind === 'chat' ? 'chat' : 'message', id: x.id, ref: x.ref, label: truncate(x.kind === 'page' ? x.label : x.question, 90), score: x.score, tokens: estTokens(x.text) })),
+      ...facts.map(r => ({ kind: 'fact', id: r.fact.id, label: truncate(memory.factText(r.fact), 90), score: Math.round(r.score * 100) / 100 })),
+      ...(web && web.items.length ? [{ kind: 'web', label: `web search: ${truncate(web.query, 60)} (${web.items.length})` }] : []),
+    ];
+    return { query, text, items };
+  }
+
+  async webFallback(query) {
+    const w = await this.webTop(query, 'for find');
+    if (w.error) return `Nothing in your memory, recipes or past chats, and the web search failed: ${w.error}`;
+    const top = w.items;
+    const a = w.answer;
     const body = [
       a && a.text ? `Summary (${a.source}${a.url ? ', ' + a.url : ''}): ${truncate(a.text, 400)}` : '',
       ...top.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${truncate(x.snippet || '', lite() ? 220 : 400)}`),
     ].filter(Boolean).join('\n');
     if (!body) return `Nothing in your memory, recipes or past chats, and the web had no results for "${truncate(query, 80)}". Try web_search with other words, or need to ask the user.`;
-    return `Nothing in your memory, recipes or past chats, so this searched the web for "${truncate(res.args.query || query, 80)}":\n${wrapUntrusted('web search', body)}\nTo read one in full, call fetch_url with its link.`;
+    return `Nothing in your memory, recipes or past chats, so this searched the web for "${truncate(w.query, 80)}":\n${wrapUntrusted('web search', body)}\nTo read one in full, call fetch_url with its link.`;
   }
 }
 

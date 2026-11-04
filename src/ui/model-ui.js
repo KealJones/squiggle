@@ -265,7 +265,7 @@ export async function loadModel() {
     state.modelState = 'ready';
     banner();
     updateComposerNote();
-    if (agent.settings.contextMode === 'smart' && agent.settings.semantic) loadSemantic();
+    if (['smart', 'fresh'].includes(agent.settings.contextMode) && agent.settings.semantic) loadSemantic();
   } catch (e) {
     setCrashMarker(null);
     state.modelState = 'error';

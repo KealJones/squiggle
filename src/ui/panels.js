@@ -175,7 +175,7 @@ export async function renderFilesPanel(path) {
 }
 
 // ── What the model saw ─────────────────────────────────────────────────────
-const KINDS = { actions: 'Earlier tool calls', system: 'Instructions', recent: 'Recent messages', pinned: 'Pinned', summary: 'Summary', fact: 'Memory', message: 'Earlier message', observation: 'Saved tool output', thread: 'Thread outcome', refs: 'Resolved references', recipe: 'Recipe', plan: 'Plan (step prompt)', chat: 'Another chat', note: 'Note' };
+const KINDS = { actions: 'Earlier tool calls', system: 'Instructions', recent: 'Recent messages', pinned: 'Pinned', summary: 'Summary', fact: 'Memory', message: 'Earlier message', observation: 'Saved tool output', thread: 'Thread outcome', refs: 'Resolved references', recipe: 'Recipe', plan: 'Plan (step prompt)', chat: 'Another chat', note: 'Note', web: 'Web search' };
 function renderContextPanel(m) {
   const c = openDrawer('What the model saw', 'context');
   const r = m.context;
