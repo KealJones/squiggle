@@ -2,9 +2,9 @@
 // so Squiggle opens without a connection once it has loaded before. The model
 // lives in IndexedDB (not here), and /api/* is never cached.
 const CACHE = 'squiggle-app-v1';
-// The natural voice's model files (tts-worker.js); kept across updates.
-// WebLLM's model files (engine-webllm.js) live in its own caches; kept too.
-const KEEP = new Set([CACHE, 'squiggle-tts-v1', 'squiggle-flags', 'webllm/config', 'webllm/model', 'webllm/wasm']);
+// WebLLM's model files (engine-webllm.js) live in its own caches; kept across
+// updates. Anything else (like the old natural voice's squiggle-tts-v1) is freed.
+const KEEP = new Set([CACHE, 'squiggle-flags', 'webllm/config', 'webllm/model', 'webllm/wasm']);
 // "Use all CPU cores" (settings): the page has to be cross-origin isolated for
 // wllama's threads (SharedArrayBuffer). When the flag is set, the app's own
 // responses get COOP/COEP; everything cross-origin it loads already uses CORS

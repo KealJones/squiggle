@@ -10,7 +10,7 @@ import { state } from './state.js';
 import { openSession, renderChat, renderSessions, setSync, setupComposer, send, closeSidebar } from './chat.js';
 import { openPanel, closeDrawer, renderThreadPanel, renderNotesPanel, renderMemoryPanel } from './panels.js';
 import { setSideOpen, sideOpenPref, sideOverlay } from './side.js';
-import { startCall, endCall, checkVoiceCrash } from './voice-ui.js';
+import { startCall, endCall } from './voice-ui.js';
 import { checkCloud, initModel } from './model-ui.js';
 
 export async function startApp() {
@@ -28,7 +28,6 @@ export async function startApp() {
   openSession(sessions.list()[0] || sessions.newSession());
   setup.hidden = true;
   $('#app').hidden = false;
-  checkVoiceCrash();
   storage.sync();
   setInterval(() => { if (document.visibilityState === 'visible') storage.sync(); }, 60000);
   document.addEventListener('visibilitychange', () => {

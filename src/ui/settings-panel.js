@@ -7,15 +7,13 @@ import * as grants from '../grants.js';
 import * as engine from '../engine.js';
 import * as agent from '../agent.js';
 import * as voice from '../voice.js';
-import * as tts from '../tts.js';
 import { CONTEXT_MODES } from '../context.js';
-import { h, icon, toast, pct } from './dom.js';
+import { h, icon, toast } from './dom.js';
 import { state } from './state.js';
 import { saveSettings, applyTheme } from './settings.js';
 import { modelPicker } from './setup.js';
 import { openDrawer } from './panels.js';
 import { switchModel, loadModel, setIsolation, updateComposerNote, loadSemantic, sessionModel } from './model-ui.js';
-import { voiceEngine, voiceModel, naturalVoiceId, createNaturalVoice, freeNaturalVoice } from './voice-ui.js';
 
 // ── Building blocks ────────────────────────────────────────────────────────
 const section = (title, ...fields) => h('section', { class: 'settings-sec' }, h('h3', {}, title), ...fields.filter(Boolean));
@@ -34,8 +32,7 @@ function switchRow(label, hint, checked, onchange) {
 const actions = (hint, ...buttons) => h('div', { class: 'field' }, hint ? h('span', { class: 'hint' }, hint) : '', h('div', { class: 'row' }, ...buttons));
 
 // ── Voice ──────────────────────────────────────────────────────────────────
-// Voice for calls: the natural voice (a small neural model on this device) or
-// an installed system voice, how fast, and whether talking over a reply
+// Voice for calls: an installed system voice, how fast, and whether talking over a reply
 // interrupts it (off by default: speakers make the mic hear itself).
 let voicesWatched = false;
 const TEST_LINE = 'Hi, this is how I sound on a call.';
@@ -46,10 +43,6 @@ function voiceSettingsField(S, seg) {
     synth.addEventListener?.('voiceschanged', () => { if (state.drawerPanel === 'settings') renderSettingsPanel(); });
   }
   const lang = navigator.language || 'en-US';
-  const neural = tts.neuralSupported(window);
-  const engineNow = voiceEngine();
-  const natural = engineNow === 'natural';
-  const model = voiceModel(), m = tts.TTS_MODELS[model];
   // Best-sounding voices for this language first; robotic ones are left out.
   const prim = lang.toLowerCase().split('-')[0];
   const mine = (v) => String(v.lang || '').toLowerCase().startsWith(prim) ? 1 : 0;
@@ -57,12 +50,9 @@ function voiceSettingsField(S, seg) {
     .sort((a, b) => mine(b) - mine(a) || voice.voiceQuality(b) - voice.voiceQuality(a) || a.lang.localeCompare(b.lang) || a.name.localeCompare(b.name));
   const tier = (v) => { const q = voice.voiceQuality(v); return q >= 9 ? ', premium' : q >= 6 ? ', enhanced' : ''; };
   const auto = voice.pickVoice(voices, lang, '');
-  const select = natural
-    ? h('select', { id: 'voice-select', 'aria-label': 'Voice', onchange: (e) => { S.ttsVoices = { ...(S.ttsVoices || {}), [model]: e.target.value }; saveSettings(); } },
-        Object.entries(m.voices).map(([id, name]) => h('option', { value: id, selected: id === naturalVoiceId(model) ? true : null }, name)))
-    : h('select', { id: 'voice-select', 'aria-label': 'Voice', onchange: (e) => { S.voiceURI = e.target.value; saveSettings(); } },
-        h('option', { value: '' }, auto ? `Automatic (${auto.name})` : 'Automatic'),
-        voices.map(v => h('option', { value: v.voiceURI, selected: v.voiceURI === S.voiceURI ? true : null }, `${v.name} (${v.lang}${tier(v)})`)));
+  const select = h('select', { id: 'voice-select', 'aria-label': 'Voice', onchange: (e) => { S.voiceURI = e.target.value; saveSettings(); } },
+    h('option', { value: '' }, auto ? `Automatic (${auto.name})` : 'Automatic'),
+    voices.map(v => h('option', { value: v.voiceURI, selected: v.voiceURI === S.voiceURI ? true : null }, `${v.name} (${v.lang}${tier(v)})`)));
   const status = h('span', { class: 'voice-status', 'aria-live': 'polite' });
   const testSystem = () => {
     synth.cancel();
@@ -72,50 +62,13 @@ function voiceSettingsField(S, seg) {
     u.rate = Number(S.voiceRate) || 1;
     synth.speak(u);
   };
-  // Loads the model just for this (inside the tap, so audio unlocks), says the
-  // line, and frees it again. During a call, the call's voice is used.
-  const testNatural = async (e) => {
-    const btn = e.currentTarget;
-    const call = state.call;
-    if (call && call.nv) {
-      if (call.nv.tts.state !== 'ready') { status.textContent = 'The natural voice is still loading for the call.'; return; }
-      status.textContent = 'End the call to test another voice; the call uses the voice it started with.';
-      return;
-    }
-    btn.disabled = true;
-    const nv = createNaturalVoice({
-      model,
-      onStage: (st) => { status.textContent = `${st[0].toUpperCase()}${st.slice(1)}…`; },
-      onProgress: (got, total) => { status.textContent = `Downloading ${m.label} (${m.size})${pct(got, total)}…`; },
-    });
-    try {
-      const r = await nv.loaded;
-      status.textContent = r.cached ? 'Speaking…' : `Loaded in ${(r.ms / 1000).toFixed(1)} s. Speaking…`;
-      const a = await nv.tts.synth(TEST_LINE, { speed: Number(S.voiceRate) || 1 });
-      await nv.player.play(a.samples, a.sampleRate);
-      status.textContent = `${m.label} took ${(a.ms / 1000).toFixed(1)} s for ${(a.samples.length / a.sampleRate).toFixed(1)} s of speech${a.ms > 1000 * a.samples.length / a.sampleRate ? ': slower than speech on this device, so calls may pause between sentences' : ''}.`;
-    } catch (err) {
-      status.textContent = `Couldn't play the natural voice: ${err.message}.`;
-    } finally {
-      freeNaturalVoice(nv);
-      btn.disabled = false;
-    }
-  };
   return h('div', { class: 'field' }, h('span', { class: 'label' }, 'Voice calls'),
-    neural ? seg([['natural', 'Natural'], ['system', 'System voices']], natural ? 'natural' : 'system', (v) => { S.voiceEngine = v; }) : '',
-    neural ? h('span', { class: 'hint' }, natural
-      ? `A neural voice that runs on this device. It downloads once (${m.size}) and loads only during calls.`
-      : engineNow === 'ask' ? 'Your first call asks whether to use the natural voice.' : 'Your browser\'s built-in voices.') : '',
-    natural ? seg([['kokoro', `Best (${tts.TTS_MODELS.kokoro.size})`], ['kitten', `Light (${tts.TTS_MODELS.kitten.size})`]], model, (v) => { S.voiceModel = v; }) : '',
-    natural ? h('span', { class: 'hint' }, model === 'kokoro'
-      ? 'Kokoro: the most natural. Needs a fast computer to keep up, and about 400 MB of memory during calls.'
-      : 'KittenTTS: lighter and faster, about 250 MB of memory during calls. The safer choice on phones.') : '',
     h('div', { class: 'voice-row' }, select, seg([[0.9, 'Slow'], [1, 'Normal'], [1.2, 'Fast'], [1.4, 'Faster']], Number(S.voiceRate) || 1, (v) => { S.voiceRate = v; })),
-    h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: natural ? testNatural : testSystem }, 'Test voice'), status),
+    h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: testSystem }, 'Test voice'), status),
     h('label', { class: 'toggle' },
       h('span', { class: 'toggle-text' }, h('strong', {}, 'Interrupt by talking'), h('span', { class: 'hint' }, 'Keep listening while Squiggle speaks, so you can cut in. Use headphones: on speakers it can hear itself.')),
       h('input', { type: 'checkbox', class: 'switch', checked: S.voiceBargeIn ? true : null, onchange: (e) => { S.voiceBargeIn = e.target.checked; saveSettings(); } })),
-    natural || voices.some(v => mine(v) && voice.voiceQuality(v) >= 6) ? '' : h('span', { class: 'hint' }, 'For a much more natural voice, choose Natural above, or download a "Premium" or "Enhanced" voice in your device\'s settings (iPhone: Settings → Accessibility → Spoken Content → Voices), then pick it here.'));
+    voices.some(v => mine(v) && voice.voiceQuality(v) >= 6) ? '' : h('span', { class: 'hint' }, 'For a much more natural voice, download a "Premium" or "Enhanced" voice in your device\'s settings (iPhone: Settings → Accessibility → Spoken Content → Voices), then pick it here.'));
 }
 
 // ── Model ──────────────────────────────────────────────────────────────────

@@ -12,5 +12,4 @@ export const state = {
   cloudOffered: false,      // the relay offers the cloud model (checked once at startup)
   call: null,               // { ctl, bar, nv } while a voice call is on
   reader: null,             // { id, ctl } while a reply is read aloud
-  readerVoice: null,        // { nv, timer } natural voice kept between readings
 };
