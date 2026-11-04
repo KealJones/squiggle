@@ -61,6 +61,9 @@ function normalize(r) {
     uses: Number(r.uses) || 0,
     created: r.created || r.ts || 0,
     lastUsed: r.lastUsed || 0,
+    // Waiting for the user's approval (Memory → Recipes); not matched until approved. Small-model drafts
+    // saved before approvals existed start out pending.
+    pending: r.pending === undefined ? Boolean(r.draft) : Boolean(r.pending),
   };
 }
 
@@ -113,6 +116,7 @@ export async function flush() {
 }
 
 const live = () => recipes.filter(r => !r.deleted);
+const approved = () => live().filter(r => !r.pending);
 
 // Most recently used first, then newest.
 export function list() {
@@ -353,6 +357,18 @@ export function save(recipe) {
     return r;
   }
 
+  // A new run of a task with an approved recipe: the approved steps stand (the user signed off on them);
+  // only the new phrasing and session are added.
+  if (incoming.pending && !existing.pending && !(incoming.id && incoming.id === existing.id)) {
+    const p = incoming.when && !samePhrase(incoming.when, existing.when) ? [...incoming.examples, incoming.when] : incoming.examples;
+    for (const e of p) if (e && !existing.examples.some(x => samePhrase(x, e)) && !samePhrase(e, existing.when)) existing.examples.push(e);
+    existing.examples = existing.examples.slice(-MAX_EXAMPLES);
+    existing.sessions = uniq([...existing.sessions, ...incoming.sessions]).slice(-20);
+    existing.mts = now;
+    schedule();
+    return existing;
+  }
+
   if (incoming.id && incoming.id === existing.id) {
     // An edit by id: take the given fields as they are.
     Object.assign(existing, incoming, { id: existing.id, created: existing.created, uses: Math.max(existing.uses, incoming.uses || 0), deleted: false, mts: now });
@@ -402,6 +418,16 @@ export function remove(id) {
   Object.assign(r, { deleted: true, mts: Date.now() });
   schedule();
   return true;
+}
+
+/** Approves a pending recipe: from now on it's matched to new requests. */
+export function approve(id) {
+  const r = live().find(x => x.id === id);
+  if (!r) return null;
+  r.pending = false;
+  r.mts = Date.now();
+  schedule();
+  return r;
 }
 
 export function pin(id, on = true) {
@@ -552,14 +578,14 @@ function finish(scored, k) {
 
 // Keyword-only match (sync). Candidates are ordered by score, then BM25.
 export function matchSync(query, k = 3) {
-  return finish(rank(query, live()), k);
+  return finish(rank(query, approved()), k);
 }
 
 // Recipes that fit a request, best first: keyword coverage (above), plus
 // semantic similarity when setEmbedder() was given one. Only matches scoring
 // >= MIN_SCORE come back. Async because embedding is.
 export async function match(query, k = 3) {
-  const pool = live();
+  const pool = approved();
   const scored = rank(query, pool);
   if (embedder && pool.length && String(query || '').trim()) {
     try {

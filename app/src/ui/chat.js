@@ -238,7 +238,9 @@ function approvalCard(req, decide) {
 export function toolTrail(tools) {
   return h('div', { class: 'tool-trail' }, tools.map(t => h('div', { class: 'tool' + (t.ok === false ? ' fail' : ''), title: t.args ? `${t.name}(${JSON.stringify(t.args)})` : null },
     t.running ? squiggleWait() : h('span', { 'aria-hidden': 'true' }, t.ok === false ? '✕' : '✓'),
-    h('span', {}, t.label || t.name, t.error ? h('span', { class: 'tool-error' }, t.error) : null))));
+    h('span', {}, t.label || t.name, t.error ? h('span', { class: 'tool-error' }, t.error) : null,
+      // Saved with Settings → Debug → "Save tool results".
+      t.result ? h('details', { class: 'tool-result' }, h('summary', {}, 'Result'), h('pre', {}, t.result)) : null))));
 }
 
 export function rerender() {

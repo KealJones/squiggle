@@ -261,3 +261,25 @@ test('prompt dialects: v2 is the frozen fenced text; v3 marks harness text in th
   assert.notEqual(t.DIALECT.v3.memoryTitle, t.DIALECT.v2.memoryTitle);
   assert.ok(t.DIALECT.v2.frozen && !t.DIALECT.v3.frozen);
 });
+
+test('toolCallText: a tool call typed out is not a step result', () => {
+  assert.ok(tasks.toolCallText('{"name":"plan","arguments":{"goal":"x","steps":["a"]}}\n</tool_call>'));
+  assert.ok(tasks.toolCallText('```json\n{"name": "web_search", "arguments": {"query": "x"}}'));
+  assert.ok(tasks.toolCallText('<tool_call>{"name":"done"}</tool_call>'));
+  assert.ok(!tasks.toolCallText('Emma Stone\'s latest movie is Bugonia (2025).'));
+  assert.ok(!tasks.toolCallText('The config has {"name": "squiggle"} in it.'));
+});
+
+test('worked: recipes are only learned from tasks that got somewhere', () => {
+  const ok = { steps: [{ status: 'done', result: 'Bugonia (2025), per Wikipedia.' }], log: [{ name: 'web_search', ok: true }] };
+  assert.equal(tasks.worked(ok), true);
+  assert.equal(tasks.worked({ ...ok, log: [{ name: 'find', ok: true }, { name: 'plan', ok: true }] }), true, 'find counts as a lookup');
+  assert.equal(tasks.worked({ ...ok, log: [{ name: 'fetch_url', ok: false }] }), false, 'nothing worked');
+  assert.equal(tasks.worked({ ...ok, log: [{ name: 'plan', ok: true }, { name: 'done', ok: true }] }), false, 'only harness calls');
+  for (const result of ['(the step ran out of room before finishing)', '(step closed after 9 tool calls) hm', '{"name":"plan","arguments":{}}</tool_call>',
+    'The confirmation of "Bougonia" was not successful due to the lack of specific information.', 'The search found no useful results.']) {
+    assert.equal(tasks.worked({ steps: [{ status: 'done', result }], log: ok.log }), false, result);
+  }
+  assert.equal(tasks.worked({ steps: [{ status: 'done', result: 'x' }, { status: 'blocked' }], log: ok.log }), false);
+  assert.equal(tasks.worked(null), false);
+});

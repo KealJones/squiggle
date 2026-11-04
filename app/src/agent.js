@@ -9,13 +9,13 @@ import * as memory from './memory.js';
 import * as storage from './storage.js';
 import * as recipes from './recipes.js';
 import * as tasks from './tasks.js';
-import { find as findAll, renderFind, PAST_CHAT } from './find.js';
+import { find as findAll, renderFind, PAST_CHAT, PUSHBACK, checkQuery, rerankWeb, urlLedger } from './find.js';
 import { buildEntities, resolve as resolveRefs, renderRefs } from './refs.js';
 import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes } from './context.js';
 export { scrubFakeToolNotes };
 import { toolSpecs, listTools, runTool } from './tools.js';
 import { UNTRUSTED_RULES, wrapUntrusted } from './untrusted.js';
-import { embed } from './embed.js';
+import { embed, embedReady } from './embed.js';
 import { bm25, tokenize } from './search.js';
 import { estTokens, truncate } from './util.js';
 import { parseJsonl } from './merge.js';
@@ -29,9 +29,10 @@ export const settings = {
   smallThreads: false,      // small models (wllama): use several CPU cores; needs an isolated page (sw.js)
   contextMode: 'smart',     // 'smart' (default) | 'compact' | 'full'
   semantic: true,           // MiniLM embeddings for retrieval (off on phones; BM25 alone works)
-  recallChats: true,        // smart mode may recall messages from other chats too
+  recallChats: false,       // smart mode may recall messages from other chats too (off: old answers, right or wrong, leaked into unrelated chats)
   learn: true,              // extract memory facts after turns
   tools: null,              // Set of enabled tool names, or null for all
+  debugTools: false,        // save each tool's full result on the reply (Settings → Debug), synced with the chat
   smallMode: {},            // model id → true/false: small-model mode for a model that can switch (smallModeSwitchable); unset = the model's default (smallMode)
 };
 
@@ -290,6 +291,25 @@ class Turn {
     this.nextCheckIn = tasks.CHECK_IN_EVERY;
     this.attNote = '';       // paths of files sent with this message
     this.checkpoints = 0;    // checkpoints this turn (AI-managed context)
+    this.urls = null;        // URLs the model was given (urlLedger), for small models' fetch_url
+  }
+
+  // Small models only open URLs they were given: by the user, a search result or a page they read
+  // (they made up bugonia.com/confirmation and example.com/movies/…). Seeded from this chat's
+  // user messages and saved tool output, then grown by each search and page this turn.
+  allowUrl(url) {
+    if (!this.urls) {
+      this.urls = urlLedger();
+      for (const m of this.session.messages || []) if (m.role === 'user' && !m.deleted) this.urls.add(m.content);
+      for (const o of this.session.observations || []) this.urls.add(o.text);
+      this.urls.add(this.shown);
+    }
+    return this.urls.allows(url);
+  }
+  noteUrls(res) {
+    if (!this.urls) return;
+    for (const x of (res && res.items) || []) this.urls.add(x.url);
+    if (res && res.observation) this.urls.add(res.observation.text);
   }
 
   get aborted() { return Boolean(this.signal && this.signal.aborted); }
@@ -374,7 +394,7 @@ class Turn {
       // Smart mode recalls a few earlier messages (this chat's and, with the setting
       // on, other chats') and, for small models, memory facts into a labelled block
       // after the request (recall.js); only on a real question and above a bar.
-      others: settings.recallChats === false ? [] : sessions.list(),
+      others: settings.recallChats === true ? sessions.list() : [],
       small: lite(),
       recall: (q, k) => memory.recall(q, k), factText: memory.factText, factsTitle: dialect().memoryTitle,
       actions: !lite(),   // "Tool calls you made" read to small models as things the user said
@@ -413,15 +433,29 @@ class Turn {
     const reserve = Math.min(MAX_OUTPUT, 700);
     if (managed()) pending += `\n\n${tasks.budgetLine(used, settings.contextSize, reserve, dialect())}`;
     this.setWindow(windowOf(ctx.report, { system: plain() ? 0 : estTokens(ctx.system), tools: toolTokens, message: estTokens(this.shown) + estTokens(att.text) }), used);
-    let chatCalls = 0, full = false;
+    let chatCalls = 0, full = false, askedForAnswer = false;
     this.seenCalls = new Map();
+    // "No, it's X" / "can you confirm that?": small models just agree. Search first and hand them the results.
+    const checked = await this.checkClaim();
+    if (checked) { pending += `\n\n${dialect().note(checked)}`; used += estTokens(checked); this.grow(used); }
     const maxChatCalls = lite() ? 2 * LITE_CHAT_NUDGE : Infinity;
     for (;;) {
       const r = await this.respond(pending);
       if (r.text) this.prefix += r.text + (r.toolCalls.length ? '\n\n' : '');
       used += estTokens((r.text || '') + (r.thinking || '') + JSON.stringify(r.toolCalls || [])) - (r.saved || 0);
       this.grow(used);
-      if (!r.toolCalls.length || this.aborted) return null;
+      if (this.aborted) return null;
+      if (!r.toolCalls.length) {
+        // Looked things up, then said nothing (Qwen3 0.6B, 2026-11-04): ask once for the answer. An empty
+        // reply also made the next turn redo the question, since it looked unanswered.
+        if (!this.prefix.trim() && chatCalls && !askedForAnswer) {
+          askedForAnswer = true;
+          pending = dialect().note('You didn\'t write a reply. Answer the user now from the results above, in plain words.');
+          continue;
+        }
+        if (!this.prefix.trim() && chatCalls) this.prefix = 'I looked this up but couldn\'t put an answer together. Try asking again, or ask me to make a plan for it.';
+        return null;
+      }
       // A plan switches to step mode (anything else in the same reply waits for its step).
       const planCall = r.toolCalls.find(c => c.function && c.function.name === 'plan');
       if (planCall) return this.startPlan(planCall.function.arguments);
@@ -589,6 +623,18 @@ class Turn {
   // window's tool definitions.
   // The same tool with the same arguments twice in one phase: small models do this instead of reading the
   // result they already have (Qwen3.5 ran web_search five times for one question). Not run again.
+  // The same call in an earlier step of this task (a 0.6B model fetched the same made-up URL in two
+  // steps): not run again; the earlier result comes back instead, since a new step doesn't show it.
+  ranInTask(task, step, call) {
+    const fn = (call && call.function) || {};
+    if (!task || ['plan', 'done', 'checkpoint', 'need', 'tool_info'].includes(fn.name)) return null;
+    const args = JSON.stringify(fn.arguments || {});
+    const prev = [...(task.log || [])].reverse().find(l => l.step !== (step && step.id) && l.name === fn.name && JSON.stringify(l.args || {}) === args);
+    if (!prev) return null;
+    this.toolEvent({ name: fn.name, label: `${fn.name} already ran in an earlier step (not run again)`, ok: false });
+    return { error: `You already called ${fn.name} with exactly these arguments in an earlier step${prev.ok === false ? ', and it failed' : ''}. Its result: ${prev.text || prev.label}. Use that, change the arguments, or call done.` };
+  }
+
   repeated(call) {
     const fn = (call && call.function) || {};
     if (['plan', 'done', 'checkpoint', 'need'].includes(fn.name)) return null;
@@ -654,14 +700,16 @@ class Turn {
         this.grow(used);
         const looped = LOOPED.test(r.text || '');
         const text = (r.text || '').replace(LOOPED, '').trim();
-        if (text) { said = text; this.addThinking(`${label}\n${text}`); }
+        const asText = tasks.toolCallText(text);   // a tool call typed out, not made: never a result
+        if (text && !asText) { said = text; this.addThinking(`${label}\n${text}`); }
         if (this.aborted) return 'stop';
         if (!r.toolCalls.length) {
           // Answered without calling done: what it said is the step's result.
-          if (text && !looped) { tasks.finishStep(task, text); return 'next'; }
-          // Only thinking, nothing at all, or a loop: nudge it, then ask the person.
+          if (text && !looped && !asText) { tasks.finishStep(task, text); return 'next'; }
+          // Only thinking, nothing at all, a loop or a typed-out call: nudge it, then ask the person.
           if (++blank <= 2) {
-            pending = d.note(looped ? 'You were repeating yourself. Say in one or two lines what you found, then call done, or call a tool.' : 'Finish your thought, then call a tool, or call done with what you found.');
+            pending = d.note(asText ? 'You wrote a tool call as text, so it did not run. Call the tool itself, or say what you found and call done.'
+              : looped ? 'You were repeating yourself. Say in one or two lines what you found, then call done, or call a tool.' : 'Finish your thought, then call a tool, or call done with what you found.');
             continue;
           }
           return this.ask(`I got stuck on step ${n} ("${truncate(step.text, 80)}"). How should I go on?`, task);
@@ -673,7 +721,7 @@ class Turn {
           const name = call.function && call.function.name;
           const args = (call.function && call.function.arguments) || {};
           if (name === 'done') {
-            tasks.finishStep(task, args.result || said);
+            tasks.finishStep(task, (args.result && !tasks.toolCallText(args.result) ? args.result : '') || said);
             this.toolEvent({ name: 'done', label: `done: ${truncate(step.text, 60)}`, ok: true });
             ended = 'next';
             break;
@@ -724,7 +772,7 @@ class Turn {
               : 'Not run: your context for this step is almost full. Call done now with what you found (the next step starts fresh).' }));
             continue;
           }
-          const again = this.repeated(call);
+          const again = this.repeated(call) || this.ranInTask(task, step, call);
           if (again) { results.push(toolResult(call, again)); continue; }
           const out = await this.exec(call, { room: Math.floor(room() / r.toolCalls.length), task, step });
           if (out.ask) return 'ask';
@@ -783,10 +831,12 @@ class Turn {
 
   // Every call is kept on the reply with its arguments (long values trimmed) and,
   // when it failed, the error the model got, so failures can be studied later.
-  toolEvent(t) {
+  // With Settings → Debug → "Save tool results", what the tool returned is kept too.
+  toolEvent(t, result) {
     const rec = { name: t.name, label: t.label, ok: t.ok };
     if (t.args && typeof t.args === 'object' && Object.keys(t.args).length) rec.args = tasks.trimArgs(t.args);
     if (t.ok === false && t.error) rec.error = truncate(String(t.error), 600);
+    if (settings.debugTools && result !== undefined) rec.result = debugText(result);
     this.reply.tools.push(rec);
     this.ui.onTool && this.ui.onTool({ ...t, running: false });
   }
@@ -811,7 +861,7 @@ class Turn {
         this.toolEvent({ name, label: `need restated the request (not asked)`, ok: false });
         return { response: { error: 'The user just told you that; it is not missing. Use it: answer, or save it with remember if it is a lasting fact.' } };
       }
-      const { text, tools, empty, answers } = await this.find(query, task);
+      const { text, tools, empty, answers, web } = await this.find(query, task, { web: name === 'find' });
       if (task && tools.length) task.tools = [...new Set([...(task.tools || []), ...tools])];
       if (task) tasks.logCall(task, step, { name, args, ok: true, label: `${name} "${truncate(query, 60)}"`, text });
       if (name === 'need' && !answers) {
@@ -821,13 +871,15 @@ class Turn {
         this.ask(/\?\s*$/.test(q) ? q : `I need to know: ${q}`, task);
         return { ask: true };
       }
-      this.toolEvent({ name, label: `${name === 'need' ? 'looked for what was missing' : 'searched'}: "${truncate(query, 60)}"${empty ? ' (nothing)' : ''}`, ok: true });
+      this.toolEvent({ name, label: `${name === 'need' ? 'looked for what was missing' : 'searched'}: "${truncate(query, 60)}"${web ? ' (nothing saved; searched the web)' : empty ? ' (nothing)' : ''}`, ok: true }, text);
       return { response: { found: text, ...(tools.length ? { tools } : {}) } };
     }
     if (name === 'tool_info') return { response: this.toolInfo(args, task, step) };
     if (name === 'done') return { response: { error: 'There is no step to finish yet. Call plan first, or just answer.' } };
-    const res = await runTool(call, { session: this.session, threadId: this.threadId, room, pageCards: lite() && !plain(), approve: (req) => askApproval(req, this.ui, this.signal) });
-    this.toolEvent({ name: res.name, label: res.label, ok: res.ok, args: res.args, error: res.model && res.model.error });
+    const res = await runTool(call, { session: this.session, threadId: this.threadId, room, pageCards: lite() && !plain(), approve: (req) => askApproval(req, this.ui, this.signal),
+      ...(lite() ? { allowUrl: (u) => this.allowUrl(u) } : {}) });
+    this.noteUrls(res);
+    this.toolEvent({ name: res.name, label: res.label, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
     if (res.observation) sessions.addObservation(this.session, { ...res.observation, thread: this.threadId });
     let response = res.model && typeof res.model === 'object' ? res.model : { value: res.model };
     const json = JSON.stringify(response);
@@ -854,8 +906,10 @@ class Turn {
     return response;
   }
 
-  // `find`: tools, recipes, memory, past chats and this task, in one search.
-  async find(query, task) {
+  // `find`: tools, recipes, memory, past chats and this task, in one search. With `web`, a find that
+  // turns up nothing of the user's own falls through to web_search (docs/harness.md, "find falls
+  // through to the web"): small models reach for find to look up facts, and then kept calling it.
+  async find(query, task, { web = true } = {}) {
     const r = await findAll(query, {
       tools: toolSpecs(settings.tools),
       recipes,
@@ -881,8 +935,66 @@ class Turn {
       const block = wrapUntrusted('earlier tool output', outside.map(t => t.text.replace(STRIP_UNTRUSTED, '')).join('\n\n'));
       text = (text === renderFind({}) ? '' : text + '\n\n') + 'Earlier tool output in this task:\n' + block;
     }
+    // Nothing of theirs (only tools, or tools for the web): search the web with the same words.
+    const own = ['recipes', 'facts', 'chats', 'task'].some(k => r[k] && r[k].length);
+    const onlyWebTools = r.tools.every(t => t.name === 'web_search' || t.name === 'fetch_url');
+    if (web && !own && onlyWebTools && !PAST_CHAT.test(String(query).toLowerCase()) && this.webOn()) {
+      const w = await this.webFallback(query);
+      if (w) return { text: w, tools: [], empty: false, answers, web: true };
+    }
     return { text, tools: r.tools.map(t => t.name), empty, answers };
   }
+
+  // The user disputed the last answer or asked to confirm it: one web search on the question and the
+  // claim, given to the model with the request (small models only; big ones look things up themselves).
+  async checkClaim() {
+    if (!lite() || plain() || !this.webOn()) return '';
+    const said = String(this.shown || '').replace(/[‘’]/g, "'");
+    if (!PUSHBACK.test(said)) return '';
+    const line = sessions.lineMessages(this.session, this.threadId).filter(m => m.id !== (this.userMsg && this.userMsg.id) && m.content);
+    const answer = [...line].reverse().find(m => m.role === 'assistant');
+    if (!answer) return '';
+    const question = [...line].reverse().find(m => m.role === 'user' && m.ts < answer.ts && !PUSHBACK.test(String(m.content).replace(/[‘’]/g, "'")));
+    const query = checkQuery(said, { question: question && question.content, answer: answer.content });
+    if (!query) return '';
+    const found = await this.webFallback(query);
+    return `The user is questioning or checking an earlier answer, so the web was searched first. Answer only from these results; if they don't settle it, say so plainly and don't agree just because the user said it.\n${found.replace(/^Nothing in your memory, recipes or past chats, so this /, 'This ')}`;
+  }
+
+  webOn() {
+    return !plain() && toolSpecs(settings.tools).some(t => t.name === 'web_search');
+  }
+
+  // find's fall-through: one web_search, reranked against the query (by meaning when the search model is
+  // loaded, else by words), best few kept. A later web_search with the same query counts as a repeat.
+  async webFallback(query) {
+    const call = { function: { name: 'web_search', arguments: { query } } };
+    const res = await runTool(call, { session: this.session, threadId: this.threadId });
+    this.seenCalls && this.seenCalls.set(`web_search:${JSON.stringify({ query })}`, 1);
+    this.noteUrls(res);
+    this.toolEvent({ name: 'web_search', label: `${res.label} (for find)`, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
+    if (!res.ok) return `Nothing in your memory, recipes or past chats, and the web search failed: ${res.model.error}`;
+    if (res.observation) sessions.addObservation(this.session, { ...res.observation, thread: this.threadId });
+    const items = res.items || [];
+    let vecs = null;
+    if (embedReady() && items.length) vecs = await embed([query, ...items.map(x => `${x.title}. ${x.snippet}`)]).catch(() => null);
+    const top = rerankWeb(query, items, { vecs, k: lite() ? 3 : 5 });
+    const a = res.answer;
+    const body = [
+      a && a.text ? `Summary (${a.source}${a.url ? ', ' + a.url : ''}): ${truncate(a.text, 400)}` : '',
+      ...top.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${truncate(x.snippet || '', lite() ? 220 : 400)}`),
+    ].filter(Boolean).join('\n');
+    if (!body) return `Nothing in your memory, recipes or past chats, and the web had no results for "${truncate(query, 80)}". Try web_search with other words, or need to ask the user.`;
+    return `Nothing in your memory, recipes or past chats, so this searched the web for "${truncate(res.args.query || query, 80)}":\n${wrapUntrusted('web search', body)}\nTo read one in full, call fetch_url with its link.`;
+  }
+}
+
+// A tool result for the debug record: its text without the untrusted-content wrappers, capped so a long
+// page doesn't bloat the synced chat file.
+const DEBUG_MAX = 12000;
+function debugText(result) {
+  const s = (typeof result === 'string' ? result : JSON.stringify(result, null, 1)).replace(STRIP_UNTRUSTED, '');
+  return s.length > DEBUG_MAX ? `${s.slice(0, DEBUG_MAX)}\n… (${s.length - DEBUG_MAX} more characters not saved)` : s;
 }
 
 const LOOPED = /\n*_\(stopped: the model was repeating itself\)_/;
@@ -1018,11 +1130,13 @@ async function learnFacts(session, threadId) {
 // (docs/harness.md, "Recipes"). Built from the task deterministically; a big
 // model then generalises the wording. The small model can't do that well, so
 // its recipes are saved as drafts and refined by the next big-model session.
+// Every new recipe waits for the user's approval (Memory → Recipes) before it's
+// used, and one is only saved when the task got somewhere (tasks.worked).
 export async function learnRecipe(session, task) {
-  if (!task || task.status !== 'done') return null;
-  const draft = recipes.fromTask(task, task.log, { request: task.request, sessionId: session.id });
+  if (!task || task.status !== 'done' || !tasks.worked(task)) return null;
+  const draft = recipes.fromTask(task, (task.log || []).filter(l => l.ok !== false), { request: task.request, sessionId: session.id });
   if (!draft.steps.length) return null;
-  const recipe = lite() ? { ...draft, draft: true } : await refineRecipe(draft, task.request);
+  const recipe = { ...(lite() ? { ...draft, draft: true } : await refineRecipe(draft, task.request)), pending: true };
   const saved = recipes.save(recipe);
   if (saved && !task.recipe) { task.recipe = saved.id; tasks.touch(task); sessions.saveTask(session, task); }
   return saved;

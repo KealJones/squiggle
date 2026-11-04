@@ -51,6 +51,13 @@ reply stopped for repeating itself gets two nudges, then the user is asked
 "I got stuck on step N … How should I go on?". Re-sending the current plan, or
 revising it more than 3 times in a task, counts the same way (3 strikes). If a
 step's own context fills, the model is warned once, then the step closes.
+A call made with the same arguments in an earlier step of the task isn't run
+again: the model gets the earlier result back (a new step doesn't show it).
+A tool call typed out as text is never a step's result.
+
+In the chat phase, a reply that used tools but wrote nothing gets one nudge to
+answer from the results; if it still says nothing, the reply says it couldn't
+put an answer together (an empty reply made the next turn redo the question).
 
 ## Tools the harness adds
 
@@ -62,12 +69,43 @@ tools; the small model calls them with fenced blocks (see "Small-model format").
 | `plan` | `goal` (string), `steps` (string[]) | Start or replace the plan for this turn. Steps are short imperative lines ("Find where the login form is defined"). Calling it again mid-task revises the plan; finished steps keep their results. |
 | `done` | `result` (string) | Finish the current step. `result` is the one-to-three-line finding the rest of the task needs (paths, numbers, names, decisions), not a narration. |
 | `need` | `what` (string) | Say what is missing. The harness tries `find` with it first; if memory, a recipe, or another chat (sharing at least two words with the question) answers it, that comes back as the result. Otherwise it asks the user: the question is the reply, and the user's next message, in any form, is the answer (shown in later step prompts under "The user answered your questions"). Tools, this task's own results and this chat don't count as answers: the model already had those. |
-| `find` | `query` (string) | One search across everything Squiggle knows: tools (name + how to call), recipes, memory facts, past chats (all sessions), and this task's step results and saved tool output. Returns the top few of each kind that clear a relevance bar, labelled by kind. |
+| `find` | `query` (string) | One search across everything Squiggle knows: tools (name + how to call), recipes, memory facts, past chats (all sessions), and this task's step results and saved tool output. Returns the top few of each kind that clear a relevance bar, labelled by kind. When none of the user's own things match (see "find falls through to the web"), it runs `web_search` instead. |
 
 `find_tools` (current small-model engine) becomes the tools part of `find`.
 `note` stays for chats without a plan but is no longer advertised in step mode
 (step results replace it). `recall` and `search_history` stay for the big models;
 `find` covers both for the small one.
+
+### find falls through to the web
+
+Small models reach for `find` to look up facts ("Emma Stone's latest movie"), and an empty
+`find` used to say "Try different words", so a 0.6B model called it again and again in a plan
+and never searched the web (2026-11-04, Qwen3 0.6B on WebLLM). Now, when `find` turns up no
+recipe, memory fact, past chat or task item (only tools, or only the web tools), and the query
+isn't about a past chat, the harness runs `web_search` with the same words and `find` returns
+those results, reranked against the query (MiniLM cosine when "Search by meaning" has loaded
+it, else BM25 over title + snippet, plus a little for the engine's own order) and cut to the
+best 3 (small models) or 5. The search shows in the tool list as its own call, and a
+`web_search` with the same query afterwards counts as a repeat. `need` never falls through
+(it asks the user). When web_search is off, the empty text says to use web_search or need.
+
+### Checking claims, URLs and step results (small models)
+
+- **Pushback**: when the user disputes the last answer or asks to confirm it ("no, it's X",
+  "can you confirm that?", "what's your source?"; `find.js PUSHBACK`), the harness searches
+  the web for the earlier question plus the user's claim (or the disputed answer) before the
+  model replies, and adds the results to the request with a line saying to answer only from
+  them. The 0.6B agreed with "the correct answer is Bugonia" and "confirmed" it twice
+  without a single lookup.
+- **URLs**: `fetch_url` only opens a URL the model was given (in the user's messages, a
+  search result, saved tool output or a page it read), or another page on one of those
+  sites. Made-up URLs (bugonia.com/confirmation, example.com/movies/…) get an error that
+  says to web_search first. Any HTTP 4xx/5xx is a failed call, not a page.
+- **Step results**: a step that ends with a tool call typed out as text
+  (`{"name": …, "arguments": …}`, `</tool_call>`) is nudged to make the call; that text is
+  never a step's result (`tasks.toolCallText`).
+- **"Latest" searches** get the current year added when the query names none
+  (`web.js withYear`); the relay also sends them to Tavily's past-year search first.
 
 ## Task state
 
@@ -150,15 +188,22 @@ id like facts):
   uses, created, lastUsed, sessions: [sessionId], pinned? }
 ```
 
-- **Written** when a task finishes `done` (not stopped, not failed): a background
+- **Written** when a task finishes `done` and got somewhere (`tasks.worked`: every step
+  has a real result, not "ran out of room", a typed-out tool call or "nothing found",
+  and at least one tool call worked; failed calls are left out of its specifics): a background
   job asks the model to generalise the finished plan + step results + tool log
   into a recipe. The small model can't do that well, so when the active model is
   lite the harness builds it deterministically from the tool log (steps = the
   step texts; specifics = tool arguments that were paths, repos, URLs, commands)
   and lets the next big-model session refine it (saved with `draft: true`; a
   big model refines one draft per turn, in the background).
+- **Approved**: every new recipe is saved `pending: true` (a "possible recipe") and isn't
+  matched until the user approves it in Memory → Recipes (Keal, 2026-11-04: a failed
+  "confirm Bugonia" task taught find + example.com). Small-model drafts saved before this
+  load as pending.
 - **Merged**: if a new recipe's `when` matches an existing one closely, update that
-  one (append example phrasing, refresh steps if they changed) instead of adding.
+  one (append example phrasing, refresh steps if they changed) instead of adding. An
+  approved recipe only gains the new phrasing; its steps stay as approved.
 - **Used**: the model looks recipes up with `find` (results include "Recipes from
   similar tasks"); nothing is injected into the prompt (Keal, 2026-10-29: an injected
   recipe for "What is the date?" took over a small model's turn). The best recipe the

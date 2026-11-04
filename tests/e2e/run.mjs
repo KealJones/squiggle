@@ -330,7 +330,7 @@ await check('web_search goes through the relay and comes back labeled as outside
   assert.match(r.model.results, /https:\/\/example\.com\/docs\/squiggle\?a=1&b=2/);
   assert.match(r.model.results, /Summary of "Squiggle" \(Wikipedia, https:\/\/en\.wikipedia\.org\/wiki\/Squiggle\):\nSquiggle is a test topic\./);
   assert.ok(!/Buy Widgets/.test(r.model.results), 'ads skipped');
-  assert.match(r.label, /searched the web for "squiggle relay" \(2\)/);
+  assert.match(r.label, /searched the web for "squiggle relay" \(2 via duckduckgo\)/);
   assert.equal(r.obs.source, 'web search');
 });
 
@@ -956,6 +956,19 @@ await check('step mode through the UI: plan, live checklist, find, done, final r
   });
   assert.ok(recipe, 'a recipe was saved');
   assert.deepEqual(recipe.steps, ['Find what is listening on 8080', 'Stop it']);
+  // It's a possible recipe: not matched until approved in Memory → Recipes.
+  assert.equal(recipe.pending, true);
+  assert.equal(await D.page.evaluate(async () => {
+    const [{ find, renderFind }, recipes] = await Promise.all([import('/src/find.js'), import('/src/recipes.js')]);
+    return /Recipes from similar tasks/.test(renderFind(await find('kill whatever is listening on port 8080', { recipes })));
+  }), false, 'a pending recipe is not used');
+  await D.page.evaluate(() => document.querySelector('.side-nav [data-panel="memory"]').click());
+  const pendingRow = D.page.locator('.recipe-list li.pending', { hasText: 'Needs your OK' }).filter({ hasText: 'Find what is listening on 8080' });
+  await pendingRow.first().waitFor();
+  if (shotsDir) await pendingRow.first().screenshot({ path: `${shotsDir}/recipe-pending.png` });
+  await pendingRow.first().locator('button:has-text("Approve")').click();
+  await D.page.waitForFunction(async (id) => !(await import('/src/recipes.js')).get(id).pending, recipe.id);
+  await D.page.click('#close-drawer');
   await D.page.fill('#input', 'kill whatever is listening on port 8080');
   await D.page.press('#input', 'Enter');
   await D.page.waitForFunction(() => /Plain answer to: kill whatever/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 15000 });

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { find, renderFind, rankTools, snippet, NOTHING, BARS } from '../app/src/find.js';
+import { find, renderFind, rankTools, snippet, NOTHING, BARS, rerankWeb, urlLedger, urlsIn, PUSHBACK, checkQuery } from '../app/src/find.js';
 import { findTools } from '../app/src/engine-wllama.js';
 import * as R from '../app/src/recipes.js';
 
@@ -276,7 +276,8 @@ test('renderFind labels task items and says when nothing matched', async () => {
   assert.equal(out, 'This task:\n- (earlier step) Found the login form in app/src/main.js\n- (earlier tool output) listing\n- (note) x');
   assert.equal(renderFind({ tools: [], recipes: [], facts: [], chats: [], task: [] }), NOTHING);
   assert.equal(renderFind(undefined), NOTHING);
-  assert.match(NOTHING, /^Nothing found\./);
+  assert.match(NOTHING, /use web_search/);
+  assert.doesNotMatch(NOTHING, /different words/, 'small models looped on "try different words"');
 });
 
 test('renderFind handles a chat without a date or title and trims long lines', () => {
@@ -285,4 +286,53 @@ test('renderFind handles a chat without a date or title and trims long lines', (
   assert.equal(lines[1].startsWith('- (earlier chat) '), true);
   assert.ok(lines[1].length < 230);
   assert.equal(lines[2], '- (A) y');
+});
+
+// ── find's fall-through to the web ───────────────────────────────────────
+
+const WEB = [
+  { title: 'Poor Things (film) - Wikipedia', url: 'https://en.wikipedia.org/wiki/Poor_Things_(film)', snippet: 'Poor Things is a 2023 film directed by Yorgos Lanthimos.' },
+  { title: 'Emma Stone: Movies, TV, and Bio', url: 'https://www.primevideo.com/person/Emma-Stone', snippet: 'The Favourite, La La Land, Birdman.' },
+  { title: 'Bugonia (2025) - Emma Stone stars in the latest Lanthimos movie', url: 'https://example.org/bugonia', snippet: "Emma Stone's latest movie Bugonia opened in 2025." },
+];
+
+test('rerankWeb: by words without embeddings, keeps the best k, ties keep the engine\'s order', () => {
+  const top = rerankWeb('Emma Stone latest movie', WEB, { k: 2 });
+  assert.equal(top.length, 2);
+  assert.equal(top[0].url, 'https://example.org/bugonia', 'the result that fits best comes first');
+  assert.ok(top[0].fit > 0 && top[0].fit <= 1);
+  assert.deepEqual(rerankWeb('zzz', WEB, { k: 3 }).map(x => x.url), WEB.map(x => x.url), 'nothing fits: engine order');
+  assert.deepEqual(rerankWeb('x', []), []);
+});
+
+test('rerankWeb: by meaning when vectors are given (query first)', () => {
+  const vecs = [[1, 0], [0, 1], [1, 0.1], [0.2, 1]];
+  assert.equal(rerankWeb('q', WEB, { vecs, k: 1 })[0].url, WEB[1].url);
+  // Wrong number of vectors: falls back to words.
+  assert.equal(rerankWeb('Emma Stone latest movie', WEB, { vecs: [[1, 0]], k: 1 })[0].url, 'https://example.org/bugonia');
+});
+
+test('urlLedger: only URLs the model was given, or other pages on those sites', () => {
+  const l = urlLedger();
+  assert.equal(l.allows('https://www.bugonia.com/confirmation'), false);
+  l.add('see https://en.wikipedia.org/wiki/Poor_Things_(film), and <https://www.primevideo.com/person/Emma-Stone>.');
+  assert.deepEqual(urlsIn('a https://x.org/a. b'), ['https://x.org/a']);
+  assert.equal(l.allows('https://en.wikipedia.org/wiki/Poor_Things_(film)/'), true);
+  assert.equal(l.allows('https://wikipedia.org/wiki/Poor_Things_(film)'), false, 'other host');
+  assert.equal(l.allows('https://en.wikipedia.org/wiki/Bugonia'), true, 'same site (a made-up path just 404s)');
+  assert.equal(l.allows('https://example.com/movies/bugonia/2025'), false);
+  assert.equal(l.allows('not a url'), false);
+});
+
+test('pushback: disputes and "confirm that?" are caught; the check query is the question plus the claim', () => {
+  const q = 'What is Emma stones latest movie?';
+  const a = 'Emma Stones latest movie is *Poor Things* (2023), directed by Yorgos Lanthimos.';
+  const norm = (t) => t.replace(/[‘’]/g, "'");
+  for (const t of ['No it’s not. The correct answer is Bugonia in 2025', 'Can you confirm that?', 'Can you tell me the page url that confirmed that?', 'are you sure?', "that's wrong", 'what is your source']) {
+    assert.ok(PUSHBACK.test(norm(t)), t);
+  }
+  for (const t of ['thanks!', 'what about her next movie', 'make it shorter', 'no worries']) assert.ok(!PUSHBACK.test(t), t);
+  assert.equal(checkQuery('No it’s not. The correct answer is Bugonia in 2025', { question: q, answer: a }), 'Emma stones latest movie Bugonia 2025');
+  assert.equal(checkQuery('Can you confirm that?', { question: q, answer: a }), 'Emma stones latest movie Poor Things', 'no claim: the disputed answer');
+  assert.equal(checkQuery('are you sure?', {}), '');
 });

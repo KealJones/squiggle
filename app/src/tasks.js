@@ -108,6 +108,13 @@ export function startStep(task, now = Date.now()) {
   return s;
 }
 
+// A tool call written out as text instead of called ({"name":"plan","arguments":…}</tool_call>): a
+// 0.6B model ended a step this way and the call became the step's "result" (2026-11-04).
+export const toolCallText = (text) => {
+  const t = String(text || '').trim();
+  return /<\/?tool_call>|<\|?tool_call\|?>/.test(t) || /^[`\s]*(json)?\s*\{\s*"name"\s*:\s*"[\w-]+"\s*,\s*"arguments"\s*:/.test(t);
+};
+
 export function finishStep(task, result, now = Date.now()) {
   const s = current(task);
   if (!s) return null;
@@ -326,6 +333,18 @@ const JUNK = /\b(no (useful |relevant )?(results?|info(rmation)?|answer)|nothing
 export function checkLine(thinking) {
   const line = String(thinking || '').split('\n').find(l => /^\s*check\s*:/i.test(l));
   return line ? line.replace(/^\s*check\s*:\s*/i, '').trim().slice(0, 500) : '';
+}
+
+// Did a finished task actually get somewhere? A recipe is only learned from one that did: every step
+// closed with a real result (not out of room, cut off, a typed-out tool call or "nothing found"),
+// and at least one tool call worked. The "confirm Bugonia" task learned find + example.com.
+const NO_RESULT = /^\((the step ran out of room|step closed after|no result given)/i;
+const GAVE_UP = /\b(was not successful|could ?n[o']t (find|confirm|verify)|unable to (find|confirm|verify)|no (information|results?) (was |were )?found|lack of (specific )?information)\b/i;
+export function worked(task) {
+  const steps = (task && task.steps) || [];
+  if (!steps.length || steps.some(s => s.status !== 'done')) return false;
+  if (steps.some(s => !s.result || NO_RESULT.test(s.result) || toolCallText(s.result) || GAVE_UP.test(s.result) || JUNK.test(s.result))) return false;
+  return ((task.log) || []).some(l => l.ok !== false && !['plan', 'done', 'need', 'checkpoint', 'tool_info'].includes(l.name));
 }
 
 export function junkCheck(thinking) {

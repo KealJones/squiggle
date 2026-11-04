@@ -103,6 +103,7 @@ test('search endpoint: browser-only, opt-in, returns JSON results, reports bot c
     assert.equal((await worker.fetch(req('/api/search?q=x', { headers }), { ...env, ENABLE_FETCH: 'false' })).status, 404);
     assert.equal((await worker.fetch(req('/api/search?q=', { headers }), env)).status, 400);
     assert.equal(d.answer, null, 'no instant answer for a specific query');
+    assert.equal(d.source, 'duckduckgo', 'says which search answered');
     ia = { Heading: 'Cloudflare', AbstractText: 'Cloudflare, Inc., is an American <i>company</i>.', AbstractSource: 'Wikipedia', AbstractURL: 'https://en.wikipedia.org/wiki/Cloudflare' };
     const withIa = await (await worker.fetch(req('/api/search?q=Cloudflare', { headers }), env)).json();
     assert.deepEqual(withIa.answer, { heading: 'Cloudflare', text: 'Cloudflare, Inc., is an American company.', source: 'Wikipedia', url: 'https://en.wikipedia.org/wiki/Cloudflare' });
@@ -119,6 +120,7 @@ test('search endpoint: browser-only, opt-in, returns JSON results, reports bot c
     const fbd = await fb.json();
     assert.deepEqual(fbd.results, [{ title: 'Pokémon Horizons: The Series', url: 'https://en.wikipedia.org/wiki/Pok%C3%A9mon_Horizons%3A_The_Series', snippet: 'the latest Pokémon anime series' }]);
     assert.match(fbd.note, /Wikipedia/);
+    assert.equal(fbd.source, 'wikipedia');
   } finally { globalThis.fetch = orig; }
 });
 

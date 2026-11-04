@@ -29,8 +29,8 @@ app/                    static app, plain ES modules, no build step
       voice-ui.js       read aloud, voice calls (call bar)
     agent.js            turn loop (docs/harness.md): chat phase → plan → one fresh prompt per step → final reply; need/find; recipes learned after
     tasks.js            step-mode task state, step/final prompts (budgeted), resume rules, DIALECT (v2 frozen fenced text / v3 marked harness text)
-    recipes.js          memory/recipes.jsonl: how finished tasks were solved, matched to new requests, forgotten after 90 days unused
-    find.js             `find`: one search over tools, recipes, memory, past chats and this task
+    recipes.js          memory/recipes.jsonl: how finished tasks were solved; saved pending, matched only once the user approves; forgotten after 90 days unused
+    find.js             `find`: one search over tools, recipes, memory, past chats and this task; web reranking, URL ledger, pushback check (falls through to web_search, docs/harness.md)
     refs.js             reference resolution ("that", "the repo", links) → hints in the prompt
     engine.js           model registry (families, generationFor: sampling/thinking/thinkBudget per model), download (resumable, IndexedDB chunks), LiteRT engine, generation
     engine-cloud.js     cloud model through the relay (same conversation interface)
@@ -142,6 +142,13 @@ Context modes (`settings.contextMode`, `context.js CONTEXT_MODES`): `compact` (C
 experimental: budget line, plan steps with `needs`/`kind: 'summarize'`, `checkpoint`). Everything AI-managed adds
 is behind `managed()`; the other modes must stay unchanged (Squiggle Small's prompt is its training text).
 The registry drives the Settings dropdown and the sidebar labels; `registerContextMode` adds one (docs/extending.md).
+
+## Debug: saved tool results
+
+Settings → Debug → "Save tool results" (`settings.debugTools`, per device, off by default): each tool call on a
+reply keeps what it returned (`tools[].result`, untrusted wrappers stripped, cut at 12,000 characters), shown
+under "Result" in the tool list and synced with the session file. Web searches say which provider answered
+(the relay's `source`: langsearch, tavily, tavily (past year), duckduckgo, wikipedia) in the label.
 
 ## Voice (voice.js)
 

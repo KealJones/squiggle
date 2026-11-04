@@ -140,19 +140,20 @@ async function webSearch(q, n, env = {}) {
   // Tavily's monthly credits go where they help. Then DuckDuckGo, then Wikipedia.
   const count = Math.min(Math.max(n, 1), 15);
   const recent = RECENT.test(query);
+  // `source` says which one answered (shown in the app's debug tool results).
   const apis = [
-    env.LANGSEARCH_API_SECRET_KEY && (() => langSearch(query, count, env.LANGSEARCH_API_SECRET_KEY)),
-    env.TAVILY_KEY && (() => tavilySearch(query, count, env.TAVILY_KEY, recent)),
+    env.LANGSEARCH_API_SECRET_KEY && { source: 'langsearch', run: () => langSearch(query, count, env.LANGSEARCH_API_SECRET_KEY) },
+    env.TAVILY_KEY && { source: recent ? 'tavily (past year)' : 'tavily', run: () => tavilySearch(query, count, env.TAVILY_KEY, recent) },
   ].filter(Boolean);
   if (recent && env.TAVILY_KEY) apis.reverse();
-  let best = null;
-  for (const run of apis) {
+  let best = null, bestSource = '';
+  for (const { source, run } of apis) {
     const results = await run().catch(() => null);
-    if (results && results.length >= Math.min(2, count)) return json({ query, answer: null, results });
-    if (results && results.length && (!best || results.length > best.length)) best = results;
+    if (results && results.length >= Math.min(2, count)) return json({ query, answer: null, results, source });
+    if (results && results.length && (!best || results.length > best.length)) { best = results; bestSource = source; }
     // Over its limit, down, or too little found: the next one.
   }
-  if (best) return json({ query, answer: null, results: best });
+  if (best) return json({ query, answer: null, results: best, source: bestSource });
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -171,9 +172,9 @@ async function webSearch(q, n, env = {}) {
       // DuckDuckGo wants a bot check: Wikipedia's search still answers most lookups.
       const wiki = await wikipediaSearch(query, count, ctrl.signal).catch(() => []);
       if (!wiki.length && !answer) return json({ error: 'DuckDuckGo is asking for a bot check right now and Wikipedia found nothing. Try again in a little while.' }, 503);
-      return json({ query, answer, results: wiki, note: 'DuckDuckGo asked for a bot check, so these results are from Wikipedia search.' });
+      return json({ query, answer, results: wiki, source: 'wikipedia', note: 'DuckDuckGo asked for a bot check, so these results are from Wikipedia search.' });
     }
-    return json({ query, answer, results: parseDdgLite(page).slice(0, count) });
+    return json({ query, answer, results: parseDdgLite(page).slice(0, count), source: 'duckduckgo' });
   } finally {
     clearTimeout(timer);
   }

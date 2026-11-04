@@ -14,6 +14,11 @@ export const fetchUrl = defineTool({
   async run({ url }, ctx = {}) {
     let u;
     try { u = new URL(/^https?:\/\//i.test(url) ? url : 'https://' + url); } catch { return { model: { error: 'Pass one full URL, e.g. https://example.com/page.' } }; }
+    // Small models make URLs up (bugonia.com/confirmation, example.com/movies/…): the agent passes
+    // allowUrl so they only read pages a search, a page or the user gave them.
+    if (ctx.allowUrl && !ctx.allowUrl(u.href)) {
+      return { model: { error: `${u.href} didn't come from a search result, a page you read or the user, so it was not opened (made-up URLs don't exist). Call web_search to find the real page, then fetch_url one of its links.` }, label: `didn't open ${truncate(u.href, 60)} (not from a search or the user)` };
+    }
     let resp, via = 'direct';
     try { resp = await fetch(u.href, { redirect: 'follow' }); } catch {
       const cfg = await relayConfig().catch(() => ({}));
@@ -32,6 +37,10 @@ export const fetchUrl = defineTool({
       text = pageText(doc);
     }
     const status = via === 'relay' ? +(resp.headers.get('x-upstream-status') || resp.status) : resp.status;
+    // A 404 page is not the page: report it as a failure (it used to count as a successful read).
+    if (status >= 400) {
+      return { model: { error: `${u.href} returned HTTP ${status}${status === 404 ? ' (no such page)' : ''}. Don't use it as a source; web_search for the right page.`, status, title }, label: `couldn't read ${truncate(u.href, 60)} (HTTP ${status})` };
+    }
     // Small models: the page is saved as a file and they get a short card
     // (opening, sections with line numbers) and grep or read_file for the rest.
     if (ctx.pageCards && text.length > 1500) {
@@ -54,24 +63,36 @@ export const fetchUrl = defineTool({
 export const webSearch = defineTool({
   name: 'web_search',
   group: 'web',
-  description: 'Search the web (DuckDuckGo). Returns a short summary when one exists, plus titles, links and snippets. To read a result in full, pass its url to fetch_url.',
+  description: 'Search the web. Returns a short summary when one exists, plus titles, links and snippets. To read a result in full, pass its url to fetch_url.',
   parameters: params({ query: str('What to search for'), count: num('How many results (default 6, max 10)') }, ['query']),
   async run({ query, count = 6 }) {
-    const q = String(query || '').trim();
-    if (!q) return { model: { error: 'Give a search query.' } };
+    const asked = String(query || '').trim();
+    if (!asked) return { model: { error: 'Give a search query.' } };
+    const q = withYear(asked);
     let r;
     try { r = await fetch(`${apiBase()}/search?q=${encodeURIComponent(q)}&n=${Math.min(Math.max(+count || 6, 1), 10)}`, { cache: 'no-store' }); }
     catch { return { model: { error: 'Could not reach the relay for search.' } }; }
     const d = await r.json().catch(() => ({}));
     if (!r.ok || d.error) return { model: { error: d.error || `Search failed (HTTP ${r.status}).` }, label: `search failed: "${q}"` };
     const results = d.results || [];
+    const via = d.source ? ` via ${d.source}` : '';
     const a = d.answer;
     const summary = a ? `Summary${a.heading ? ` of "${a.heading}"` : ''} (${a.source}${a.url ? ', ' + a.url : ''}):\n${a.text}\n\n` : '';
     const text = summary + results.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${x.snippet}`).join('\n');
     return {
       model: { query: q, count: results.length, results: wrapUntrusted('web search', text.trim() || 'No results.') },
-      label: `searched the web for "${truncate(q, 60)}" (${results.length})`,
+      label: `searched the web for "${truncate(q, 60)}" (${results.length}${via})`,
+      // Not shown to the model: the agent reranks these for find and allows their URLs for fetch_url.
+      items: results, answer: a || null, source: d.source || '',
       observation: text.trim() ? { source: 'web search', title: `Search: ${q}`, text } : null,
     };
   },
 });
+
+// "Emma Stone's latest movie" found the 2023 Wikipedia page first: the year is
+// what makes "latest" mean now. Added when the query asks for the newest thing
+// and names no year. (The relay's recency filters still apply.)
+const LATEST = /\b(latest|newest|most recent|recent(ly)?|upcoming|new(est)? (season|series|version|release|episode|album|movie|film|book|song|model|phone))\b/i;
+export function withYear(q, now = new Date()) {
+  return LATEST.test(q) && !/\b(19|20)\d\d\b/.test(q) ? `${q} ${now.getFullYear()}` : q;
+}

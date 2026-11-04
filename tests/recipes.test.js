@@ -497,3 +497,36 @@ test('the same request about different names reaches the recipe (names fill its 
   for (const q of ['who was born in paris', 'who was the first person on the moon', 'what is the latest news', 'what is the capital of france'])
     assert.equal(R.matchSync(q).length, 0, q);
 });
+
+// ── Approval ───────────────────────────────────────────────────────────────
+
+test('pending recipes are not matched until approved', async () => {
+  const r = R.save({ ...killPort(), pending: true });
+  assert.equal(r.pending, true);
+  assert.deepEqual(R.matchSync('kill 8080'), []);
+  assert.deepEqual(await R.match('kill 8080'), []);
+  assert.equal(R.list().length, 1, 'still listed (for the Memory panel)');
+  R.approve(r.id);
+  assert.equal(R.matchSync('kill 8080')[0].recipe.id, r.id);
+  assert.equal(R.approve('nope'), null);
+});
+
+test('old small-model drafts load as pending; others stay approved', async () => {
+  store.files[FILE] = [
+    JSON.stringify({ id: 'r1', ...killPort(), draft: true, ts: 1 }),
+    JSON.stringify({ id: 'r2', ...readmeLink(), ts: 1 }),
+    JSON.stringify({ id: 'r3', ...summarise(), draft: true, pending: false, ts: 1 }),
+  ].join('\n') + '\n';
+  await R.load();
+  assert.deepEqual(R.list().map(r => [r.id, r.pending]).sort(), [['r1', true], ['r2', false], ['r3', false]]);
+});
+
+test('a new run of an approved recipe adds its phrasing but keeps the approved steps', () => {
+  const r = R.save(killPort());
+  R.approve(r.id);
+  const again = R.save({ ...killPort(), examples: ['free port 5173 pls'], steps: ['Guess the PID', 'Reboot'], pending: true });
+  assert.equal(again.id, r.id);
+  assert.equal(again.pending, false);
+  assert.deepEqual(again.steps, killPort().steps);
+  assert.ok(again.examples.includes('free port 5173 pls'));
+});

@@ -156,7 +156,7 @@ export function renderSettingsPanel() {
         h('select', { id: 'context-mode', onchange: (e) => { S.contextMode = e.target.value; saveSettings(); if (S.contextMode === 'smart' && S.semantic) loadSemantic(); updateComposerNote(); renderSettingsPanel(); } },
           ...modes.map(([v, d]) => h('option', { value: v, selected: mode === v ? true : null }, d.label))),
         h('span', { class: 'hint' }, `${CONTEXT_MODES[mode] ? CONTEXT_MODES[mode].hint : ''} Check "What the model saw" on any reply.`)),
-      S.contextMode === 'smart' ? switchRow('Bring in other chats', 'Smart context may also quote a message from another chat when it clearly fits.', S.recallChats !== false, (e) => { S.recallChats = e.target.checked; saveSettings(); }) : '',
+      S.contextMode === 'smart' ? switchRow('Bring in other chats', 'Smart context may also quote a message from another chat when it clearly fits.', S.recallChats === true, (e) => { S.recallChats = e.target.checked; saveSettings(); }) : '',
       S.contextMode === 'smart' ? switchRow('Search by meaning', 'Also matches by meaning, not just words. Downloads a small 23 MB search model that runs on the CPU. Off by default on phones.', S.semantic, (e) => { S.semantic = e.target.checked; saveSettings(); if (S.semantic) loadSemantic(); }) : '',
       switchRow('Learn from conversations', 'After each reply, Squiggle saves lasting facts to Memory. Review them in the Memory panel.', S.learn, (e) => { S.learn = e.target.checked; saveSettings(); }),
     ),
@@ -185,6 +185,10 @@ export function renderSettingsPanel() {
               h('button', { class: 'btn ghost small', onclick: async () => { await grants.revoke(g.id); renderSettingsPanel(); } }, 'Revoke'))))
           : h('span', { class: 'value muted' }, 'None yet.'),
         'The agent pushes its own agent/ branches freely. Pushing any other branch asks first, unless you chose "Always allow" for it.'),
+    ),
+
+    section('Debug',
+      switchRow('Save tool results', 'Keeps what each tool returned (search results, pages, find) with the reply, under "Result" in its tool list. Saved in your storage repo with the chat; long results are cut at 12,000 characters. Applies from the next message.', S.debugTools, (e) => { S.debugTools = e.target.checked; saveSettings(); }),
     ),
 
     section('This device',
