@@ -22,7 +22,7 @@ few GitHub requests browsers aren't allowed to make directly.
 - **Threads**: reply in a thread on any message. The thread knows the conversation up to that point, the main chat stays uncluttered, and a one-line outcome shows under the parent message.
 - **Git workspace**: `/home` is the agent's own synced folder; `/repos/<name>` holds clones. Tools: list, read, write, edit and delete files, grep, note, clone, status, branch, commit, push, pull, log, show, open PR, list repos.
 - **Memory**: a small graph of facts about you and your projects (`memory/facts.jsonl`), learned as you chat or added by hand, reviewable in the Memory panel. The agent can `remember`, `recall` and `forget`.
-- **Voice**: a call button for talking with it hands-free, with replies read aloud on-device (Kokoro-82M on computers, KittenTTS nano on phones, both downloaded once).
+- **Voice**: a call button for talking with it hands-free, with replies read aloud by your device's own voices (pick a Premium/Enhanced one for the best sound).
 - **Attachments**: attach files to a message (up to 10, 20 MB each). Text is read directly, PDFs have their text extracted, and images are read with OCR.
 - **Context for small models**: Settings → Context picks how the model's context is managed: Compress (rolling summary + recent messages), Smart (the default: also retrieves the most relevant earlier messages, web pages and files for each question) or AI-managed (experimental). You can also bring in other chats. "What the model saw" on any reply shows exactly what went in, and the chat details sidebar shows how full the context window is (by part, live while a reply runs), the current plan, and what the chat has used and made.
 - **Search**: search all your chats from the sidebar; the agent can search them too (`search_history`).
@@ -171,7 +171,7 @@ npm run dev                 # local Worker + app at http://localhost:8787
 npm run vendor              # rebuild app/vendor/ after changing a library version
 ```
 
-There are also two benchmarks you can run by hand: `node tests/e2e/tts-bench.mjs` (speech) and `node tests/e2e/wllama-bench.mjs` (the phone CPU models). CI (`.github/workflows/ci.yml`) runs lint, the unit tests, the e2e suite (both modes) and a Worker dry-run; pull requests also get a Pages preview (see above).
+There's also a benchmark you can run by hand: `node tests/e2e/wllama-bench.mjs` (the phone CPU models). CI (`.github/workflows/ci.yml`) runs lint, the unit tests, the e2e suite (both modes) and a Worker dry-run; pull requests also get a Pages preview (see above).
 
 No build step: the app is plain ES modules in `app/`. See [CLAUDE.md](CLAUDE.md) for the architecture, [docs/extending.md](docs/extending.md) for adding tools and context modes, and [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow.
 

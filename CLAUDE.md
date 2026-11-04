@@ -26,7 +26,7 @@ app/                    static app, plain ES modules, no build step
       side.js           chat details sidebar (see below)
       settings-panel.js the Settings drawer
       model-ui.js       model download/load with progress, crash-loop guard, banners, composer note
-      voice-ui.js       read aloud, voice calls (call bar), natural voice lifecycle and crash marker
+      voice-ui.js       read aloud, voice calls (call bar)
     agent.js            turn loop (docs/harness.md): chat phase → plan → one fresh prompt per step → final reply; need/find; recipes learned after
     tasks.js            step-mode task state, step/final prompts (budgeted), resume rules, DIALECT (v2 frozen fenced text / v3 marked harness text)
     recipes.js          memory/recipes.jsonl: how finished tasks were solved, matched to new requests, forgotten after 90 days unused
@@ -50,10 +50,7 @@ app/                    static app, plain ES modules, no build step
     untrusted.js        <untrusted key=…> wrapping for outside content
     attachments.js      chat attachments: limits, text extraction (pdf.js, Tesseract.js OCR from jsDelivr), what the model sees
     ocr.js              text in images (screenshots, receipts, signs) via Tesseract.js 5.1.1; worker freed after 20 s idle
-    voice.js            voice calls: markdown → speakable chunks, call state machine, speakers (system speech / natural voice)
-    tts.js              natural voice, page side: worker controller (timeouts), Web Audio player
-    tts-worker.js       natural voice worker: ONNX Runtime Web (WASM) + eSpeak NG phonemizer; Kokoro or KittenTTS
-    tts-text.js         natural voice, pure parts: pinned model registry, text → phonemes → ids, voice styles, audio tidy
+    voice.js            voice calls: markdown → speakable chunks, call state machine, system speech speaker
     storage.js          storage repo: setup, clone at /state, client-side rebase sync
     merge.js            conflict-free merges (sessions JSON, .jsonl)
     sessions.js         sessions + threads + observations on top of storage
@@ -146,36 +143,21 @@ experimental: budget line, plan steps with `needs`/`kind: 'summarize'`, `checkpo
 is behind `managed()`; the other modes must stay unchanged (Squiggle Small's prompt is its training text).
 The registry drives the Settings dropdown and the sidebar labels; `registerContextMode` adds one (docs/extending.md).
 
-## Natural voice (voice.js, tts*.js)
+## Voice (voice.js)
 
-- Speech-to-text is the Web Speech API; text-to-speech is a speaker: system speech or the natural
-  voice. Each reply uses one voice (the natural one only if it's loaded when the reply starts).
-  Errors, or synthesis slower than speech (RTF > 1.15 over recent chunks), move the call to system
-  speech; a slow Kokoro also switches the device to KittenTTS (`voiceModel`).
-- Read aloud: the speaker button under a reply (`voice.readAloud`) uses the same voice choice. The natural
-  voice loads on the tap, is kept 60 s for the next reading, then freed; a call stops reading and frees it.
-- The model loads in a module worker on the call tap (Web Audio unlocks inside that tap) and the
-  worker is terminated when the call ends: WASM memory never shrinks, so that's the only way to give
-  it back. Crash marker `squiggle-voice-loading` (load and while speaking); found on open, calls
-  switch to system voices and a banner explains.
-- Pinned: onnxruntime-web 1.30.0 (CPU/WASM build, one thread, no proxy, so no blob: scripts) and
-  phonemizer 1.2.1 (eSpeak NG compiled to plain JS) from jsDelivr; model files at fixed Hugging Face
-  commits in Cache Storage `squiggle-tts-v1` (sw.js keeps it). Kokoro-82M q8 (~92 MB, default on
-  computers) and KittenTTS nano 0.8 int8 (~28 MB, default on phones), both Apache-2.0. The
-  phonemizer package is labelled Apache-2.0 but contains eSpeak NG (GPL-3.0-or-later); it's loaded
-  from the CDN at runtime, never vendored into this repo.
-- Measured in headless Chromium on a 2-core 2.1 GHz Xeon (`node tests/e2e/tts-bench.mjs --model
-  kokoro|kitten`): Kokoro RTF ~3.3, tab +365 MB after speaking (+510 MB peak while loading);
-  KittenTTS RTF ~0.8, tab +260-280 MB (+318 MB peak). About 95 MB of that is ONNX Runtime's WASM
-  itself. Both transcribe back correctly with Whisper. Not yet measured on an iPhone.
+- Speech-to-text is the Web Speech API; text-to-speech is the browser's own speech synthesis
+  (`systemSpeaker`, best installed voice via `pickVoice`, or the one picked in Settings).
+- Read aloud: the speaker button under a reply (`voice.readAloud`) uses the same voice.
+- An on-device neural voice (Kokoro-82M / KittenTTS on ONNX Runtime Web) used to live here; it was
+  removed (Nov 2026); calls use system voices only. `settings.js` drops its old settings and
+  crash marker once, and sw.js frees its `squiggle-tts-v1` cache.
 
 ## Verifying changes
 
 `npm run check` (ESLint + unit tests), `npm run test:e2e` and `npm run test:e2e:split`
 (app and relay on different origins; set `PLAYWRIGHT_BROWSERS_PATH` if needed; `E2E_ONLY=<part of a
 check name>` runs a subset). The e2e suite swaps `src/engine.js` for `tests/e2e/fake-engine.js` and
-`src/tts-worker.js` for a scripted fake; real-model behaviour needs a WebGPU device and is checked
-by hand. `node tests/e2e/tts-bench.mjs` loads the real voice model in headless Chromium.
+stubs the Web Speech API; real-model behaviour needs a WebGPU device and is checked by hand.
 
 ## Phones
 

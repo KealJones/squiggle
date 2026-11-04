@@ -42,6 +42,15 @@ export function loadSettings() {
     saved = { ...saved, contextMode: 'smart', harnessV2: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
+  // The natural voice (Kokoro/KittenTTS) was removed; calls use system speech.
+  // Drop its settings and crash marker.
+  if ('voiceEngine' in saved || 'voiceModel' in saved || 'ttsVoices' in saved) {
+    const { voiceEngine, voiceModel, ttsVoices, ...rest } = saved; // eslint-disable-line no-unused-vars
+    for (const k of ['voiceEngine', 'voiceModel', 'ttsVoices']) delete agent.settings[k];
+    saved = rest;
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
+  try { localStorage.removeItem('squiggle-voice-loading'); } catch {}
   if (saved.tools) agent.settings.tools = new Set(saved.tools);
   // The saved model is the device default. In memory, settings.model is whatever is
   // loaded right now: a chat with its own model (session.model) changes it while
