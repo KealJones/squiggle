@@ -117,11 +117,12 @@ export function isMobile() {
   return /Android|iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 }
 
-// The model for this device: computers run E4B; phones run Squiggle Small
-// (LFM2.5 350M fine-tuned on the harness) on the CPU, because Gemma 4 doesn't fit a phone browser tab's memory (iOS
-// Safari kills the tab). Phones can still pick the cloud model.
+// The model for this device: computers run E4B. Phones with WebGPU run Qwen3 0.6B on WebLLM: the only one that
+// stays alive in iPhone 16 Safari and uses tools (2026-11-04); Gemma 4 gets the tab killed. Phones without WebGPU
+// run Squiggle Small (LFM2.5 350M fine-tuned on the harness) on the CPU. Phones can still pick the cloud model.
+export const hasWebGpu = () => typeof navigator !== 'undefined' && Boolean(navigator.gpu);
 export function deviceModel() {
-  return isMobile() ? 'SQ' : 'E4B';
+  return isMobile() ? (hasWebGpu() ? 'WQ06' : 'SQ') : 'E4B';
 }
 // Runs without WebGPU (CPU only).
 export const needsGpu = (id) => Boolean(MODELS[id] && MODELS[id].runtime === 'litert');

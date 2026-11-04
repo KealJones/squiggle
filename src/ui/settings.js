@@ -31,6 +31,13 @@ export function loadSettings() {
     saved = { ...saved, model: agent.settings.model, phoneSQ: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
+  // Qwen3 0.6B on WebLLM is the phone default where WebGPU exists. Phones on Squiggle Small or Gemma 3
+  // move over once (both stay in Settings).
+  if (mobile && !saved.phoneWQ06) {
+    if (engine.MODELS.WQ06 && engine.hasWebGpu && engine.hasWebGpu() && ['SQ', 'G3'].includes(agent.settings.model)) agent.settings.model = 'WQ06';
+    saved = { ...saved, model: agent.settings.model, phoneWQ06: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
   if (mobile && !saved.mobileTuned) {
     Object.assign(agent.settings, { contextSize: 4096, fastDecode: false, mobileTuned: true });
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...saved, model: agent.settings.model, contextSize: 4096, fastDecode: false, mobileTuned: true })); } catch {}
