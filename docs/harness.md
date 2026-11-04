@@ -117,15 +117,21 @@ system:   short system prompt (model-appropriate; see below)
           ## Files the user attached                      (paths, if any)
           ## Recipe from a similar task (if the model found one with find)
           <recipe steps + specifics>
-          ## What you know about the user and their work   (memory facts, goal+step query)
+          ## What you know about the user and their work   (memory facts above an absolute bar; v3 dialect:
+                                                             "Notes saved from earlier chats (background only; may not fit this request)")
           ## Found earlier in this task                     (retrieved step results / tool output for this step)
           ## Resolved references                             (if any)
           ## Tools                                           (big models: all; small: looked-up only)
 user:     <the original request, verbatim (first 700 characters)>
 
-          Work on step 2 now: <step text>
+          Work on step 2 now: <step text>                               ← v2 (fenced, frozen)
           When the step is finished, call done with what you found.
+
+          (Squiggle: Work on step 2 now: <step text> When the step     ← v3 (everyone else)
+          is finished, call done with what you found.)
 ```
+
+See "Prompt dialects" below for why the user turn differs.
 
 Within a step the model's own tool calls and results accumulate normally (that
 is short). They are saved as observations, so later steps can `find` them, but
@@ -222,12 +228,17 @@ and parses it.
 
   (`LITE_SYSTEM` in agent.js; the date line is `new Date().toDateString()`.)
 
-- **Small-model mode switch** (Settings → Small-model mode, stored per model in `settings.smallMode`):
-  always on for small models in this fenced format (Squiggle Small; it's their training text and the only
-  format their engine parses), off by default and switchable for every other model with tools (Gemma 4
-  E2B/E4B, the cloud model, tiny Gemma 4, Qwen3.5). Switched on, those models get `LITE_SYSTEM_NATIVE`:
+- **Small-model mode switch** (Settings → Small-model mode, stored per model in `settings.smallMode` as
+  true or false; unset means the model's default): always on for small models in this fenced format
+  (Squiggle Small; it's their training text and the only format their engine parses), **on by default for
+  every other small model** (`agent.smallModeDefault`: anything on the wllama runtime, so tiny Gemma 4 and
+  the Qwens — with the full prompt and every schema, half of a phone's 4K window was gone before the
+  person typed, and a 0.8B model answered the instructions instead of the person), off by default for
+  big ones (Gemma 4 E2B/E4B, the cloud model). Switched on, those models get `LITE_SYSTEM_NATIVE`:
   `LITE_SYSTEM`'s first three lines, without the ```` ```tool_call ```` line (their own template declares
-  the tools), plus "Start with plan, done, need and find; find tells you which of your other tools fits."
+  the tools), plus "Call a tool as soon as you know which one you need; when you don't, find tells you
+  which fits." It used to say "start with plan, done, need and find", and a 0.6B model took that as an
+  order to call those first: told "use web_search", it argued with the prompt until its output ran out.
   Big models still get every tool declared natively; small native models are gated (next section). Context
   budgets and background jobs follow the runtime (wllama or not), not this switch.
   Tools the model has looked up are appended as
@@ -250,9 +261,13 @@ Now (agent.js `gated()`):
 - Declared with full schemas from the start (`GATE`): `plan`, `done` (steps), `need`, `find`, `tool_info`,
   `web_search`, `fetch_url` (and `checkpoint` in AI-managed mode). About 600 tokens (by `estTokens`), plus
   about 110 for the name line below, against about 3.4k before.
-- Every other enabled tool is one line of bare names in the system prompt (both the full prompt and
-  `LITE_SYSTEM_NATIVE`): `Other tools: list_files, read_file, … Before calling one, get how with
-  tool_info(names); ask for every one you expect to need at once.` Not in the final reply's prompt (no tools).
+- The prompt names what is declared and what is not, generated from the same sets the engine declares
+  (`toolNamesLine`, in both the full prompt and `LITE_SYSTEM_NATIVE`): `Tools ready to call: plan, done,
+  need, find, tool_info, web_search, fetch_url.` then `Other tools: list_files, read_file, … To use one,
+  first call tool_info(names) with every one you expect to need.` Tools looked up earlier in the task
+  (`task.tools`) count as ready. Nothing usable is left unnamed: web_search used to be declared but never
+  mentioned, and a model went looking for it through tool_info instead of calling it. Not in the final
+  reply's prompt (no tools).
 - `tool_info(names)` answers `{"tools": [names], "ready": "… ready to call now."}`, or an error listing the
   valid names. The schema itself reaches the model through the declared tools on the next request, so the
   result stays short. `find` results that name tools declare them the same way.
@@ -266,6 +281,99 @@ Now (agent.js `gated()`):
 
 When the instructions plus tool definitions leave no room for a reply (`checkOverhead`), the turn fails with
 that explanation instead of the generic "conversation got too long", since shortening history can't help.
+
+## Prompt dialects
+
+Built 2026-11-04, after three Qwen chats on a phone showed the same failure from different angles: a
+0.8B model told the person "you had 2,030 tokens used" (the budget line, read as the user's words), described
+"/home syncs across all devices" back to them (the system prompt, read as the user's setup), and reasoned
+about "the user's current task: Work on step 1 now" (the step instruction). Small models can't tell harness
+text from the person's text when both sit in the user turn. The fix is structural, not a reworded line:
+
+- **v2** is the fenced small-model format above: Squiggle Small's training text, frozen. Every string it
+  renders (`LITE_SYSTEM`, the step and final user turns, `Result of <tool>:\n<json>`, the section titles)
+  stays byte-for-byte what the fine-tune saw; lm-experiments renders episodes through this code.
+- **v3** is every other model. Any text the harness adds to a user turn is marked as Squiggle's:
+  `(Squiggle: …)`, the way the loop note already was. The step instruction, the final-reply instruction, the
+  AI-managed budget line and the "finish your thought" nudges all go through `DIALECT.v3.note`. The
+  person's own words are never paraphrased. The memory section is titled "Notes saved from earlier chats
+  (background only; may not fit this request)" instead of "What you know about the user and their work",
+  which a small model read as things the person had just said.
+
+`tasks.js DIALECT`; `agent.dialect()` picks v2 for fenced models and v3 for the rest; `tasks.js` functions
+take `{ dialect }` and default to v2, so the fine-tune's rendering is untouched. The next fine-tune corpus
+should move Squiggle Small to v3 (render with `DIALECT.v3` and retrain), after which v2 can go.
+
+## Memory recall: an absolute bar
+
+The old recall scored facts with BM25 normalised by the best match, then pulled in every fact sharing a
+subject or object with a hit. Two things followed: the least unrelated fact always scored 1, so something
+always cleared the 0.25 bar; and nearly every fact has the subject "user" or "Squiggle", so one weak hit
+dragged the rest in. A request about a movie got "user considers using SQLite for a memory store", and a
+0.6B model built its plan around SQLite.
+
+Now (`search.js overlap`, `memory-rank.js rankFacts`):
+
+- The score is the cosine between the two sets of content words, |shared| / √(|fact| · |request|): one
+  shared word between a two-word fact and a three-word question is 0.41, one word out of eight in a long
+  request against a four-word fact 0.18, nothing shared 0. Unweighted: with a few dozen facts, rarity
+  statistics are noise.
+- Words on 30% or more of the facts (at least three) are generic — "user", "Squiggle", the person's name —
+  and count for nothing on either side.
+- One hop through a shared entity still happens, at half the score, but only through a specific entity
+  (one with a non-generic word), never through "user" or "Squiggle".
+- Bars: 0.2 in the chat-phase section and the step prompt (about one shared rare word), 0.35 for the
+  eager facts small models get in the recalled block. With embeddings the semantic score is blended in on
+  the same absolute scale (`blend({ absolute: true })`).
+- `memory.aboutTheUser` keeps extracted facts about the assistant itself ("Squiggle is_a private AI agent",
+  "Squiggle has_tool chat renaming" — the system prompt and the assistant's own replies, read back as
+  facts) out of memory unless the person's message names what the fact says. Memory is what the person said.
+
+## Per-model generation settings
+
+`engine.js generationFor(id)`: sampling, whether the model thinks, and a thinking budget, from each
+model's card instead of one setting for all (`MODELS[id].family`, overridable per model with `sampling`,
+`thinking`, `thinkBudget`):
+
+| family | models | temperature / top_k / top_p | repeat / presence penalty | thinking |
+|---|---|---|---|---|
+| `fenced` | Squiggle Small, Gemma 3 270M | 0.7 / 64 / 0.95 | 1.15 / 0 | as trained (`<think>` in text) |
+| `gemma4` | E2B, E4B, tiny Gemma 4, the cloud 26B | 1.0 / 64 / 0.95 (the card's one setting) | 1.0 / 0 | on with tools (TG4A: off, trained without) |
+| `qwen3` | Qwen3 0.6B | 0.6 / 20 / 0.95 (thinking mode) | 1.0 / 1.5 | on, budgeted |
+| `qwen35` | Qwen3.5 0.8B | 1.0 / 20 / 1.0 (non-thinking text) | 1.0 / 2.0 | **off**: its card runs the 0.8B non-thinking by default and warns it loops in thinking mode |
+| `default` | Llama 3.2 1B, LFM2.5 1.2B | 0.7 / 64 / 0.95 | 1.15 / 0 | — |
+
+`fenced` must not change: lm-experiments' eval (`backends.py HFStudent`) runs with exactly those numbers.
+The Qwen cards say no repeat penalty (presence penalty against loops instead); the old 1.15 over the last
+64 tokens punished re-writing the tokens a tool call copies from just above, and is the likely cause of
+"SQuile" and "Quirk" for "Squiggle". The loop guard's retry still adds 0.15 to whichever repeat penalty the
+model has. WebLLM has no top_k or min_p. The relay forwards temperature, top_p and top_k.
+
+**Thinking budget** (`thinkBudget`, default 400 reasoning tokens for small models, none for big ones):
+past it the engine stops the thinking and gets the answer. Fenced models continue from the closed think
+block (prefill: the thinking so far plus "[Squiggle stopped the thinking at its N-token budget and asked
+for the answer.]"); native-template models get the same request again with thinking off (those templates
+can't continue a half-written turn), and the first try's thinking stays attached to the call it leads to.
+Rule 2 above ("never trim thinking to save time") stands: this is not about time. A 0.6B model thought
+until the 1,024-token output cap and never answered, three turns in a row; the window, not the clock, sets
+the budget. The UI shows the note in the thinking view.
+
+**Thinking inside a tool round.** The Qwen3, Qwen3.5 and Gemma 4 cards all say past turns' thinking leaves
+the history, except within a tool round: the thinking that led to a call stays while its results are
+answered. `nativeMessages` keeps `reasoning_content` on the last assistant turn only while every message
+after it is a tool result; the Qwen jinja templates and the WebLLM shim (`<think>…</think>` before the
+call, as Qwen renders it) read it. Older rounds in the same step drop theirs (a 4K window can't hold
+twelve). The raw Gemma 4 prompt on WebLLM (`gemma4Prompt`) does not render it yet: its real template's
+rendering of a thought in a tool-call turn isn't pinned in `tests/fixtures/gemma4-template.json`.
+
+**Tool results as text** (`engine-wllama.js resultText`, native models only): a string as it is, a flat
+object as `key: value` lines with multi-line strings whole, anything deeper as indented JSON.
+`JSON.stringify` put a whole search result into one quoted string with `\n` written out, which a 0.6B
+model read badly. The fenced format keeps `Result of <tool>:\n<json>`: training text.
+
+**Provenance.** Every reply saves `model: { id, label, how, smallMode?, contextSize, contextMode }`
+(`agent.js replyModel`), so a saved chat can be read against the model that wrote it; the sidebar shows
+"Last reply by" when it isn't the current model.
 
 ## What the fine-tune should learn (training targets)
 

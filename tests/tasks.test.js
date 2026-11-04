@@ -245,3 +245,19 @@ test('tool_info spec takes a list of names and counts as harness bookkeeping', (
   assert.equal(s.parameters.properties.names.type, 'array');
   assert.ok(tasks.HARNESS.has('tool_info'));
 });
+
+test('prompt dialects: v2 is the frozen fenced text; v3 marks harness text in the user turn as Squiggle\'s', async () => {
+  const t = await import('../app/src/tasks.js');
+  const task = t.newTask({ msg: 'm', thread: null, request: 'kill whatever is on 8080', goal: 'Free 8080', steps: ['Find it', 'Stop it'] });
+  t.startStep(task);
+  const v2 = t.stepUser(task), v3 = t.stepUser(task, { dialect: t.DIALECT.v3 });
+  assert.equal(v2, 'kill whatever is on 8080\n\nWork on step 1 now: Find it\nWhen the step is finished, call done with what you found.');
+  assert.equal(v3, 'kill whatever is on 8080\n\n(Squiggle: Work on step 1 now: Find it When the step is finished, call done with what you found.)');
+  assert.equal(t.budgetLine(2310, 4096, 700, t.DIALECT.v3), '(Squiggle: Context: 2,310 of 4,096 tokens used (about 1,090 left after room for your reply).)');
+  assert.match(t.stepUser(task, { budget: t.budgetLine(2310, 4096, 700, t.DIALECT.v3), dialect: t.DIALECT.v3 }), /found\.\)\n\n\(Squiggle: Context: 2,310/);
+  assert.equal(t.finalUser(task), 'kill whatever is on 8080\n\nEvery step is done. Write the reply to this request now, using what the steps found. Don\'t call tools.');
+  assert.equal(t.finalUser(task, { dialect: t.DIALECT.v3 }), 'kill whatever is on 8080\n\n(Squiggle: Every step is done. Write the reply to this request now, using what the steps found. Don\'t call tools.)');
+  assert.equal(t.DIALECT.v2.memoryTitle, 'What you know about the user and their work');
+  assert.notEqual(t.DIALECT.v3.memoryTitle, t.DIALECT.v2.memoryTitle);
+  assert.ok(t.DIALECT.v2.frozen && !t.DIALECT.v3.frozen);
+});

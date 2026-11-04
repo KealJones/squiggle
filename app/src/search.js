@@ -48,6 +48,38 @@ export function bm25(docs, { k1 = 1.4, b = 0.75 } = {}) {
   };
 }
 
+// Relevance of short records (memory facts) to a query on an absolute 0..1 scale: the cosine between the
+// two sets of content words, |shared| / sqrt(|record| · |query|). One shared word between a two-word fact
+// and a three-word question is 0.41; one word out of eight in a long request against a four-word fact is
+// 0.18; nothing shared is 0. Unlike bm25 + blend (which rank candidates against each other, so the best
+// of a bad bunch still scores 1), a record with nothing in common with the query scores 0 whatever the
+// others do. Words are unweighted on purpose: with a few dozen records, rarity statistics are noise.
+// Words on most of the records (the user's name, "user", "squiggle") say nothing about which one fits
+// and are left out on both sides; `generic` returns them, for callers that link records by shared entities.
+// docs: [{ id, text }] -> { score(query) => Map(id -> 0..1), generic: Set(word) }
+export function overlap(docs, { genericShare = 0.3, genericMin = 3 } = {}) {
+  const toks = docs.map(d => [...new Set(tokenize(d.text))]);
+  const N = docs.length;
+  const df = new Map();
+  for (const t of toks) for (const w of t) df.set(w, (df.get(w) || 0) + 1);
+  const generic = new Set([...df].filter(([, n]) => n >= genericMin && n / N >= genericShare).map(([w]) => w));
+  const kept = toks.map(t => t.filter(w => !generic.has(w)));
+  return {
+    generic,
+    score(query) {
+      const q = new Set(tokenize(query).filter(w => !generic.has(w)));
+      const out = new Map();
+      if (!q.size) return out;
+      docs.forEach((d, i) => {
+        if (!kept[i].length) return;
+        const shared = kept[i].filter(w => q.has(w)).length;
+        if (shared) out.set(d.id, shared / Math.sqrt(kept[i].length * q.size));
+      });
+      return out;
+    },
+  };
+}
+
 export function cosine(a, b) {
   let dot = 0, na = 0, nb = 0;
   for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
@@ -57,9 +89,10 @@ export function cosine(a, b) {
 // Blend keyword and semantic scores into one 0..1 relevance per id.
 // `semantic` is an optional Map(id -> cosine). Keyword scores are normalized
 // by the best match so the two scales are comparable.
-export function blend(keyword, semantic, { wKeyword = 0.45, wSemantic = 0.55 } = {}) {
+// `absolute`: the keyword scores are already 0..1 (coverage) and are used as they are.
+export function blend(keyword, semantic, { wKeyword = 0.45, wSemantic = 0.55, absolute = false } = {}) {
   const out = new Map();
-  const maxK = Math.max(0, ...keyword.values());
+  const maxK = absolute ? 1 : Math.max(0, ...keyword.values());
   const ids = new Set([...keyword.keys(), ...(semantic ? semantic.keys() : [])]);
   for (const id of ids) {
     const k = maxK ? (keyword.get(id) || 0) / maxK : 0;

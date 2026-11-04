@@ -12,9 +12,23 @@ const VERSION = '3.8.1';
 const LIB = `https://cdn.jsdelivr.net/npm/@wllama/wllama@${VERSION}/esm/index.min.js`;
 const WASM = `https://cdn.jsdelivr.net/npm/@wllama/wllama@${VERSION}/esm/wasm/wllama.wasm`;
 const MAX_OUTPUT = 1024;
-const REPEAT_PENALTY = 1.15;
 const LOOP_WORDS = 8;     // a run of this many words…
 const LOOP_TIMES = 3;     // …written this many times stops the reply
+const LOOP_EXTRA = 0.15;  // added to the repeat penalty for the retry after a loop
+
+// Sampling for one call from the model's profile (engine.js generationFor): the names wllama / llama.cpp take.
+// `retry` (after a loop) raises the repeat penalty; greedy zeroes the temperature.
+export function samplingOptions(sampling, { greedy = false, retry = false } = {}) {
+  const s = sampling || { temperature: 0.7, top_k: 64, top_p: 0.95, min_p: 0, repeat: 1.15, presence: 0 };
+  const repeat = Math.round(((s.repeat || 1) + (retry ? LOOP_EXTRA : 0)) * 100) / 100;
+  return {
+    temperature: greedy ? 0 : s.temperature, top_k: s.top_k, top_p: s.top_p, min_p: s.min_p || 0,
+    penalty_repeat: repeat, ...(s.presence ? { penalty_present: s.presence } : {}),
+  };
+}
+
+// The budget note shown in the thinking view (and sent back to the model where it can continue).
+export const thinkBudgetNote = (n) => `[Squiggle stopped the thinking at its ${n}-token budget and asked for the answer.]`;
 
 let lib = null;
 const getLib = async () => lib || (lib = await import(LIB));
@@ -220,6 +234,8 @@ export class Conversation {
     this.active = new Set(preface.known || []);   // tools looked up with find (or already called)
     this.max = Math.min(sessionConfig.maxOutputTokens || MAX_OUTPUT, MAX_OUTPUT);
     this.greedy = Boolean(sessionConfig.samplerParams && sessionConfig.samplerParams.type === 3);
+    this.sampling = sessionConfig.sampling || null;
+    this.thinkBudget = sessionConfig.thinkBudget || 0;   // reasoning tokens per reply; 0 = no cap
     this.ctrl = null;
   }
   cancel() { try { this.ctrl && this.ctrl.abort(); } catch {} }
@@ -249,16 +265,16 @@ export class Conversation {
     const loops = (buf, last, piece) => (/[.!?\n]/.test(piece) && buf.length - last > 40) || buf.length - last > 200;
     const tools = this.tools.length > 0;
     const t0 = performance.now();
-    let tFirst = 0, pieces = 0;
+    let tFirst = 0, pieces = 0, thinkPieces = 0, overBudget = false;
+    // Thinking budget: streamed pieces are about one token each; past the budget the thinking is
+    // stopped and the reply continues from a closed think block (prefill), so the model answers.
+    const budgetHit = () => this.thinkBudget && ++thinkPieces > this.thinkBudget;
     try {
       const stream = await this.w.createChatCompletion({
         messages: [...gemmaMessages(this.messages, this.tools, this.active), ...(prefill ? [{ role: 'assistant', content: prefill }] : [])],
         stream: true,
         max_tokens: this.max,
-        temperature: this.greedy ? 0 : 0.7,
-        top_k: 64,
-        top_p: 0.95,
-        penalty_repeat: retry ? 1.3 : REPEAT_PENALTY,
+        ...samplingOptions(this.sampling, { greedy: this.greedy, retry }),
         cache_prompt: true,
         abortSignal: ctrl.signal,
       });
@@ -274,6 +290,7 @@ export class Conversation {
             rChecked = reasoning.length;
             if (isLooping(reasoning.slice(-3000))) { looped = true; ctrl.abort(); break; }
           }
+          if (budgetHit()) { overBudget = true; ctrl.abort(); break; }
           continue;
         }
         let piece = delta.content;
@@ -293,6 +310,7 @@ export class Conversation {
           checked = out.length;
           if (isLooping(out.slice(-3000))) { looped = true; ctrl.abort(); break; }
         }
+        if (parts.open && budgetHit()) { overBudget = true; ctrl.abort(); break; }
         if (inCall || parts.open || parts.pending) continue;
         const at = tools ? text.indexOf(MARK) : -1;
         if (at >= 0) {
@@ -313,6 +331,12 @@ export class Conversation {
     const parts = splitThinking(out);
     text = parts.open ? '' : parts.text;
     if (parts.open && parts.thinking.length > thinkShown) yield { thinking: parts.thinking.slice(thinkShown) };
+    if (overBudget) {
+      // The thinking so far, closed, is where the reply continues from (sendMessageStreaming).
+      const sofar = reasoning || parts.thinking;
+      yield { thinking: `\n\n${thinkBudgetNote(this.thinkBudget)}\n\n` };
+      return { calls: [], aborted: false, overBudget: true, kept: `<think>\n${sofar.trim()}\n${thinkBudgetNote(this.thinkBudget)}\n</think>\n` };
+    }
     if (looped && canRetry) {
       const raw = reasoning ? `<think>\n${reasoning}${out ? '\n</think>\n' + out.replace(/^\s*<\/think>\s*/, '') : ''}` : out;
       const run = repeatedRun(raw);
@@ -344,6 +368,12 @@ export class Conversation {
       }
     }
     let res = yield* this.generate({ canRetry: true });
+    if (res.overBudget) {
+      // Carry on from the closed think block: the model writes the answer (or its call) now.
+      const budget = this.thinkBudget;
+      this.thinkBudget = 0;
+      try { res = yield* this.generate({ prefill: res.kept }); } finally { this.thinkBudget = budget; }
+    }
     if (res.looped && res.kept) {
       // Keep what it wrote before the loop and let it carry on from there.
       const kept = res.kept;
@@ -368,10 +398,30 @@ export class Conversation {
   }
 }
 
+// A tool result as text a small model can read: a string as it is, a flat object as "key: value" lines
+// (multi-line strings kept whole), anything deeper as JSON. JSON.stringify of a search result put every
+// line break in as "\\n" inside one quoted string, which a 0.6B model read badly. The fenced format
+// (Squiggle Small) keeps JSON: that is its training text (gemmaMessages).
+export function resultText(response) {
+  if (response == null) return '';
+  if (typeof response !== 'object') return String(response);
+  if (Array.isArray(response)) return JSON.stringify(response, null, 1);
+  const flat = Object.values(response).every(v => v == null || ['string', 'number', 'boolean'].includes(typeof v));
+  if (!flat) return JSON.stringify(response, null, 1);
+  return Object.entries(response).map(([k, v]) => {
+    const t = v == null ? '' : String(v);
+    return t.includes('\n') ? `${k}:\n${t}` : `${k}: ${t}`;
+  }).join('\n');
+}
+
 // Gemma 4's own tool format, for small builds distilled from E2B (tiny Gemma 4): llama.cpp renders the
 // model's chat template (the GGUF's, with jinja) with the tool declarations and parses the calls back out.
 // History is OpenAI-shaped: assistant turns keep their tool_calls, results are role 'tool' messages.
 // Squiggle hands results over as { role: 'tool', content: [{ name, response }] } (the LiteRT shape).
+// Thinking: the Qwen3 / Qwen3.5 / Gemma 4 cards all say past turns' thinking leaves the history, except
+// inside a tool round, where the thinking that led to the call stays while its results are answered. So an
+// assistant turn keeps its `reasoning_content` only while it is the last one and every message after it is
+// a tool result (the templates read that field; a template without it ignores it).
 export function nativeMessages(messages) {
   const out = [];
   let pending = [];                                       // calls of the last assistant turn not yet answered
@@ -380,7 +430,7 @@ export function nativeMessages(messages) {
       for (const p of Array.isArray(m.content) ? m.content : [{ name: 'tool', response: m.content }]) {
         const i = pending.findIndex(c => c.function.name === p.name);
         const call = i >= 0 ? pending.splice(i, 1)[0] : pending.shift();
-        out.push({ role: 'tool', tool_call_id: call ? call.id : 'call0', name: p.name, content: JSON.stringify(p.response) });
+        out.push({ role: 'tool', tool_call_id: call ? call.id : 'call0', name: p.name, content: resultText(p.response) });
       }
       continue;
     }
@@ -389,11 +439,19 @@ export function nativeMessages(messages) {
     const msg = { role, content: textOf(m.content) };
     if (role === 'assistant' && m.tool_calls && m.tool_calls.length) {
       msg.tool_calls = m.tool_calls;
+      if (m.reasoning_content) msg.reasoning_content = m.reasoning_content;
       pending = [...m.tool_calls];
       if (!msg.content) msg.content = null;
     } else if (!msg.content.trim()) continue;
     out.push(msg);
   }
+  // Only the tool round being answered now keeps its thinking.
+  const lastAssistant = out.map((m, i) => (m.role === 'assistant' ? i : -1)).filter(i => i >= 0).pop();
+  out.forEach((m, i) => {
+    if (m.reasoning_content === undefined) return;
+    const live = i === lastAssistant && out.slice(i + 1).every(x => x.role === 'tool') && i < out.length - 1;
+    if (!live) delete m.reasoning_content;
+  });
   return out;
 }
 
@@ -413,6 +471,8 @@ export class NativeConversation {
     this.thinking = Boolean(preface.extra_context && preface.extra_context.enable_thinking);
     this.max = Math.min(sessionConfig.maxOutputTokens || MAX_OUTPUT, MAX_OUTPUT);
     this.greedy = Boolean(sessionConfig.samplerParams && sessionConfig.samplerParams.type === 3);
+    this.sampling = sessionConfig.sampling || null;
+    this.thinkBudget = sessionConfig.thinkBudget || 0;   // reasoning tokens per reply; 0 = no cap
     this.ctrl = null;
   }
   cancel() { try { this.ctrl && this.ctrl.abort(); } catch {} }
@@ -436,29 +496,45 @@ export class NativeConversation {
       for (const m of input) this.messages.push(m);
       for (const n of foundNames(input)) this.active.add(n);
     }
+    let r = yield* this.generate({ thinking: this.thinking });
+    if (r.overBudget) {
+      // The thinking used its budget without an answer: the same request again with thinking off, so the
+      // model answers (or calls) straight away. (These templates can't continue a half-written turn.)
+      yield { thinking: `\n\n${thinkBudgetNote(this.thinkBudget)}\n\n` };
+      r = yield* this.generate({ thinking: false, reasoning: r.reasoning });
+    }
+    const { calls, looped, aborted } = r;
+    if (aborted && !looped) return;
+    for (const c of calls) this.active.add(c.function.name);   // a tool it called without looking up stays declared
+    if (calls.length) yield { tool_calls: calls };
+  }
+
+  // One model reply; `thinking` is this call's switch. Returns { calls, looped, aborted, overBudget, reasoning }.
+  // `reasoning` is thinking from a stopped first try, kept with the tool call it leads to (nativeMessages).
+  async *generate({ thinking, reasoning: earlier = '' }) {
     const tools = this.declared();
     const ctrl = this.ctrl = new AbortController();
     const t0 = performance.now();
-    let tFirst = 0, pieces = 0, text = '', reasoning = '', checked = 0, looped = false;
+    let tFirst = 0, pieces = 0, thinkPieces = 0, text = '', reasoning = '', checked = 0, looped = false, overBudget = false;
     const parts = [];                                          // streamed tool calls, by index
     try {
       const stream = await this.w.createChatCompletion({
         messages: nativeMessages(this.messages),
         ...(tools.length ? { tools } : {}),
-        chat_template_kwargs: { enable_thinking: this.thinking },
+        chat_template_kwargs: { enable_thinking: thinking },
         stream: true,
         max_tokens: this.max,
-        temperature: this.greedy ? 0 : 0.7,
-        top_k: 64,
-        top_p: 0.95,
-        penalty_repeat: REPEAT_PENALTY,
+        ...samplingOptions(this.sampling, { greedy: this.greedy }),
         cache_prompt: true,
         abortSignal: ctrl.signal,
       });
       for await (const chunk of stream) {
         const d = (chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta) || {};
         if (d.reasoning_content || d.content || d.tool_calls) { pieces++; if (!tFirst) tFirst = performance.now(); }
-        if (d.reasoning_content) { reasoning += d.reasoning_content; yield { thinking: d.reasoning_content }; }
+        if (d.reasoning_content) {
+          reasoning += d.reasoning_content; yield { thinking: d.reasoning_content };
+          if (this.thinkBudget && ++thinkPieces > this.thinkBudget && !text && !parts.length) { overBudget = true; ctrl.abort(); break; }
+        }
         if (d.content) { text += d.content; yield { content: d.content }; }
         for (const tc of d.tool_calls || []) {
           const p = parts[tc.index || 0] = parts[tc.index || 0] || { id: '', name: '', args: '' };
@@ -476,18 +552,20 @@ export class NativeConversation {
       if (!ctrl.signal.aborted) throw e;
     }
     if (tFirst) speed = { waitMs: Math.round(tFirst - t0), tokens: pieces, perSec: pieces > 1 ? Math.round(10 * (pieces - 1) / ((performance.now() - tFirst) / 1000)) / 10 : null };
+    if (overBudget) return { calls: [], looped: false, aborted: false, overBudget: true, reasoning };
     if (looped) yield { content: '\n\n_(stopped: the model was repeating itself)_' };
     const calls = looped ? [] : parts.filter(p => p && p.name).map(p => {
       let args = {};
       try { args = p.args ? JSON.parse(p.args) : {}; } catch { args = {}; }
       return { id: p.id || 'call' + (++callId), type: 'function', function: { name: p.name, arguments: args && typeof args === 'object' ? args : {} } };
     });
-    // Thinking is never replayed into history; the calls are, so the results can answer them.
+    // The calls are replayed so the results can answer them; the thinking behind them stays with them
+    // for that tool round only (nativeMessages drops it after).
+    const thought = [earlier, reasoning].filter(t => t && t.trim()).join('\n');
     this.messages.push({ role: 'assistant', content: text,
-      ...(calls.length ? { tool_calls: calls.map(c => ({ id: c.id, type: 'function', function: { name: c.function.name, arguments: JSON.stringify(c.function.arguments) } })) } : {}) });
-    if (ctrl.signal.aborted && !looped) return;
-    for (const c of calls) this.active.add(c.function.name);   // a tool it called without looking up stays declared
-    if (calls.length) yield { tool_calls: calls };
+      ...(calls.length ? { tool_calls: calls.map(c => ({ id: c.id, type: 'function', function: { name: c.function.name, arguments: JSON.stringify(c.function.arguments) } })) } : {}),
+      ...(calls.length && thought ? { reasoning_content: thought } : {}) });
+    return { calls, looped, aborted: ctrl.signal.aborted, overBudget: false, reasoning };
   }
 }
 

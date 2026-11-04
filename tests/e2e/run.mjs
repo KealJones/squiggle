@@ -1045,7 +1045,8 @@ await check('AI-managed context: budget line, steps attach earlier results, chec
     };
   });
   assert.deepEqual(r.steps, [['done', 'Ada was born in 1950', null], ['done', 'Ben was born in 1960', null], ['done', 'Ada is 10 years older', ['step:1', 'step:2']]]);
-  assert.match(r.chatInput, /\n\nContext: [\d,]+ of [\d,]+ tokens used \(about [\d,]+ left after room for your reply\)\.$/);
+  // The budget line is harness text in the user turn, so it is marked as Squiggle's (tasks.js DIALECT v3).
+  assert.match(r.chatInput, /\n\n\(Squiggle: Context: [\d,]+ of [\d,]+ tokens used \(about [\d,]+ left after room for your reply\)\.\)$/);
   assert.match(r.chatSystem, /call checkpoint and carry on fresh/);
   assert.ok(r.chatTools.includes('checkpoint') && r.chatTools.includes('plan'), JSON.stringify(r.chatTools));
   assert.match(r.step3, /## Attached for this step \(\d+ tokens\)\n### step:1 \(\d+ tokens\)\nStep 1 \(Find when Ada was born\): Ada was born in 1950/);
@@ -1477,7 +1478,7 @@ await check('small-model mode is a per-model switch: off gives E2B the full prom
   await D.page.waitForTimeout(500);
   const on = await send('hello again');
   assert.match(on.system, /^You are Squiggle, an assistant that figures things out\./);
-  assert.match(on.system, /find tells you which of your other tools fits/);
+  assert.match(on.system, /when you don't, find tells you which fits/);
   assert.doesNotMatch(on.system, /```tool_call/, 'native tool formats don\'t get the fenced-block line');
   assert.ok(on.tools.includes('find') && on.tools.includes('plan'), JSON.stringify(on.tools));
   // Squiggle Small: shown as always on, no switch.

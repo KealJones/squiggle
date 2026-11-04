@@ -11,19 +11,19 @@ const HF = 'https://huggingface.co/';
 
 // phone: small enough for a phone's per-tab memory. size: download size.
 export const MODELS = {
-  E4B: { label: 'Gemma 4 E4B', size: '3.0 GB', note: 'smartest on-device model, best with tools', phone: false, runtime: 'litert',
+  E4B: { label: 'Gemma 4 E4B', size: '3.0 GB', note: 'smartest on-device model, best with tools', phone: false, runtime: 'litert', family: 'gemma4',
     url: HF + 'litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-web.litertlm' },
-  E2B: { label: 'Gemma 4 E2B', size: '2.0 GB', note: 'faster, still good with tools', phone: false, runtime: 'litert',
+  E2B: { label: 'Gemma 4 E2B', size: '2.0 GB', note: 'faster, still good with tools', phone: false, runtime: 'litert', family: 'gemma4',
     url: HF + 'litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.litertlm' },
-  G3: { label: 'Gemma 3 270M', size: '242 MB', note: 'tiny and fast; runs on a phone\'s CPU, no WebGPU needed. Chat only: no tools or web lookups, and it often gets facts wrong', phone: true, runtime: 'wllama',
+  G3: { label: 'Gemma 3 270M', size: '242 MB', note: 'tiny and fast; runs on a phone\'s CPU, no WebGPU needed. Chat only: no tools or web lookups, and it often gets facts wrong', phone: true, runtime: 'wllama', family: 'fenced',
     url: HF + 'unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q4_0.gguf', bytes: 241574944 },
   // Experimental: LFM2.5-350M fine-tuned on Squiggle's harness format (lm-experiments
   // experiments/squiggle-ft). Same runtime and prompt format as G3.
-  SQ: { label: 'Squiggle Small (experimental)', size: '219 MB', note: 'LFM2.5 350M trained on Squiggle\'s own tools and habits (plan, find, done). Uses tools and looks things up; still often wrong; runs on a phone\'s CPU', phone: true, runtime: 'wllama', tools: true,
+  SQ: { label: 'Squiggle Small (experimental)', size: '219 MB', note: 'LFM2.5 350M trained on Squiggle\'s own tools and habits (plan, find, done). Uses tools and looks things up; still often wrong; runs on a phone\'s CPU', phone: true, runtime: 'wllama', tools: true, family: 'fenced',
     url: HF + 'kealjones/squiggle-small/resolve/main/squiggle-small-lfm25-Q4_0.gguf', bytes: 219312160 },
   // Size tests for phones (Keal, 2026-10-28): how big a model an iPhone tab survives on wllama.
   // Plain chat only (stock models: no harness), smallest to largest.
-  Q06: { label: 'Test: Qwen3 0.6B', size: '382 MB', note: 'phone size test: does a ~600M model load and run? Chat only, no tools', phone: true, runtime: 'wllama',
+  Q06: { label: 'Test: Qwen3 0.6B', size: '382 MB', note: 'phone size test: does a ~600M model load and run? Chat only, no tools', phone: true, runtime: 'wllama', family: 'qwen3',
     url: HF + 'unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_0.gguf', bytes: 382156480 },
   LF12: { label: 'Test: LFM2.5 1.2B', size: '696 MB', note: 'phone size test: Squiggle Small\'s bigger sibling (1.2B). Chat only, no tools', phone: true, runtime: 'wllama',
     url: HF + 'LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q4_0.gguf', bytes: 695751488 },
@@ -31,15 +31,15 @@ export const MODELS = {
     url: HF + 'unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_0.gguf', bytes: 773025824 },
   // Gemma 4 E2B pruned (80K vocab, hidden 1024, FFN 42%, 31 layers) and healed by distillation, last on
   // E2B's own answers and tool calls (lm-experiments experiments/tiny-gemma4, heal 3).
-  TG4: { label: 'Test: Tiny Gemma 4', size: '778 MB', note: 'Gemma 4 E2B cut down for phones (0.6B core) and healed on E2B\'s own answers. Answers short questions, calls Gemma 4\'s tools; still often wrong. Experimental', phone: true, runtime: 'wllama', tools: true, native: true,
+  TG4: { label: 'Test: Tiny Gemma 4', size: '778 MB', note: 'Gemma 4 E2B cut down for phones (0.6B core) and healed on E2B\'s own answers. Answers short questions, calls Gemma 4\'s tools; still often wrong. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, family: 'gemma4',
     url: HF + 'kealjones/tiny-gemma4-test/resolve/main/tiny-gemma4-heal3-v2-Q4_0.gguf', bytes: 778158496 },
   // Heal 4 pilot A (lm-experiments experiments/tiny-gemma4, 2026-11-03): heal 3 + 750 steps on Toucan's multi-turn
   // tool conversations with real results. In tests it answers from tool results (heal 3 replied with nothing) and
   // handles a failed search, but plain text got a little worse. Same size and runtime as TG4.
-  TG4A: { label: 'Test: Tiny Gemma 4 (heal 4)', size: '778 MB', note: 'tiny Gemma 4 trained further on tool conversations with real results: it now answers from what a search returns. Plain answers got a little worse than heal 3. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, thinking: false,
+  TG4A: { label: 'Test: Tiny Gemma 4 (heal 4)', size: '778 MB', note: 'tiny Gemma 4 trained further on tool conversations with real results: it now answers from what a search returns. Plain answers got a little worse than heal 3. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, family: 'gemma4', thinking: false,
     url: HF + 'kealjones/tiny-gemma4-test/resolve/main/tiny-gemma4-heal4a-Q4_0.gguf', bytes: 778158496 },
   // Stock Qwen3.5 0.8B (Keal, 2026-10-31): tools through Qwen's own chat template, like TG4 (native), no fine-tune.
-  Q35: { label: 'Test: Qwen3.5 0.8B', size: '507 MB', note: 'stock Qwen3.5 0.8B with tools in its own tool format (no Squiggle training). Thinks a lot, so it\'s slow on a phone. Experimental', phone: true, runtime: 'wllama', tools: true, native: true,
+  Q35: { label: 'Test: Qwen3.5 0.8B', size: '507 MB', note: 'stock Qwen3.5 0.8B with tools in its own tool format (no Squiggle training). Runs without thinking, as its model card recommends for this size. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, family: 'qwen35', thinking: false,
     url: HF + 'unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_0.gguf', bytes: 507154688 },
   // Not on this device: runs on the relay (only listed when the relay offers it).
   // WebLLM (MLC) on WebGPU (engine-webllm.js, Keal 2026-11-02): the same small-model path as the
@@ -48,11 +48,11 @@ export const MODELS = {
   // twice the memory; 1B fits, Qwen3.5 2B loaded but died on its first reply. Sizes are approximate.
   WL1: { label: 'Llama 3.2 1B (GPU, fast)', size: '~700 MB', note: 'stock Llama 3.2 1B on WebLLM (WebGPU): about 30 words a second on an iPhone, much faster than the CPU models, but it uses about twice the memory. Chat only, no tools. Experimental', phone: true, runtime: 'wllama', backend: 'webllm',
     mlc: 'Llama-3.2-1B-Instruct-q4f16_1-MLC', bytes: 700000000 },
-  WQ06: { label: 'Qwen3 0.6B (GPU, fast)', size: '~350 MB', note: 'stock Qwen3 0.6B on WebLLM (WebGPU) with tools in Qwen\'s own format: about 30 words a second on an iPhone, for about twice the memory of the CPU models. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'qwen3',
+  WQ06: { label: 'Qwen3 0.6B (GPU, fast)', size: '~350 MB', note: 'stock Qwen3 0.6B on WebLLM (WebGPU) with tools in Qwen\'s own format: about 30 words a second on an iPhone, for about twice the memory of the CPU models. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'qwen3', family: 'qwen3',
     mlc: 'Qwen3-0.6B-q4f16_1-MLC', bytes: 350000000 },
-  WQ35: { label: 'Qwen3.5 0.8B (GPU)', size: '~500 MB', note: 'stock Qwen3.5 0.8B on WebLLM (WebGPU) with tools in its own format: about 14 words a second on an iPhone (3x the CPU build). Thinks a lot. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'qwen35',
+  WQ35: { label: 'Qwen3.5 0.8B (GPU)', size: '~500 MB', note: 'stock Qwen3.5 0.8B on WebLLM (WebGPU) with tools in its own format: about 14 words a second on an iPhone (3x the CPU build). Runs without thinking, as its model card recommends for this size. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'qwen35', family: 'qwen35', thinking: false,
     mlc: 'Qwen3.5-0.8B-q4f16_1-MLC', bytes: 500000000 },
-  cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true },
+  cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true, family: 'gemma4' },
 };
 
 // Every file a model needs (none for the cloud model).
@@ -390,23 +390,51 @@ export async function unload() {
   engine = null; loadedModel = null;
 }
 
-const SAMPLER = { type: 2, p: 0.95, k: 64, temperature: 0.7 };
+// ── Generation settings per model (docs/harness.md, "Per-model generation settings") ──
+//
+// Sampling follows each model's own card; one setting for every model was wrong for most of them
+// (Qwen's cards want no repeat penalty, Gemma 4's wants temperature 1.0). A family is the card the
+// numbers come from; `fenced` is Squiggle Small's family and must stay as it is: its eval
+// (lm-experiments backends.py HFStudent) runs with exactly these numbers.
+//   temperature, top_k, top_p, min_p: the usual samplers (WebLLM has no top_k or min_p).
+//   repeat: llama.cpp's repeat penalty over the last 64 tokens (1 = off). presence: presence penalty (0 = off).
+const SAMPLING = {
+  fenced: { temperature: 0.7, top_k: 64, top_p: 0.95, min_p: 0, repeat: 1.15, presence: 0 },
+  gemma4: { temperature: 1.0, top_k: 64, top_p: 0.95, min_p: 0, repeat: 1.0, presence: 0 },      // Gemma 4 model card: one setting for all uses
+  qwen3: { temperature: 0.6, top_k: 20, top_p: 0.95, min_p: 0, repeat: 1.0, presence: 1.5 },     // Qwen3 card, thinking mode; presence penalty against repetition, not repeat penalty
+  qwen35: { temperature: 1.0, top_k: 20, top_p: 1.0, min_p: 0, repeat: 1.0, presence: 2.0 },     // Qwen3.5-0.8B card, non-thinking text (how it runs here)
+  default: { temperature: 0.7, top_k: 64, top_p: 0.95, min_p: 0, repeat: 1.15, presence: 0 },    // stock models with no card guidance here (Llama 3.2, LFM2.5 1.2B)
+};
+// A model's generation profile: its sampling, whether it thinks, and how much (docs/harness.md).
+//   thinking: false means the model never gets thinking turned on (trained without it, or its card says so for this size).
+//   thinkBudget: reasoning tokens a reply may spend before the engine stops the thinking and asks for the
+//   answer (engine-wllama.js). 0 = no cap. Small models default to 400 of a 1,024-token reply: past that, the
+//   thinking was eating the whole reply (a 0.6B model thought until the output cap and never answered).
+export function generationFor(id = loadedModel) {
+  const m = MODELS[id] || {};
+  const sampling = { ...(SAMPLING[m.family] || SAMPLING.default), ...(m.sampling || {}) };
+  const small = Boolean(m.runtime === 'wllama');
+  return { sampling, thinking: m.thinking !== false, thinkBudget: m.thinkBudget !== undefined ? m.thinkBudget : (small ? 400 : 0) };
+}
 const GREEDY = { type: 3 };
+// LiteRT's sampler from a sampling profile (top-k/top-p sampling; the engine has no penalties).
+const litertSampler = (s) => ({ type: 2, p: s.top_p, k: s.top_k, temperature: s.temperature });
 
 // Starts a conversation from a preface: system text, prior turns, tools.
 export async function conversation({ system, messages = [], tools = [], thinking = false, maxOutputTokens = 2048, greedy = false, known = [], gate = null }) {
   if (!engine) throw new Error('Model not loaded.');
+  const gen = generationFor();
   const preface = {
     messages: [{ role: 'system', content: system }, ...messages],
     // A model trained without thinking (thinking: false in MODELS) gets the prompt it was trained on.
-    extra_context: { enable_thinking: thinking && !(MODELS[loadedModel] && MODELS[loadedModel].thinking === false) },
+    extra_context: { enable_thinking: thinking && gen.thinking },
   };
   if (tools.length) preface.tools = tools.map(t => ({ type: 'function', function: t }));
   // The small model only sees details of tools it has looked up (engine-wllama.js).
   if (isLite() && known.length) preface.known = known;
   // Small native models: only these (plus tools looked up) are declared; the rest are names in the prompt.
   if (isLite() && gate) preface.gate = gate;
-  const cfg = { preface, sessionConfig: { maxOutputTokens, samplerParams: greedy ? GREEDY : SAMPLER } };
+  const cfg = { preface, sessionConfig: { maxOutputTokens, samplerParams: greedy ? GREEDY : litertSampler(gen.sampling), sampling: gen.sampling, thinkBudget: gen.thinkBudget } };
   try {
     return await engine.createConversation(cfg);
   } catch (e) {

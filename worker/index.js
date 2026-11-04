@@ -426,7 +426,7 @@ async function aiChat(request, env) {
   if (!body || !Array.isArray(body.messages) || !body.messages.length) return json({ error: 'messages required' }, 400);
   const req = { messages: body.messages, max_tokens: Math.min(Number(body.max_tokens) || 1024, AI_MAX_OUTPUT) };
   if (Array.isArray(body.tools) && body.tools.length) req.tools = body.tools;
-  if (typeof body.temperature === 'number') req.temperature = body.temperature;
+  for (const k of ['temperature', 'top_p', 'top_k']) if (typeof body[k] === 'number') req[k] = body[k];
 
   const estimate = aiEstimate(req);
   const held = await budget(env, 'reserve', estimate);

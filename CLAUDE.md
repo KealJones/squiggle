@@ -28,11 +28,11 @@ app/                    static app, plain ES modules, no build step
       model-ui.js       model download/load with progress, crash-loop guard, banners, composer note
       voice-ui.js       read aloud, voice calls (call bar), natural voice lifecycle and crash marker
     agent.js            turn loop (docs/harness.md): chat phase → plan → one fresh prompt per step → final reply; need/find; recipes learned after
-    tasks.js            step-mode task state, step/final prompts (budgeted), resume rules
+    tasks.js            step-mode task state, step/final prompts (budgeted), resume rules, DIALECT (v2 frozen fenced text / v3 marked harness text)
     recipes.js          memory/recipes.jsonl: how finished tasks were solved, matched to new requests, forgotten after 90 days unused
     find.js             `find`: one search over tools, recipes, memory, past chats and this task
     refs.js             reference resolution ("that", "the repo", links) → hints in the prompt
-    engine.js           model registry, download (resumable, IndexedDB chunks), LiteRT engine, generation
+    engine.js           model registry (families, generationFor: sampling/thinking/thinkBudget per model), download (resumable, IndexedDB chunks), LiteRT engine, generation
     engine-cloud.js     cloud model through the relay (same conversation interface)
     engine-wllama.js    Gemma 3 270M on llama.cpp WASM (phones): prompt-based tools, <think>, anti-loop
     context.js          context assembly: CONTEXT_MODES registry (smart default / compact / managed / full); report
@@ -57,7 +57,8 @@ app/                    static app, plain ES modules, no build step
     storage.js          storage repo: setup, clone at /state, client-side rebase sync
     merge.js            conflict-free merges (sessions JSON, .jsonl)
     sessions.js         sessions + threads + observations on top of storage
-    memory.js           fact graph (memory/facts.jsonl), recall with 1-hop expansion
+    memory.js           fact graph (memory/facts.jsonl), recall with 1-hop expansion (through specific entities only)
+    memory-rank.js      the pure parts of memory: rankFacts (absolute relevance, search.js overlap), aboutTheUser (extraction guard)
     github.js           device flow, token refresh, REST helpers (token never leaves here)
     git.js              LightningFS + isomorphic-git wiring
     config.js           relay address: config.json / per-device override / same-origin
@@ -105,7 +106,7 @@ panel is open at ≤1500 px. Replies saved before this show just the total.
 ## Data model
 
 Session file `sessions/<id>.json`: `{ v, id, title, created, updated, deleted?,
-messages[{id, role, content, ts, mts?, thread, tools?, context?, pinned?, attachments?[{name, path, type, size, chars, lines?, error?}]}],
+messages[{id, role, content, ts, mts?, thread, tools?, context?, model?, pinned?, attachments?[{name, path, type, size, chars, lines?, error?}]}],
 threads{id: {parent, title, summary?}}, observations[], summaries{main|threadId} }`.
 Attachments: storage only holds text, so text files are saved as-is and PDFs as
 their extract (`<name>.txt`) under `home/attachments/<session>/`; images as the text
@@ -128,6 +129,12 @@ A thread's context = main messages up to its parent + its own messages
 
 The design doc is the contract for agent.js/tasks.js and for the small-model fine-tune; change
 both together. Task state lives on the session (`session.tasks`, merged by id like notes).
+Prompts come in two dialects (`tasks.js DIALECT`, `agent.dialect()`): v2 is the fenced small-model format,
+Squiggle Small's training text, frozen; v3 (every other model) marks text the harness adds to a user turn
+as "(Squiggle: …)" and retitles the memory section, because small models read harness text in the user
+turn as the person's words. Memory recall uses an absolute bar (`memory-rank.js`), never hops through
+"user"/"Squiggle", and `aboutTheUser` keeps facts about the assistant itself out. Sampling, thinking and a
+thinking budget come from each model's card (`engine.generationFor`); replies save which model wrote them.
 Context modes (`settings.contextMode`, `context.js CONTEXT_MODES`): `compact` (Compress), `smart` (default) and `managed` (AI-managed,
 experimental: budget line, plan steps with `needs`/`kind: 'summarize'`, `checkpoint`). Everything AI-managed adds
 is behind `managed()`; the other modes must stay unchanged (Squiggle Small's prompt is its training text).
@@ -188,7 +195,7 @@ Two experimental settings for wllama models (off by default): "Use the GPU" (`sm
 page, which sw.js does by adding COOP/COEP/CORP to the app's own responses while the `squiggle-flags` cache holds
 `/__flags/isolate`; takes a reload). A crash with either on offers to turn them off. The composer note shows what's in
 use (GPU / N cores / Safari's slower compatibility build, which wllama picks when JSPI or Memory64 is missing) and the last
-reply's speed. Size-test models (Q06, LF12, LL1) are plain chat. TG4A is tiny Gemma 4 heal 4 pilot A (same runtime and size as TG4; trained on Toucan tool conversations, answers from tool results). It was trained without thinking, so it sets `thinking: false` in MODELS and `conversation()` never turns thinking on for it (with thinking on it re-calls the tool instead of answering from the result). TG4 (tiny Gemma 4, lm-experiments experiments/tiny-gemma4, distilled from E2B) sets `native: true`: wllama loads it with `jinja: true` and `NativeConversation` sends real `tools` through the GGUF's own Gemma 4 chat template, reading back llama.cpp's parsed `tool_calls`; the agent gives it E2B's system prompt, but small-model budgets and no background jobs. Its tools are gated (`agent.js gated()`, docs/harness.md "Tool names up front"): a few declared up front, the rest listed by name and declared when `tool_info(names)` or `find` asks for them, since every schema filled ~83% of a 4K window. Settings → Small-model mode (per model, `settings.smallMode`) switches any model with tools except the fenced-format ones (always on) to the find-first `LITE_SYSTEM_NATIVE` prompt (docs/harness.md). Q35 (stock Qwen3.5 0.8B, unsloth's Q4_0 GGUF) uses the same native path with Qwen's own template. `node tests/e2e/wllama-bench.mjs [--model SQ]` loads a
+reply's speed. Size-test models (Q06, LF12, LL1) are plain chat. TG4A is tiny Gemma 4 heal 4 pilot A (same runtime and size as TG4; trained on Toucan tool conversations, answers from tool results). It was trained without thinking, so it sets `thinking: false` in MODELS and `conversation()` never turns thinking on for it (with thinking on it re-calls the tool instead of answering from the result). TG4 (tiny Gemma 4, lm-experiments experiments/tiny-gemma4, distilled from E2B) sets `native: true`: wllama loads it with `jinja: true` and `NativeConversation` sends real `tools` through the GGUF's own Gemma 4 chat template, reading back llama.cpp's parsed `tool_calls`; the agent gives it E2B's system prompt, but small-model budgets and no background jobs. Its tools are gated (`agent.js gated()`, docs/harness.md "Tool names up front"): a few declared up front, the rest listed by name and declared when `tool_info(names)` or `find` asks for them, since every schema filled ~83% of a 4K window. Settings → Small-model mode (per model, `settings.smallMode`, true/false; unset = the default, on for small models and off for big ones) switches any model with tools except the fenced-format ones (always on) to the short `LITE_SYSTEM_NATIVE` prompt (docs/harness.md). Q35 (stock Qwen3.5 0.8B, unsloth's Q4_0 GGUF) uses the same native path with Qwen's own template, with thinking off (its card's default for this size). Small models get a thinking budget (400 reasoning tokens, `engine.generationFor`); the Qwens get their cards' sampling (no repeat penalty, a presence penalty), Gemma 4 its card's temperature 1.0 (docs/harness.md "Per-model generation settings"). `node tests/e2e/wllama-bench.mjs [--model SQ]` loads a
 real model in headless Chromium: one thread vs all cores vs WebGPU.
 
 WebLLM (`engine-webllm.js`, @mlc-ai/web-llm 0.2.87 from jsDelivr): WL1 (Llama 3.2 1B, chat only), WQ06 (Qwen3 0.6B) and

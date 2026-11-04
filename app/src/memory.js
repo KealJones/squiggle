@@ -9,7 +9,9 @@
 import * as storage from './storage.js';
 import { uid, emitter } from './util.js';
 import { parseJsonl, toJsonl } from './merge.js';
-import { bm25, blend, cosine } from './search.js';
+import { cosine } from './search.js';
+import { rankFacts, aboutTheUser, factText } from './memory-rank.js';
+export { rankFacts, aboutTheUser, factText };
 import { embed } from './embed.js';
 
 const FILE = 'memory/facts.jsonl';
@@ -24,7 +26,6 @@ export async function load() {
 }
 
 export const all = () => facts.filter(f => !f.deleted);
-export const factText = (f) => `${f.s} ${f.p} ${f.o}${f.note ? ` (${f.note})` : ''}`;
 const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
 const key = (f) => `${norm(f.s)}|${norm(f.p)}|${norm(f.o)}`;
 
@@ -75,34 +76,22 @@ export async function reload(paths) {
   if (paths.includes('*') || paths.includes(FILE)) await load();
 }
 
-// Facts relevant to `query`, best first: keyword + semantic match, then one
-// hop through shared entities (a fact about "squiggle" pulls in other facts
-// whose subject or object is "squiggle", at a discount).
+// Facts relevant to `query`, best first, each with a 0..1 score. The score is absolute (search.js overlap:
+// how much of the fact the query covers), not relative to the best match: when nothing fits, nothing
+// scores, instead of the least unrelated fact scoring 1 and dragging its neighbours in. With embeddings,
+// the semantic similarity is blended in. Then one hop through a shared entity, at half the score, but
+// only through a specific one: "user", "Squiggle" or the person's name sit on most facts and linked every
+// fact to every other (a request about a movie got "user considers using SQLite" that way).
 export async function recall(query, k = 8) {
   const live = all();
   if (!live.length || !String(query || '').trim()) return [];
-  const docs = live.map(f => ({ id: f.id, text: factText(f) }));
-  const kw = bm25(docs)(query);
   let sem = null;
-  const vecs = await embed([query, ...docs.map(d => d.text)]).catch(() => null);
+  const vecs = await embed([query, ...live.map(f => factText(f))]).catch(() => null);
   if (vecs) {
     sem = new Map();
-    docs.forEach((d, i) => sem.set(d.id, cosine(vecs[0], vecs[i + 1])));
+    live.forEach((f, i) => sem.set(f.id, cosine(vecs[0], vecs[i + 1])));
   }
-  const score = blend(kw, sem);
-  const byId = new Map(live.map(f => [f.id, f]));
-  const top = [...score.entries()].filter(([, s]) => s > 0.2).sort((a, b) => b[1] - a[1]).slice(0, k);
-  const result = new Map(top);
-  for (const [id, s] of top) {
-    const f = byId.get(id);
-    for (const g of live) {
-      if (result.has(g.id)) continue;
-      const shares = [g.s, g.o].some(e => norm(e) === norm(f.s) || norm(e) === norm(f.o));
-      if (shares) result.set(g.id, Math.max(result.get(g.id) || 0, s * 0.5));
-    }
-  }
-  return [...result.entries()].sort((a, b) => b[1] - a[1]).slice(0, k)
-    .map(([id, s]) => ({ fact: byId.get(id), score: s }));
+  return rankFacts(live, query, { sem, k });
 }
 
 // Entity -> facts, for the memory panel's graph view.

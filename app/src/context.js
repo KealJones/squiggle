@@ -101,6 +101,7 @@ export function chunk(text, maxTokens = CHUNK_TOKENS) {
  * @param {Function} [o.recall]    async (query, k) => [{ fact, score }]
  * @param {Function} [o.embed]     async (texts) => Float32Array[] | null
  * @param {Function} [o.factText]
+ * @param {string}   [o.factsTitle] heading of the memory-facts section (tasks.js DIALECT memoryTitle)
  * @param {string}   [o.focus]     the active goal and step, added to the retrieval query
  * @param {object[]} [o.extra]     sections from the harness, shown first: [{ kind, title, text, label }]
  * @param {object[]} [o.others]    other sessions to search (smart mode)
@@ -208,7 +209,7 @@ export async function assembleContext(o) {
 
   // 4. Memory facts (all modes; they're small and about the person).
   if (o.recall && !o.small) {
-    const facts = (await o.recall(o.focus ? `${query}\n${o.focus}` : query, 10)).filter(r => r.score >= 0.25);
+    const facts = (await o.recall(o.focus ? `${query}\n${o.focus}` : query, 10)).filter(r => r.score >= 0.2);
     const cap = Math.floor(budget * 0.12);
     const lines = [];
     let t = 0;
@@ -219,7 +220,7 @@ export async function assembleContext(o) {
       lines.push(ln); t += lt;
       report.items.push({ kind: 'fact', id: fact.id, label: ln.slice(2), tokens: lt, score: round(score) });
     }
-    if (lines.length) { sections.push(`## What you know about the user and their work\n${lines.join('\n')}`); used += t; }
+    if (lines.length) { sections.push(`## ${o.factsTitle || 'What you know about the user and their work'}\n${lines.join('\n')}`); used += t; }
   }
 
   // 5. Smart retrieval from older messages, tool output and thread outcomes.

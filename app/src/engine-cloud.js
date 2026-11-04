@@ -17,7 +17,10 @@ class Conversation {
     this.messages = preface.messages.map(m => ({ role: m.role === 'model' ? 'assistant' : m.role, content: m.content }));
     this.tools = preface.tools || [];
     this.max = sessionConfig.maxOutputTokens || 1024;
-    this.temperature = sessionConfig.samplerParams && sessionConfig.samplerParams.type === 3 ? 0 : 0.7;
+    // The model's sampling profile (engine.js generationFor); greedy for background jobs.
+    const s = sessionConfig.sampling || { temperature: 0.7, top_p: 0.95, top_k: 64 };
+    const greedy = sessionConfig.samplerParams && sessionConfig.samplerParams.type === 3;
+    this.sampling = { temperature: greedy ? 0 : s.temperature, top_p: s.top_p, top_k: s.top_k };
     this.lastCalls = [];
     this.cancelled = false;
   }
@@ -35,7 +38,7 @@ class Conversation {
     }
     let d;
     try {
-      d = await relayAi({ messages: this.messages, tools: this.tools.length ? this.tools : undefined, max_tokens: this.max, temperature: this.temperature });
+      d = await relayAi({ messages: this.messages, tools: this.tools.length ? this.tools : undefined, max_tokens: this.max, ...this.sampling });
     } catch (e) {
       if (e.code === 'limit') throw new Error(limitMessage(e.resetsAt));
       throw e;

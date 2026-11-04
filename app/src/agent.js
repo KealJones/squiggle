@@ -32,7 +32,7 @@ export const settings = {
   recallChats: true,        // smart mode may recall messages from other chats too
   learn: true,              // extract memory facts after turns
   tools: null,              // Set of enabled tool names, or null for all
-  smallMode: {},            // model id → true: small-model mode on for a model that can switch (smallModeSwitchable)
+  smallMode: {},            // model id → true/false: small-model mode for a model that can switch (smallModeSwitchable); unset = the model's default (smallMode)
 };
 
 const MAX_OUTPUT = 1536;
@@ -52,12 +52,19 @@ export const LITE_SYSTEM = [
 
 // The same prompt for models that call tools in their own native format (Gemma 4, Qwen, the cloud model):
 // the first three lines are LITE_SYSTEM's, the fenced-block line is left out (their template declares the
-// tools), and find is how they learn which of the declared tools fits.
+// tools). It used to say "start with plan, done, need and find", which a small model took as an order to
+// call those before anything else: told "use web_search", it argued with the prompt until its output ran
+// out. Now: call the tool you need; find is for when you don't know which. Gated models get the names of
+// what is ready and what needs tool_info first (toolNamesLine), so nothing usable is left unnamed.
 export const LITE_SYSTEM_NATIVE = [
   ...LITE_SYSTEM.split('\n').slice(0, 3),
-  'Start with plan, done, need and find; find tells you which of your other tools fits.',
+  'Call a tool as soon as you know which one you need; when you don\'t, find tells you which fits.',
   'Arguments: plan(goal, steps), done(result), need(what), find(query).',
 ].join('\n');
+
+// Which prompt dialect this model gets (tasks.js DIALECT): the frozen fenced one for Squiggle Small, v3
+// (harness text in a user turn marked as Squiggle's) for everyone else.
+export const dialect = () => (fencedSmall() ? tasks.DIALECT.v2 : tasks.DIALECT.v3);
 
 const lite = () => engine.isLite(settings.model);
 // A small (wllama) model that speaks Gemma 4's own tool format (engine nativeTools): it gets the full prompt
@@ -76,8 +83,12 @@ const nativeId = (id) => Boolean(engine.nativeTools && engine.nativeTools(id));
 const chatOnlyId = (id) => Boolean(engine.chatOnly && engine.chatOnly(id));
 const fencedId = (id) => engine.isLite(id) && !nativeId(id) && !chatOnlyId(id);
 export const smallModeSwitchable = (id = settings.model) => Boolean(engine.MODELS[id]) && !chatOnlyId(id) && !fencedId(id);
+// The switch's default: on for every small model (the full prompt plus every schema took half of a phone's
+// 4K window and a 0.8B model answered the instructions instead of the person), off for big ones. A saved
+// true/false for the model wins.
+export const smallModeDefault = (id = settings.model) => engine.isLite(id);
 export const smallMode = (id = settings.model) => fencedId(id)
-  || (smallModeSwitchable(id) && Boolean(settings.smallMode && settings.smallMode[id]));
+  || (smallModeSwitchable(id) && (settings.smallMode && typeof settings.smallMode[id] === 'boolean' ? settings.smallMode[id] : smallModeDefault(id)));
 // AI-managed context (Settings → Context: AI-managed): the model sees what everything costs, steps say what
 // they need attached, and it can checkpoint to a fresh context (docs/harness.md, "the model manages its own
 // context"). Off in plain chat. Compress and Smart are unchanged.
@@ -89,16 +100,22 @@ const UPFRONT_SMALL = 'Each step shows only what it needs: attach earlier result
 // Plain chat for small models without tool training (engine.chatOnly).
 const plain = () => Boolean(engine.chatOnly && engine.chatOnly(settings.model));
 
-// Gated models: the tools they can ask tool_info about, by name only (phase 'final' has no tools).
-function toolNamesLine(phase) {
+// Gated models: what is declared and ready, then the tools they can ask tool_info about, by name only (phase
+// 'final' has no tools). Generated from the same sets the engine declares (phaseTools, GATE, known), so the
+// prompt never leaves a usable tool unnamed: web_search was declared but never mentioned, and the model
+// went looking for it through tool_info instead of calling it.
+function toolNamesLine(phase, known = []) {
   if (!gated() || phase === 'final') return '';
-  const names = toolSpecs(settings.tools).map(t => t.name).filter(n => !GATE.includes(n) && !(phase === 'step' && n === 'note'));
-  return names.length ? `Other tools: ${names.join(', ')}. Before calling one, get how with tool_info(names); ask for every one you expect to need at once.` : '';
+  const all = phaseTools(phase === 'step').map(t => t.name);
+  const ready = all.filter(n => GATE.includes(n) || known.includes(n));
+  const names = all.filter(n => !ready.includes(n));
+  return [`Tools ready to call: ${ready.join(', ')}.`,
+    names.length ? `Other tools: ${names.join(', ')}. To use one, first call tool_info(names) with every one you expect to need.` : ''].filter(Boolean).join('\n');
 }
 
-function systemPrompt(threadId, session, phase = 'chat') {
+function systemPrompt(threadId, session, phase = 'chat', known = []) {
   if (plain()) return '';
-  const names = toolNamesLine(phase);
+  const names = toolNamesLine(phase, known);
   if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : LITE_SYSTEM_NATIVE}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
   const thread = threadId && session.threads[threadId];
   return [
@@ -226,6 +243,8 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
     }
     const reply = turn.reply;
     reply.content = scrubFakeToolNotes(turn.prefix).trim();
+    // Which model wrote it (and how it ran), so a saved chat can be read against the right model.
+    reply.model = replyModel();
     if (turn.thinking) reply.thinking = turn.thinking.slice(-20000); // shown in the UI only; never replayed to the model
     if (turn.task) reply.task = turn.task.id;
     if (signal?.aborted && !reply.content) reply.content = '_(stopped)_';
@@ -235,6 +254,16 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
     afterTurn(session, threadId, turn.task && turn.task.status === 'done' && turn.finishedNow ? turn.task : null);
     return saved;
   });
+}
+
+// The model behind a reply, saved on the message: its id, label and how it ran (on this device, on the GPU or
+// CPU, or on the relay). Labels are kept because MODELS entries come and go.
+function replyModel() {
+  const id = settings.model;
+  const m = engine.MODELS[id] || {};
+  const info = engine.smallInfo && engine.smallInfo();
+  const how = m.runtime === 'cloud' ? 'relay' : m.runtime === 'litert' ? 'webgpu' : info ? (info.webllm ? 'webllm' : info.gpu ? 'wllama-gpu' : `wllama-cpu${info.threads > 1 ? `-${info.threads}` : ''}`) : m.runtime || '';
+  return { id, label: m.label || id, how, ...(smallModeSwitchable(id) ? { smallMode: smallMode(id) } : {}), contextSize: settings.contextSize, contextMode: settings.contextMode };
 }
 
 // One turn's state: the reply being written, counters, and the phases.
@@ -339,7 +368,7 @@ class Turn {
       // after the request (recall.js); only on a real question and above a bar.
       others: settings.recallChats === false ? [] : sessions.list(),
       small: lite(),
-      recall: (q, k) => memory.recall(q, k), factText: memory.factText,
+      recall: (q, k) => memory.recall(q, k), factText: memory.factText, factsTitle: dialect().memoryTitle,
       actions: !lite(),   // "Tool calls you made" read to small models as things the user said
       embed: settings.contextMode === 'smart' && settings.semantic ? embed : null,
     });
@@ -372,7 +401,7 @@ class Turn {
     this.attNote = att.note || '';
     used += estTokens(att.text);
     const reserve = Math.min(MAX_OUTPUT, 700);
-    if (managed()) pending += `\n\n${tasks.budgetLine(used, settings.contextSize, reserve)}`;
+    if (managed()) pending += `\n\n${tasks.budgetLine(used, settings.contextSize, reserve, dialect())}`;
     this.setWindow(windowOf(ctx.report, { system: plain() ? 0 : estTokens(ctx.system), tools: toolTokens, message: estTokens(this.shown) + estTokens(att.text) }), used);
     let chatCalls = 0, full = false;
     for (;;) {
@@ -491,8 +520,9 @@ class Turn {
       if (r) sections.push({ title: 'Recipe from a similar task', text: recipeText(r) });
     }
     try {
-      const facts = (await memory.recall(`${this.shown}\n${focus}`, 8)).filter(r => r.score >= 0.25);
-      if (facts.length) sections.push({ title: 'What you know about the user and their work', text: facts.map(f => '- ' + memory.factText(f.fact)).join('\n') });
+      // The bar is absolute (memory.js rankFacts): about one shared rare word between a short fact and the request.
+      const facts = (await memory.recall(`${this.shown}\n${focus}`, 8)).filter(r => r.score >= 0.2);
+      if (facts.length) sections.push({ title: dialect().memoryTitle, text: facts.map(f => '- ' + memory.factText(f.fact)).join('\n') });
     } catch {}
     if (managed()) {
       // The step's own choices replace the automatic retrieval: a checkpoint to carry on from, and attachments.
@@ -562,13 +592,13 @@ class Turn {
     const tools = phaseTools(true);
     const known = [...new Set([...preloaded(tools), ...(task.tools || [])])];
     const toolTokens = toolCost(tools, known);
-    checkOverhead(systemPrompt(this.threadId, this.session, 'step'), toolTokens);
+    checkOverhead(systemPrompt(this.threadId, this.session, 'step', known), toolTokens);
     this.declaredNames = new Set(tools.map(t => t.name).filter(n => !gated() || GATE.includes(n) || known.includes(n)));
     // The step prompt gets under half the window; the rest is for the step's
     // own tool calls and output (a phone has 4096 tokens in all).
     const maxTokens = Math.max(600, Math.floor(settings.contextSize * 0.45) - toolTokens);
     const sections = await this.stepSections(task, step);
-    const prompt = tasks.stepPrompt(systemPrompt(this.threadId, this.session, 'step'), task, sections, { maxTokens });
+    const prompt = tasks.stepPrompt(systemPrompt(this.threadId, this.session, 'step', known), task, sections, { maxTokens });
     const system = prompt.text;
     const n = tasks.stepIndex(task, step) + 1;
     this.reply.context = { mode: 'step', budget: settings.contextSize, used: estTokens(system),
@@ -576,9 +606,10 @@ class Turn {
         ...sections.filter(x => prompt.shown.includes(x.title)).map(x => ({ kind: 'section', label: x.title, tokens: estTokens(x.text) }))] };
     this.conv = await engine.conversation({ system, messages: [], tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known, gate: gated() ? GATE : null });
     const reserve = Math.min(MAX_OUTPUT, 700);
-    let pending = tasks.stepUser(task);
+    const d = dialect();
+    let pending = tasks.stepUser(task, { dialect: d });
     let used = estTokens(system) + estTokens(pending) + toolTokens;
-    if (managed()) { pending = tasks.stepUser(task, { budget: tasks.budgetLine(used + 30, settings.contextSize, reserve) }); used += 30; }
+    if (managed()) { pending = tasks.stepUser(task, { budget: tasks.budgetLine(used + 30, settings.contextSize, reserve, d), dialect: d }); used += 30; }
     const room = () => Math.max(0, (settings.contextSize - used - reserve) * 3);
     this.setWindow(windowOf(this.reply.context, { system: estTokens(system), tools: toolTokens, message: estTokens(pending) }), used);
     const label = `Step ${n}: ${step.text}`;
@@ -597,7 +628,7 @@ class Turn {
           if (text && !looped) { tasks.finishStep(task, text); return 'next'; }
           // Only thinking, nothing at all, or a loop: nudge it, then ask the person.
           if (++blank <= 2) {
-            pending = looped ? 'You were repeating yourself. Say in one or two lines what you found, then call done, or call a tool.' : 'Finish your thought, then call a tool, or call done with what you found.';
+            pending = d.note(looped ? 'You were repeating yourself. Say in one or two lines what you found, then call done, or call a tool.' : 'Finish your thought, then call a tool, or call done with what you found.');
             continue;
           }
           return this.ask(`I got stuck on step ${n} ("${truncate(step.text, 80)}"). How should I go on?`, task);
@@ -710,7 +741,7 @@ class Turn {
     const maxTokens = Math.max(600, settings.contextSize - Math.min(MAX_OUTPUT, 1024) - 300);
     this.conv = await engine.conversation({ system: tasks.finalSystem(systemPrompt(this.threadId, this.session, 'final'), task, { maxTokens }), messages: [], tools: [], maxOutputTokens: MAX_OUTPUT });
     if (this.prefix && !/\n\n$/.test(this.prefix)) this.prefix += '\n\n';
-    const r = await this.respond(tasks.finalUser(task));
+    const r = await this.respond(tasks.finalUser(task, { dialect: dialect() }));
     this.prefix += r.text || '';
     await this.close();
   }
@@ -917,13 +948,13 @@ async function learnFacts(session, threadId) {
   if (last.length < 2 || last[0].role !== 'user') return;
   const known = (await memory.recall(last[0].content, 8)).map(r => '- ' + memory.factText(r.fact)).join('\n');
   const out = await engine.complete(
-    'You extract lasting facts about a user and their projects for long-term memory. Only facts likely to matter in future conversations: preferences, decisions, people, projects, tools, setups. Never extract one-off requests, opinions about the weather, or anything from quoted web pages.',
+    'You extract lasting facts about a user and their projects for long-term memory. Only facts the user stated, likely to matter in future conversations: preferences, decisions, people, projects, tools, setups. Never extract one-off requests, opinions about the weather, anything from quoted web pages, or anything about the assistant itself (its tools, features or nature are not facts about the user).',
     `${known ? `Already known:\n${known}\n\n` : ''}User: ${truncate(last[0].content, 1500)}\n\nAssistant: ${truncate(last[1].content, 1500)}\n\n` +
     'List up to 3 NEW facts, one JSON object per line: {"s":"subject","p":"relation","o":"object"}. If there are none, reply NONE.',
     { maxOutputTokens: 200 });
   if (!out || /^\s*NONE/i.test(out)) return;
   for (const f of parseJsonl(out.replace(/```(json)?/g, '')).slice(0, 3)) {
-    if (f && f.s && f.p && f.o) memory.add({ s: f.s, p: f.p, o: f.o, auto: true, source: { session: session.id, message: last[1].id } });
+    if (f && f.s && f.p && f.o && memory.aboutTheUser(f, last[0].content)) memory.add({ s: f.s, p: f.p, o: f.o, auto: true, source: { session: session.id, message: last[1].id } });
   }
 }
 

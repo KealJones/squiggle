@@ -221,15 +221,36 @@ export function stepPrompt(base, task, sections = [], { maxTokens = Infinity } =
 }
 export const stepSystem = (base, task, sections = [], opts) => stepPrompt(base, task, sections, opts).text;
 
+// ── Prompt dialects (docs/harness.md, "Prompt dialects") ─────────────────────
+//
+// What the harness writes into the model's prompt comes in two dialects:
+//   v2  the fenced small-model format: Squiggle Small's training text, frozen. Every string it renders
+//       must stay byte-for-byte what the fine-tune saw (lm-experiments renders episodes through this code).
+//   v3  everyone else (native small models, Gemma 4, the cloud model). Anything the harness adds to a
+//       user turn is marked as Squiggle's, "(Squiggle: …)", so a small model can't take it for the
+//       user's words: a 0.8B model read the budget line as "the user said they used 2,030 tokens" and
+//       the step instruction as the user's request. The user's own words are never paraphrased.
+// A dialect is chosen per model (agent.js dialect()); tasks.js functions take it as an option and
+// default to v2, so older callers and the fine-tune's rendering are unchanged.
+export const DIALECT = {
+  v2: { id: 'v2', frozen: true, note: (t) => t, memoryTitle: 'What you know about the user and their work' },
+  v3: { id: 'v3', frozen: false, note: (t) => `(Squiggle: ${t})`,
+    // Not "what you know about the user": a small model read that as things the user had just said.
+    memoryTitle: 'Notes saved from earlier chats (background only; may not fit this request)' },
+};
+
 const MAX_REQUEST = 700;
-export function stepUser(task, { budget = '' } = {}) {
+export function stepUser(task, { budget = '', dialect = DIALECT.v2 } = {}) {
   const s = current(task);
   const n = stepIndex(task, s) + 1;
   const head = truncate(task.request || task.goal, MAX_REQUEST);
   const tail = budget ? `\n\n${budget}` : '';
-  if (s.checkpoint) return `${head}\n\nYou checkpointed step ${n} (${s.text}) to carry on with a fresh context. Carry on now: ${s.checkpoint.next || s.text}\nWhen the step is finished, call done with what you found.${tail}`;
-  if (s.kind === 'summarize') return `${head}\n\nWork on step ${n} now (a summarize step): ${s.text}\nRead what's attached, then call done with a short summary: only what the rest of the task needs from it.${tail}`;
-  return `${head}\n\nWork on step ${n} now: ${s.text}\nWhen the step is finished, call done with what you found.${tail}`;
+  const sep = dialect.frozen ? '\n' : ' ';
+  let body;
+  if (s.checkpoint) body = `You checkpointed step ${n} (${s.text}) to carry on with a fresh context. Carry on now: ${s.checkpoint.next || s.text}${sep}When the step is finished, call done with what you found.`;
+  else if (s.kind === 'summarize') body = `Work on step ${n} now (a summarize step): ${s.text}${sep}Read what's attached, then call done with a short summary: only what the rest of the task needs from it.`;
+  else body = `Work on step ${n} now: ${s.text}${sep}When the step is finished, call done with what you found.`;
+  return `${head}\n\n${dialect.note(body)}${tail}`;
 }
 
 // ── AI-managed context: references, the budget line, attachments ───────────
@@ -249,11 +270,11 @@ export function parseRef(ref) {
 
 // The last line before the model writes (docs/harness.md, "A budget line on every prompt").
 export const LOW_ROOM = 600;
-export function budgetLine(used, total, reserve) {
+export function budgetLine(used, total, reserve, dialect = DIALECT.v2) {
   const left = Math.max(0, total - used - reserve);
   const r = (x) => Math.max(0, Math.round(x / 10) * 10).toLocaleString('en-US');
   const line = `Context: ${r(used)} of ${total.toLocaleString('en-US')} tokens used (about ${r(left)} left after room for your reply).`;
-  return left < LOW_ROOM ? `${line} ${lowRoomNote()}` : line;
+  return dialect.note(left < LOW_ROOM ? `${line} ${lowRoomNote()}` : line);
 }
 export const lowRoomNote = () => 'You\'re running low on room. Finish now, or call checkpoint with what you need for the next part.';
 
@@ -282,8 +303,8 @@ export function finalSystem(base, task, { maxTokens = Infinity } = {}) {
   return text;
 }
 
-export function finalUser(task) {
-  return `${truncate(task.request || task.goal, MAX_REQUEST)}\n\nEvery step is done. Write the reply to this request now, using what the steps found. Don't call tools.`;
+export function finalUser(task, { dialect = DIALECT.v2 } = {}) {
+  return `${truncate(task.request || task.goal, MAX_REQUEST)}\n\n${dialect.note('Every step is done. Write the reply to this request now, using what the steps found. Don\'t call tools.')}`;
 }
 
 // The task that can pick up again from the new message: only the one the

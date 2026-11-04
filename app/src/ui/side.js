@@ -68,11 +68,12 @@ function drawSide() {
   const ctx = (liveTurn && liveTurn.ctx) || (lastCtx && lastCtx.context) || null;
   const open = [...body.querySelectorAll('.side-sec')].map(d => d.dataset.sec);
   const scroll = body.scrollTop;
-  body.replaceChildren(sideModel(), sideContext(ctx, liveTurn && liveTurn.ctx ? null : lastCtx), sideProgress(line), ...sideUsage(line));
+  const lastReply = [...line].reverse().find(m => m.role === 'assistant');
+  body.replaceChildren(sideModel(lastReply), sideContext(ctx, liveTurn && liveTurn.ctx ? null : lastCtx), sideProgress(line), ...sideUsage(line));
   if (open.length) body.scrollTop = scroll;
 }
 
-function sideModel() {
+function sideModel(lastReply) {
   const items = [];
   const M = engine.MODELS[agent.settings.model];
   if (M) {
@@ -82,6 +83,9 @@ function sideModel() {
   items.push(['Status', state.modelState === 'ready' ? (state.busy ? 'replying' : 'ready') : state.modelState]);
   items.push(['Context', contextMode(agent.settings.contextMode).short]);
   if (agent.smallModeSwitchable() && agent.smallMode()) items.push(['Mode', 'Small-model']);
+  // Replies save which model wrote them (agent.js replyModel); shown when it isn't the current one.
+  const rm = lastReply && lastReply.model;
+  if (rm && rm.id && rm.id !== agent.settings.model) items.push(['Last reply by', `${rm.label || rm.id}${rm.how ? ` (${rm.how})` : ''}`]);
   const kv = h('dl', { class: 'kv' }, items.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]));
   if (M && M.runtime !== 'cloud' && engine.isLite() && state.modelState === 'ready') engine.smallSpeed().then((sp) => {
     if (!sp || !kv.isConnected) return;

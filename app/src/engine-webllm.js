@@ -114,7 +114,10 @@ export function toWebLLMMessages(messages, { tools = [], format = null } = {}) {
     if (m.role === 'tool') { push('user', `<tool_response>\n${m.content}\n</tool_response>`); continue; }
     if (m.role === 'assistant') {
       const calls = m.tool_calls && m.tool_calls.length ? callText(format, m.tool_calls) : '';
-      push('assistant', [m.content || '', calls].filter(Boolean).join('\n\n') || '(no reply)');
+      // Thinking kept for the tool round being answered (nativeMessages leaves it only there), written the
+      // way the Qwen templates render an assistant turn after the last user query.
+      const think = m.reasoning_content ? `<think>\n${m.reasoning_content}\n</think>` : '';
+      push('assistant', [think, m.content || '', calls].filter(Boolean).join('\n\n') || '(no reply)');
       continue;
     }
     if (m.role === 'user') push('user', String(m.content ?? ''));
@@ -310,6 +313,15 @@ export function parseQwenCalls(text) {
 
 // ── The shim ──────────────────────────────────────────────────────────────
 
+// WebLLM's names for the sampling wllama's conversations pass (engine-wllama.js samplingOptions). WebLLM
+// has no top_k or min_p; a repeat penalty of 1 (off) is left out, and a presence penalty passes through.
+export function sampling(opts) {
+  const out = { temperature: opts.temperature, top_p: opts.top_p };
+  if (opts.penalty_repeat && opts.penalty_repeat !== 1) out.repetition_penalty = opts.penalty_repeat;
+  if (opts.penalty_present) out.presence_penalty = opts.penalty_present;
+  return out;
+}
+
 const CALL = '<tool_call>';
 const OPEN = '<think>', CLOSE = '</think>';
 function heldBack(text, mark) {
@@ -344,9 +356,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
         messages,
         stream: true,
         max_tokens: opts.max_tokens,
-        temperature: opts.temperature,
-        top_p: opts.top_p,
-        repetition_penalty: opts.penalty_repeat,
+        ...sampling(opts),
         ...(thinking === undefined ? {} : { extra_body: { enable_thinking: thinking } }),
       });
       // Split <think> off into reasoning_content and, for native models, hold back
@@ -395,8 +405,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
     try {
       try { await engine.resetChat(); } catch {}         // raw completions need an empty KV cache
       const chunks = await engine.completions.create({
-        prompt, stream: true, max_tokens: opts.max_tokens, temperature: opts.temperature, top_p: opts.top_p,
-        repetition_penalty: opts.penalty_repeat, stop: ['<turn|>', '<|tool_response>'],
+        prompt, stream: true, max_tokens: opts.max_tokens, ...sampling(opts), stop: ['<turn|>', '<|tool_response>'],
       });
       let raw = '', shownThink = 0, shownText = 0;
       for await (const c of chunks) {

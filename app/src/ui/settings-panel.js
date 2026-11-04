@@ -113,14 +113,14 @@ function smallModeField(S) {
     return h('div', { class: 'field' }, h('span', { class: 'label' }, 'Small-model mode'),
       h('span', { class: 'hint' }, `Always on for ${engine.MODELS[id].label}: it's trained on this format. ${what}`));
   }
+  // Saved as true or false per model; unset means the model's default (on for small models, off for big ones).
   return h('div', { class: 'field' }, h('label', { class: 'toggle' },
     h('input', { type: 'checkbox', checked: agent.smallMode(id) ? true : null, onchange: (e) => {
       S.smallMode = { ...(S.smallMode || {}), [id]: e.target.checked };
-      if (!e.target.checked) delete S.smallMode[id];
       saveSettings(); updateComposerNote();
     } }),
     h('span', {}, h('strong', {}, 'Small-model mode'), h('span', { class: 'hint', style: 'display:block' },
-      `${what} Off gives ${engine.MODELS[id].label} the full prompt. Saved for this model only; applies from the next message.`))));
+      `${what} Off gives ${engine.MODELS[id].label} the full prompt. ${agent.smallModeDefault(id) ? 'On by default for a small model: the full prompt and every tool took half its window.' : 'Off by default for a big model.'} Saved for this model only; applies from the next message.`))));
 }
 
 export function renderSettingsPanel() {

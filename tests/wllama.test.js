@@ -275,7 +275,110 @@ test('nativeMessages: Gemma 4 tool format keeps assistant tool_calls and answers
   assert.equal(out[2].content, null);
   assert.equal(out[3].tool_call_id, 'b');                 // matched by name, not order
   assert.equal(out[4].tool_call_id, 'a');
-  assert.equal(out[4].content, '{"temp_f":84}');
+  assert.equal(out[4].content, 'temp_f: 84');           // readable, not JSON (resultText)
+});
+
+test('resultText: strings as they are, flat objects as key: value lines with multi-line values whole, deeper ones as JSON', async () => {
+  const { resultText } = await import('../app/src/engine-wllama.js');
+  assert.equal(resultText('plain'), 'plain');
+  assert.equal(resultText({ query: 'x', count: 2, results: '1. A\n   https://a\n2. B' }), 'query: x\ncount: 2\nresults:\n1. A\n   https://a\n2. B');
+  assert.equal(resultText({ error: 'nope', left: null }), 'error: nope\nleft: ');
+  assert.equal(resultText({ tools: ['a', 'b'] }), '{\n "tools": [\n  "a",\n  "b"\n ]\n}');
+  assert.equal(resultText(null), '');
+});
+
+test('nativeMessages: the thinking behind a tool call stays only while its results are being answered', async () => {
+  const { nativeMessages } = await import('../app/src/engine-wllama.js');
+  const call = (id) => [{ id, type: 'function', function: { name: 'web_search', arguments: '{"query":"q"}' } }];
+  const live = nativeMessages([
+    { role: 'user', content: 'q?' },
+    { role: 'assistant', content: '', tool_calls: call('a'), reasoning_content: 'I should search.' },
+    { role: 'tool', content: [{ name: 'web_search', response: 'r' }] },
+  ]);
+  assert.equal(live[1].reasoning_content, 'I should search.');
+  const answered = nativeMessages([
+    { role: 'user', content: 'q?' },
+    { role: 'assistant', content: '', tool_calls: call('a'), reasoning_content: 'I should search.' },
+    { role: 'tool', content: [{ name: 'web_search', response: 'r' }] },
+    { role: 'assistant', content: 'Done.' },
+    { role: 'user', content: 'thanks' },
+  ]);
+  assert.equal(answered[1].reasoning_content, undefined);  // an earlier turn: its thinking leaves the history
+  assert.equal(answered[3].reasoning_content, undefined);
+  // The latest assistant turn with nothing after it (the one about to be continued) carries none either.
+  const open = nativeMessages([{ role: 'user', content: 'q?' }, { role: 'assistant', content: 'x', tool_calls: call('a'), reasoning_content: 't' }]);
+  assert.equal(open[1].reasoning_content, undefined);
+});
+
+test('samplingOptions: a model profile becomes llama.cpp names; a loop retry adds to the repeat penalty; greedy zeroes the temperature', async () => {
+  const { samplingOptions } = await import('../app/src/engine-wllama.js');
+  const qwen = { temperature: 0.6, top_k: 20, top_p: 0.95, min_p: 0, repeat: 1.0, presence: 1.5 };
+  assert.deepEqual(samplingOptions(qwen), { temperature: 0.6, top_k: 20, top_p: 0.95, min_p: 0, penalty_repeat: 1, penalty_present: 1.5 });
+  const fenced = { temperature: 0.7, top_k: 64, top_p: 0.95, min_p: 0, repeat: 1.15, presence: 0 };
+  assert.deepEqual(samplingOptions(fenced, { retry: true }), { temperature: 0.7, top_k: 64, top_p: 0.95, min_p: 0, penalty_repeat: 1.3 });
+  assert.equal(samplingOptions(fenced, { greedy: true }).temperature, 0);
+  assert.equal(samplingOptions(null).penalty_repeat, 1.15);   // no profile: the old defaults
+});
+
+test('Conversation: thinking past its budget is closed and the reply continues from it', async () => {
+  const { Conversation, thinkBudgetNote } = await import('../app/src/engine-wllama.js');
+  const seen = [];
+  let call = 0;
+  const w = { async createChatCompletion(p) {
+    seen.push(JSON.parse(JSON.stringify(p.messages)));
+    const pieces = call++ === 0
+      ? ['<think>', '\n', ...Array.from({ length: 30 }, (_, i) => `t${i} `)]            // never closes
+      : [p.messages.at(-1).content, 'The answer is 4.'];                                 // the echo, then the reply
+    return (async function* () {
+      for (const c of pieces) { if (p.abortSignal.aborted) return; yield { choices: [{ delta: { content: c } }] }; }
+    })();
+  } };
+  const conv = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 200, thinkBudget: 10 } });
+  const got = [];
+  for await (const x of conv.sendMessageStreaming('2+2?')) got.push(x);
+  const thinking = got.filter(x => x.thinking).map(x => x.thinking).join('');
+  assert.match(thinking, /t0 t1 /);
+  assert.ok(thinking.includes(thinkBudgetNote(10)));
+  assert.equal(got.filter(x => x.content).map(x => x.content).join(''), 'The answer is 4.');
+  assert.equal(seen.length, 2);
+  const prefill = seen[1].at(-1);
+  assert.equal(prefill.role, 'assistant');
+  assert.match(prefill.content, /^<think>\nt0 t1 [\s\S]*\n<\/think>\n$/);
+  assert.ok(prefill.content.includes(thinkBudgetNote(10)));
+  assert.equal(conv.messages.at(-1).content, 'The answer is 4.');
+  assert.equal(conv.thinkBudget, 10);                          // restored for the next reply
+});
+
+test('NativeConversation: thinking past its budget is retried with thinking off, and the thinking stays with the call it led to', async () => {
+  const { NativeConversation, thinkBudgetNote } = await import('../app/src/engine-wllama.js');
+  const seen = [];
+  let call = 0;
+  const w = { async createChatCompletion(p) {
+    seen.push({ kw: p.chat_template_kwargs, messages: JSON.parse(JSON.stringify(p.messages)), sampling: { t: p.temperature, k: p.top_k, pr: p.penalty_repeat, pp: p.penalty_present } });
+    const deltas = call++ === 0
+      ? Array.from({ length: 20 }, (_, i) => ({ reasoning_content: `r${i} ` }))
+      : [{ content: '' }, { tool_calls: [{ index: 0, id: 'c1', function: { name: 'web_search', arguments: '{"query":"q"}' } }] }];
+    return (async function* () { for (const d of deltas) { if (p.abortSignal.aborted) return; yield { choices: [{ delta: d }] }; } })();
+  } };
+  const qwen = { temperature: 0.6, top_k: 20, top_p: 0.95, min_p: 0, repeat: 1.0, presence: 1.5 };
+  const conv = new NativeConversation(w, { preface: { messages: [{ role: 'system', content: 'S' }], tools: TOOLS, extra_context: { enable_thinking: true } }, sessionConfig: { maxOutputTokens: 256, thinkBudget: 8, sampling: qwen } });
+  const got = [];
+  for await (const x of conv.sendMessageStreaming('q?')) got.push(x);
+  assert.deepEqual(seen.map(x => x.kw), [{ enable_thinking: true }, { enable_thinking: false }]);
+  assert.deepEqual(seen[0].sampling, { t: 0.6, k: 20, pr: 1, pp: 1.5 });
+  const thinking = got.filter(x => x.thinking).map(x => x.thinking).join('');
+  assert.match(thinking, /^r0 r1 /);
+  assert.ok(thinking.includes(thinkBudgetNote(8)));
+  assert.equal(got.find(x => x.tool_calls).tool_calls[0].function.name, 'web_search');
+  const last = conv.messages.at(-1);
+  assert.equal(last.tool_calls.length, 1);
+  assert.match(last.reasoning_content, /^r0 r1 /);          // the thinking that led to the call
+  // The results come back: the template sees that thinking with the call it answers.
+  seen.length = 0; call = 1;
+  for await (const x of conv.sendMessageStreaming([{ role: 'tool', content: [{ name: 'web_search', response: { results: 'none' } }] }])) got.push(x);
+  const asst = seen[0].messages.find(m => m.role === 'assistant');
+  assert.match(asst.reasoning_content, /^r0 r1 /);
+  assert.equal(seen[0].messages.at(-1).content, 'results: none');
 });
 
 test('NativeConversation: passes the tools to llama.cpp, streams text, returns the parsed calls and keeps them in history', async () => {
