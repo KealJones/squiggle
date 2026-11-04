@@ -23,34 +23,34 @@ export const MODELS = {
     url: HF + 'kealjones/squiggle-small/resolve/main/squiggle-small-lfm25-Q4_0.gguf', bytes: 219312160 },
   // Size tests for phones (Keal, 2026-10-28): how big a model an iPhone tab survives on wllama.
   // Plain chat only (stock models: no harness), smallest to largest.
-  Q06: { label: 'Test: Qwen3 0.6B', size: '382 MB', note: 'phone size test: does a ~600M model load and run? Chat only, no tools', phone: true, runtime: 'wllama', family: 'qwen3',
+  Q06: { label: 'Test: Qwen3 0.6B', size: '382 MB', experimental: true, note: 'phone size test: does a ~600M model load and run? Chat only, no tools', phone: true, runtime: 'wllama', family: 'qwen3',
     url: HF + 'unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_0.gguf', bytes: 382156480 },
-  LF12: { label: 'Test: LFM2.5 1.2B', size: '696 MB', note: 'phone size test: Squiggle Small\'s bigger sibling (1.2B). Chat only, no tools', phone: true, runtime: 'wllama',
+  LF12: { label: 'Test: LFM2.5 1.2B', size: '696 MB', experimental: true, note: 'phone size test: Squiggle Small\'s bigger sibling (1.2B). Chat only, no tools', phone: true, runtime: 'wllama',
     url: HF + 'LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q4_0.gguf', bytes: 695751488 },
-  LL1: { label: 'Test: Llama 3.2 1B', size: '773 MB', note: 'phone size test: probably right at the edge. Chat only, no tools', phone: true, runtime: 'wllama',
+  LL1: { label: 'Test: Llama 3.2 1B', size: '773 MB', experimental: true, note: 'phone size test: probably right at the edge. Chat only, no tools', phone: true, runtime: 'wllama',
     url: HF + 'unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_0.gguf', bytes: 773025824 },
   // Gemma 4 E2B pruned (80K vocab, hidden 1024, FFN 42%, 31 layers) and healed by distillation, last on
   // E2B's own answers and tool calls (lm-experiments experiments/tiny-gemma4, heal 3).
-  TG4: { label: 'Test: Tiny Gemma 4', size: '778 MB', note: 'Gemma 4 E2B cut down for phones (0.6B core) and healed on E2B\'s own answers. Answers short questions, calls Gemma 4\'s tools; still often wrong. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, family: 'gemma4',
+  TG4: { label: 'Test: Tiny Gemma 4', size: '778 MB', experimental: true, note: 'Gemma 4 E2B cut down for phones (0.6B core) and healed on E2B\'s own answers. Answers short questions, calls Gemma 4\'s tools; still often wrong. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, family: 'gemma4',
     url: HF + 'kealjones/tiny-gemma4-test/resolve/main/tiny-gemma4-heal3-v2-Q4_0.gguf', bytes: 778158496 },
   // Heal 4 pilot A (lm-experiments experiments/tiny-gemma4, 2026-11-03): heal 3 + 750 steps on Toucan's multi-turn
   // tool conversations with real results. In tests it answers from tool results (heal 3 replied with nothing) and
   // handles a failed search, but plain text got a little worse. Same size and runtime as TG4.
-  TG4A: { label: 'Test: Tiny Gemma 4 (heal 4)', size: '778 MB', note: 'tiny Gemma 4 trained further on tool conversations with real results: it now answers from what a search returns. Plain answers got a little worse than heal 3. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, family: 'gemma4', thinking: false,
+  TG4A: { label: 'Test: Tiny Gemma 4 (heal 4)', size: '778 MB', experimental: true, note: 'tiny Gemma 4 trained further on tool conversations with real results: it now answers from what a search returns. Plain answers got a little worse than heal 3. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, family: 'gemma4', thinking: false,
     url: HF + 'kealjones/tiny-gemma4-test/resolve/main/tiny-gemma4-heal4a-Q4_0.gguf', bytes: 778158496 },
   // Stock Qwen3.5 0.8B (Keal, 2026-10-31): tools through Qwen's own chat template, like TG4 (native), no fine-tune.
-  Q35: { label: 'Test: Qwen3.5 0.8B', size: '507 MB', note: 'stock Qwen3.5 0.8B with tools in its own tool format (no Squiggle training). Runs without thinking, as its model card recommends for this size. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, family: 'qwen35', thinking: false,
+  Q35: { label: 'Test: Qwen3.5 0.8B', size: '507 MB', experimental: true, note: 'stock Qwen3.5 0.8B with tools in its own tool format (no Squiggle training). Runs without thinking, as its model card recommends for this size. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, family: 'qwen35', thinking: false,
     url: HF + 'unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_0.gguf', bytes: 507154688 },
   // Not on this device: runs on the relay (only listed when the relay offers it).
   // WebLLM (MLC) on WebGPU (engine-webllm.js, Keal 2026-11-02): the same small-model path as the
   // wllama models (runtime 'wllama', so isLite and the small-model harness apply), compiled for the
   // GPU. Measured on an iPhone (app/memtest.html): 5-12x faster than wllama's CPU build for about
   // twice the memory; 1B fits, Qwen3.5 2B loaded but died on its first reply. Sizes are approximate.
-  WL1: { label: 'Llama 3.2 1B (GPU, fast)', size: '~700 MB', note: 'stock Llama 3.2 1B on WebLLM (WebGPU): about 30 words a second on an iPhone, much faster than the CPU models, but it uses about twice the memory. Chat only, no tools. Experimental', phone: true, runtime: 'wllama', backend: 'webllm',
+  WL1: { label: 'Llama 3.2 1B (GPU, fast)', size: '~700 MB', experimental: true, note: 'stock Llama 3.2 1B on WebLLM (WebGPU): about 30 words a second on an iPhone, much faster than the CPU models, but it uses about twice the memory. Chat only, no tools. Experimental', phone: true, runtime: 'wllama', backend: 'webllm',
     mlc: 'Llama-3.2-1B-Instruct-q4f16_1-MLC', bytes: 700000000 },
-  WQ06: { label: 'Qwen3 0.6B (GPU, fast)', size: '~350 MB', note: 'stock Qwen3 0.6B on WebLLM (WebGPU) with tools in Qwen\'s own format: about 30 words a second on an iPhone, for about twice the memory of the CPU models. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'qwen3', family: 'qwen3',
+  WQ06: { label: 'Qwen3 0.6B (GPU, fast)', size: '~350 MB', experimental: true, note: 'stock Qwen3 0.6B on WebLLM (WebGPU) with tools in Qwen\'s own format: about 30 words a second on an iPhone, for about twice the memory of the CPU models. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'qwen3', family: 'qwen3',
     mlc: 'Qwen3-0.6B-q4f16_1-MLC', bytes: 350000000 },
-  WQ35: { label: 'Qwen3.5 0.8B (GPU)', size: '~500 MB', note: 'stock Qwen3.5 0.8B on WebLLM (WebGPU) with tools in its own format: about 14 words a second on an iPhone (3x the CPU build). Runs without thinking, as its model card recommends for this size. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'qwen35', family: 'qwen35', thinking: false,
+  WQ35: { label: 'Qwen3.5 0.8B (GPU)', size: '~500 MB', experimental: true, note: 'stock Qwen3.5 0.8B on WebLLM (WebGPU) with tools in its own format: about 14 words a second on an iPhone (3x the CPU build). Runs without thinking, as its model card recommends for this size. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'qwen35', family: 'qwen35', thinking: false,
     mlc: 'Qwen3.5-0.8B-q4f16_1-MLC', bytes: 500000000 },
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true, family: 'gemma4' },
 };

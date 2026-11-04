@@ -69,3 +69,25 @@ test('agent notes merge per note; an erase syncs as a tombstone', () => {
   assert.equal(m.notes.n3.text, 'next: check guard.js');
   assert.deepEqual(mergeSession(b, a).notes, m.notes);
 });
+
+test('a deleted message syncs as a tombstone and beats an older copy with content', () => {
+  const base = { id: 's', updated: 1, threads: {}, observations: [], summaries: {} };
+  const a = { ...base, updated: 5, messages: [{ id: 'm1', role: 'user', content: 'secret', ts: 1 }, { id: 'm2', role: 'assistant', content: 'ok', ts: 2, mts: 3 }] };
+  const b = { ...base, updated: 6, messages: [{ id: 'm1', role: 'user', content: '', deleted: true, ts: 1, mts: 6 }, { id: 'm2', role: 'assistant', content: 'ok', ts: 2 }] };
+  for (const m of [mergeSession(a, b), mergeSession(b, a)]) {
+    assert.equal(m.messages.find(x => x.id === 'm1').deleted, true);
+    assert.equal(m.messages.find(x => x.id === 'm1').content, '');
+    assert.equal(m.messages.find(x => x.id === 'm2').content, 'ok');
+  }
+});
+
+test('archived and the per-chat model follow the newer copy of the session', () => {
+  const base = { id: 's', updated: 1, messages: [], threads: {}, observations: [], summaries: {} };
+  const a = { ...base, updated: 5, archived: true, model: 'E2B' };
+  const b = { ...base, updated: 6, archived: false };
+  assert.equal(mergeSession(a, b).archived, false);
+  assert.equal(mergeSession(a, b).model, 'E2B', 'a field only one side has is kept');
+  assert.equal(mergeSession(b, a).archived, false, 'order does not matter');
+  const c = { ...base, updated: 7, archived: true };
+  assert.equal(mergeSession(b, c).archived, true);
+});

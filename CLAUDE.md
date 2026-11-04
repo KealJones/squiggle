@@ -94,8 +94,9 @@ tests/e2e/              Chromium end-to-end: real git server, real Worker code, 
 
 ## Chat details sidebar
 
-The right-hand aside (`#ctx-side`, main.js `renderSide`): model and how it runs, the context window, the
-latest plan, tools/files/pages used and outputs (files, commits, pushes, PRs, notes) for the open chat.
+The right-hand aside (`#ctx-side`, ui/side.js `renderSide`): model and how it runs (with the chat's own model
+picker), the context window, the latest plan, tools/files/pages used and outputs (files, commits, pushes, PRs),
+the agent's notes, and archive/delete for the open chat.
 The window comes from `reply.context.window = { size, parts: {instructions, tools, conversation, memory,
 recalled, message, turn}, used }` (agent.js `windowOf`/`setWindow`/`grow`), set when each chat-phase or step
 call starts and grown with each response and tool result; `ui.onContext` redraws it live (a microtask, so it
@@ -105,9 +106,14 @@ panel is open at ≤1500 px. Replies saved before this show just the total.
 
 ## Data model
 
-Session file `sessions/<id>.json`: `{ v, id, title, created, updated, deleted?,
-messages[{id, role, content, ts, mts?, thread, tools?, context?, model?, pinned?, attachments?[{name, path, type, size, chars, lines?, error?}]}],
+Session file `sessions/<id>.json`: `{ v, id, title, created, updated, deleted?, archived?, model?,
+messages[{id, role, content, ts, mts?, thread, tools?, context?, model?, pinned?, deleted?, attachments?[{name, path, type, size, chars, lines?, error?}]}],
 threads{id: {parent, title, summary?}}, observations[], summaries{main|threadId} }`.
+`deleted`/`archived` on the session and `deleted` on a message are tombstones (content emptied) so the change
+syncs; `sessions.list()` leaves archived chats out (`listArchived`), `lineMessages` leaves deleted messages out.
+`model` on the session is the chat's own model: `ui/model-ui.js sessionModel()` picks it over `settings.defaultModel` (the
+device default from Settings) and `settings.model` is whatever is loaded right now. `model` on a reply is which
+model wrote it (`agent.js replyModel`: `{ id, label, how, smallMode?, contextSize, contextMode }`).
 Attachments: storage only holds text, so text files are saved as-is and PDFs as
 their extract (`<name>.txt`) under `home/attachments/<session>/`; images as the text
 Tesseract.js reads from them (`ocr.js`, two passes: full size and half-size grayscale), also

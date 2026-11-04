@@ -52,8 +52,15 @@ export async function reload(paths) {
   if (touched) events.emit('list');
 }
 
+// Open chats, newest first. Archived and deleted ones are left out (listArchived
+// has the archived ones); a chat with no messages yet isn't listed either.
 export function list() {
-  return [...cache.values()].filter(s => !s.deleted && s.messages.length)
+  return [...cache.values()].filter(s => !s.deleted && !s.archived && s.messages.length)
+    .sort((a, b) => b.updated - a.updated);
+}
+
+export function listArchived() {
+  return [...cache.values()].filter(s => !s.deleted && s.archived && s.messages.length)
     .sort((a, b) => b.updated - a.updated);
 }
 
@@ -79,9 +86,21 @@ export async function flush({ sync = true } = {}) {
   if (ids.length && sync) storage.sync();
 }
 
+// Soft delete: the file keeps a tombstone so the delete syncs (merge.js).
 export function remove(session) {
   session.deleted = true;
   touch(session);
+}
+
+export function archive(session, on = true) {
+  session.archived = Boolean(on);
+  touch(session);
+}
+
+// Removes a message's content everywhere but keeps its id as a tombstone, so
+// the deletion syncs instead of the other device's copy coming back.
+export function deleteMessage(session, m) {
+  updateMessage(session, m, { deleted: true, content: '', tools: undefined, context: undefined, thinking: undefined, attachments: undefined, pinned: false });
 }
 
 // ── Message helpers ────────────────────────────────────────────────────────
@@ -118,13 +137,13 @@ export function threadOf(session, parentId) {
 //   main thread  -> main messages
 //   a thread     -> main messages up to and including the parent, then the thread
 export function lineMessages(session, threadId = null) {
-  const main = session.messages.filter(m => !m.thread);
+  const main = session.messages.filter(m => !m.thread && !m.deleted);
   if (!threadId) return main;
   const t = session.threads[threadId];
   if (!t) return [];
   const idx = main.findIndex(m => m.id === t.parent);
   const before = idx >= 0 ? main.slice(0, idx + 1) : [];
-  return before.concat(session.messages.filter(m => m.thread === threadId));
+  return before.concat(session.messages.filter(m => m.thread === threadId && !m.deleted));
 }
 
 export function addObservation(session, obs) {

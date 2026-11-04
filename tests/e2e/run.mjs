@@ -1131,7 +1131,7 @@ await check('chat details sidebar: model, context window breakdown (live and sav
   assert.equal(await D.page.isVisible('#ctx-side'), true);
   assert.equal(await D.page.evaluate(() => document.querySelector('#ctx-side [data-sec="used"]').open), false);
   // A panel on a not-so-wide screen covers it rather than squeezing the chat.
-  await D.page.click('.side-nav [data-panel="notes"]');
+  await D.page.click('.side-nav [data-panel="memory"]');
   assert.equal(await D.page.isVisible('#ctx-side'), false);
   await D.page.click('#close-drawer');
   assert.equal(await D.page.isVisible('#ctx-side'), true);
@@ -1179,10 +1179,12 @@ await check('step mode through the UI: plan, live checklist, find, done, final r
   assert.match(r.thinking, /Step 2: Stop it\nStopped node/);
 
   // The finished plan became a recipe; a similar request doesn't get it injected, but find returns it.
+  // (Found by its steps: an earlier check's recipe can land first, since recipes are learned in the background.)
   const recipe = await D.page.evaluate(async () => {
     const recipes = await import('/src/recipes.js');
-    for (let i = 0; i < 80 && !recipes.list().length; i++) await new Promise(r => setTimeout(r, 100));
-    return recipes.list()[0];
+    const mine = () => recipes.list().find(r => (r.steps || []).includes('Find what is listening on 8080'));
+    for (let i = 0; i < 80 && !mine(); i++) await new Promise(r => setTimeout(r, 100));
+    return mine();
   });
   assert.ok(recipe, 'a recipe was saved');
   assert.deepEqual(recipe.steps, ['Find what is listening on 8080', 'Stop it']);
