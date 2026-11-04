@@ -38,13 +38,14 @@ app/                    static app, plain ES modules, no build step
     context.js          context assembly: CONTEXT_MODES registry (smart default / compact / managed / full); report
     prefetch.js         Fresh context (experimental): the lookup before the model answers (question made standalone, saved exchanges/pages/memory, web), handed over as a seeded find call (docs/harness.md "Fresh context")
     recall.js           smart mode's recalled block: earlier messages (this chat + other chats) and memory, quoted after the request; time phrases, size caps
-    search.js           BM25 + blend with optional embeddings (embed.js, MiniLM on CPU)
+    search.js           BM25 + blend with optional embeddings (embed.js, MiniLM on CPU in embed-worker.js, terminated after 15 s idle on phones / 3 min on computers so its memory is freed)
     tools.js            facade over tools/ (keeps the import path)
     tools/              agent tools (docs/extending.md)
       registry.js       defineTool/registerTool, toolSpecs, runTool: the extension point
       index.js          registers the built-ins in a fixed order (the order is prompt text for small models)
       workspace.js      /home, /repos and /web path mapping shared by the tools
       files.js notes.js git.js web.js memory.js compute.js   the tools by area (compute.js hosts the run_js sandbox)
+      wiki.js           wiki_lookup: Wikipedia search → article + Wikidata item → SPARQL key facts and newest works, straight from the browser (CORS)
     calc.js             `calculate` tool: safe math expression parser (no eval), % and money-friendly
     guard.js            hard limits: push policy, workflow-file check, workspace path resolution
     grants.js           remembered "always allow" push grants (synced)

@@ -29,7 +29,7 @@ export const settings = {
   smallGpu: false,          // small models (wllama): run on WebGPU (experimental)
   smallThreads: false,      // small models (wllama): use several CPU cores; needs an isolated page (sw.js)
   contextMode: 'smart',     // 'smart' (default) | 'compact' | 'full'
-  semantic: true,           // MiniLM embeddings for retrieval (off on phones; BM25 alone works)
+  semantic: true,           // MiniLM embeddings for retrieval (its worker sleeps when idle, so phones too)
   recallChats: false,       // smart mode may recall messages from other chats too (off: old answers, right or wrong, leaked into unrelated chats)
   learn: true,              // extract memory facts after turns
   tools: null,              // Set of enabled tool names, or null for all
@@ -149,6 +149,8 @@ function systemPrompt(threadId, session, phase = 'chat', known = []) {
 // Tools a small model starts with already "looked up", so it doesn't spend a model
 // call on find first: nearly every phone request needs the web. Only ones enabled.
 const PRELOADED = ['web_search', 'fetch_url'];
+// Tools for looking things up: a strong match for one of these doesn't stop find or Fresh from searching.
+const LOOKUP_TOOLS = ['web_search', 'fetch_url', 'wiki_lookup'];
 function preloaded(tools) {
   if (!lite() || plain() || native()) return [];
   const names = new Set(tools.map(t => t.name));
@@ -158,7 +160,8 @@ function preloaded(tools) {
 // Declared with full schemas from the start on gated models (see gated); everything else waits for tool_info.
 // remember and calculate are in: a 0.8B model told "save it with remember" called need instead of looking
 // remember up first (2026-11-04), and nearly every phone chat wants one of the two.
-const GATE = ['plan', 'done', 'need', 'find', 'checkpoint', 'tool_info', ...PRELOADED, 'remember', 'calculate'];
+// wiki_lookup is in too: names, dates and filmographies are most of what phone questions ask (2026-11-04).
+const GATE = ['plan', 'done', 'need', 'find', 'checkpoint', 'tool_info', ...PRELOADED, 'wiki_lookup', 'remember', 'calculate'];
 
 function phaseTools(step) {
   if (plain()) return [];
@@ -458,7 +461,10 @@ class Turn {
       pending = [toolResult(call, { found: seed.text })];
       this.seenCalls.set(`find:${JSON.stringify({ query: seed.query })}`, 1);
     }
-    if (fresh()) for (const q of (this.prefetched || [])) this.seenCalls.set(`web_search:${JSON.stringify({ query: q })}`, 1);
+    if (fresh()) {
+      for (const q of (this.prefetched || [])) this.seenCalls.set(`web_search:${JSON.stringify({ query: q })}`, 1);
+      for (const k of (this.prefetchedCalls || [])) this.seenCalls.set(k, 1);
+    }
     if (seed) chatCalls = 1;   // the lookup counts as a call (an empty reply after it gets the nudge)
     this.conv = await engine.conversation({ system: ctx.system, messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: preloaded(tools), gate: gated() ? GATE : null });
     // "No, it's X" / "can you confirm that?": small models just agree. Search first and hand them the results.
@@ -966,7 +972,7 @@ class Turn {
     // phrase; above the description-only cap). A word like "recent" alone matched git_log ("Recent commits…")
     // and "most recent released movie" got that instead of the web (2026-11-04).
     const own = ['recipes', 'facts', 'chats', 'task'].some(k => r[k] && r[k].length);
-    const toolAsked = r.tools.some(t => t.name !== 'web_search' && t.name !== 'fetch_url' && (t.score || 0) > 4);
+    const toolAsked = r.tools.some(t => !LOOKUP_TOOLS.includes(t.name) && (t.score || 0) > 4);
     if (web && !own && !toolAsked && !PAST_CHAT.test(String(query).toLowerCase()) && this.webOn()) {
       const w = await this.webFallback(query);
       if (w) return { text: w, tools: [], empty: false, answers, web: true };
@@ -1012,6 +1018,19 @@ class Turn {
     return { query: (res.args && res.args.query) || query, items: rerankWeb(query, items, { vecs, k: lite() ? 3 : 5 }), answer: res.answer || null };
   }
 
+  // wiki_lookup for Fresh's lookup: the text it found (already marked as outside content), or null.
+  async wikiTop(query) {
+    const call = { function: { name: 'wiki_lookup', arguments: { query } } };
+    const res = await runTool(call, { session: this.session, threadId: this.threadId, pageCards: lite() });
+    this.seenCalls && this.seenCalls.set(`wiki_lookup:${JSON.stringify({ query })}`, 1);
+    (this.prefetchedCalls = this.prefetchedCalls || []).push(`wiki_lookup:${JSON.stringify({ query })}`);
+    this.noteUrls(res);
+    this.toolEvent({ name: 'wiki_lookup', label: `${res.label} (looked up first)`, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
+    if (!res.ok || !res.model || !res.model.found) return null;
+    if (res.observation) sessions.addObservation(this.session, { ...res.observation, thread: this.threadId });
+    return res.model.found;
+  }
+
   // Fresh context: before the model sees the message, look things up for it (prefetch.js). Returns
   // { query, text, items } (items for "What the model saw"), or null when there's nothing to look up or nothing
   // was found (small talk, bare arithmetic, no match anywhere).
@@ -1037,9 +1056,11 @@ class Turn {
     const found = prefetchLib.rank(query, cands, { vecs, k: small ? 4 : 8 });
     const facts = (await memory.recall(query, 6).catch(() => [])).filter(r => r.score >= 0.3).slice(0, small ? 3 : 6);
     // The web, unless the message is about the user's own things or clearly a job for another tool.
-    let web = null, check = '';
+    let web = null, check = '', wiki = null;
     const own = PAST_CHAT.test(said.toLowerCase());
-    const toolJob = rankTools(said, toolSpecs(settings.tools)).some(t => t.name !== 'web_search' && t.name !== 'fetch_url' && t.score > 4);
+    // Wikipedia and Wikidata when the question names someone or something, alongside the web search.
+    const wikiP = !own && prefetchLib.namesIn(query).length && toolSpecs(settings.tools).some(t => t.name === 'wiki_lookup') ? this.wikiTop(query) : null;
+    const toolJob = rankTools(said, toolSpecs(settings.tools)).some(t => !LOOKUP_TOOLS.includes(t.name) && t.score > 4);
     if (this.webOn() && !own && (!toolJob || pushback)) {
       const answer = pushback ? [...line].reverse().find(m => m.role === 'assistant' && m.content) : null;
       const q = pushback ? checkQuery(said, { question: prevQ && prevQ.content, answer: answer && answer.content }) || query : query;
@@ -1047,17 +1068,19 @@ class Turn {
       this.prefetched = [q];
       if (pushback) check = 'The user is questioning or checking an earlier answer, so the web was searched first. Answer only from these results; if they don\'t settle it, say so plainly, and don\'t agree just because the user said it.';
     }
+    if (wikiP) wiki = await wikiP;
     const pick = (k) => found.filter(x => x.kind === k);
     const text = prefetchLib.render({
       query, exchanges: pick('exchange'), chats: pick('chat'), pages: pick('page'),
-      facts: facts.map(r => memory.factText(r.fact)), web, check,
+      facts: facts.map(r => memory.factText(r.fact)), web, check, wiki,
     }, { wrap: wrapUntrusted, small });
-    const counts = [found.length && `${found.length} saved`, facts.length && `${facts.length} from memory`, web && web.items.length && `${web.items.length} from the web`].filter(Boolean);
+    const counts = [found.length && `${found.length} saved`, facts.length && `${facts.length} from memory`, wiki && 'Wikipedia', web && web.items.length && `${web.items.length} from the web`].filter(Boolean);
     this.toolEvent({ name: 'find', label: `looked up before answering: "${truncate(query, 60)}"${counts.length ? ` (${counts.join(', ')})` : ' (nothing)'}`, ok: true, args: { query } }, text || '(nothing found)');
     if (!text) return null;
     const items = [
       ...found.map(x => ({ kind: x.kind === 'page' ? 'observation' : x.kind === 'chat' ? 'chat' : 'message', id: x.id, ref: x.ref, label: truncate(x.kind === 'page' ? x.label : x.question, 90), score: x.score, tokens: estTokens(x.text) })),
       ...facts.map(r => ({ kind: 'fact', id: r.fact.id, label: truncate(memory.factText(r.fact), 90), score: Math.round(r.score * 100) / 100 })),
+      ...(wiki ? [{ kind: 'web', label: 'Wikipedia and Wikidata' }] : []),
       ...(web && web.items.length ? [{ kind: 'web', label: `web search: ${truncate(web.query, 60)} (${web.items.length})` }] : []),
     ];
     return { query, text, items };

@@ -255,6 +255,12 @@ Fresh replays nothing just for being recent. Before the model sees a message, th
    is clearly a job for another tool (find's rankTools score over 4). Reranked, best 3 (small) or 5. On pushback
    ("no, it's X", "confirm that") the claim is searched instead, with the don't-just-agree note.
 
+4. **Wikipedia and Wikidata** (`wiki_lookup`, tools/wiki.js), alongside the web search, when the question names
+   someone or something: the article's opening, the item's key facts and its newest works by release date (cast
+   member, performer, author, director…, with "not out yet" past today), and any list/filmography article to
+   fetch. The model can call it itself too (it's in the gate). It passes words only: a 0.6B model doesn't know
+   Wikidata ids or SPARQL, so the harness does the search and both queries.
+
 The result goes in as a `find` call the model already made, with the result as its first input: the question is
 the only user turn. Engines that can't start that way (Gemma 4 on LiteRT, the fenced format) get it as a system
 section headed "Looked up before this message (search results, not the user's words)". Small talk gets nothing.

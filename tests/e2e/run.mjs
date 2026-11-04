@@ -913,6 +913,25 @@ await check('Fresh context: nothing replayed; a lookup (earlier exchange, web) g
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
   await D.page.evaluate(async () => { const a = await import('/src/agent.js'); a.settings.contextMode = 'fresh'; a.settings.semantic = false; });
+  // Wikipedia and Wikidata, as their APIs answer (formatversion=2 search; SPARQL JSON).
+  const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' };
+  const wikiAsked = [];
+  await D.ctx.route('https://en.wikipedia.org/w/api.php**', r => {
+    if (r.request().method() === 'OPTIONS') return r.fulfill({ status: 204, headers: cors });
+    wikiAsked.push(new URL(r.request().url()).searchParams.get('gsrsearch'));
+    return r.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ query: { pages: [
+      { title: 'Patrick Stewart', index: 1, description: 'English actor (born 1940)', extract: 'Sir Patrick Stewart is an English actor.', fullurl: 'https://en.wikipedia.org/wiki/Patrick_Stewart', pageprops: { wikibase_item: 'Q16297' } },
+      { title: 'Patrick Stewart filmography', index: 2, fullurl: 'https://en.wikipedia.org/wiki/Patrick_Stewart_filmography', pageprops: { wikibase_item: 'Q1' } }] } }) });
+  });
+  await D.ctx.route('https://query.wikidata.org/sparql**', r => {
+    const q = new URL(r.request().url()).searchParams.get('query');
+    const b = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, { type: 'literal', value: v }]));
+    const bindings = /\?work/.test(q)
+      ? [b({ work: 'http://www.wikidata.org/entity/Q5', workLabel: 'Avengers: Doomsday', date: '2026-12-18T00:00:00Z', rel: 'http://www.wikidata.org/prop/direct/P161', typeLabel: 'film' }),
+        b({ work: 'http://www.wikidata.org/entity/Q6', workLabel: 'Smurfs', date: '2025-07-18T00:00:00Z', rel: 'http://www.wikidata.org/prop/direct/P725', typeLabel: 'animated film' })]
+      : [b({ p: 'http://www.wikidata.org/entity/P569', pLabel: 'date of birth', v: '1940-07-13T00:00:00Z', vLabel: '1940-07-13T00:00:00Z' })];
+    return r.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ results: { bindings } }) });
+  });
   await D.page.click('#new-chat');
   const ask = async (text, n) => {
     await D.page.fill('#input', text);
@@ -937,7 +956,9 @@ await check('Fresh context: nothing replayed; a lookup (earlier exchange, web) g
   assert.match(r.system, /## Looked up before this message \(search results, not the user's words\)\nLooked up before answering, for "freshtest What is the latest movie Patrick Stewart was in\?"/);
   assert.match(r.system, /Web search for "freshtest What is the latest movie Patrick Stewart was in\?":\n<untrusted source="web search"[^>]*>\nSummary \(Wikipedia\)/);
   assert.equal(r.input, 'freshtest What is the latest movie Patrick Stewart was in?', 'the user turn is only the user\'s words');
-  assert.ok(r.trail.some(t => /^looked up before answering: .* \(\d from the web\)$/.test(t)), JSON.stringify(r.trail));
+  assert.ok(r.trail.some(t => /^looked up before answering: .* \(Wikipedia, \d from the web\)$/.test(t)), JSON.stringify(r.trail));
+  assert.ok(r.trail.includes('looked up "Patrick Stewart" on Wikipedia and Wikidata (Q16297) (looked up first)'), JSON.stringify(r.trail));
+  assert.match(r.system, /Wikipedia and Wikidata:\n<untrusted source="wikipedia and wikidata"[^>]*>\nWikipedia: Patrick Stewart \(English actor \(born 1940\)\)[\s\S]*- date of birth: 1940-07-13[\s\S]*- Avengers: Doomsday \(film\), 2026-12-18 \(not out yet\): cast member\n- Smurfs \(animated film\), 2025-07-18: voice actor[\s\S]*- Patrick Stewart filmography: https:\/\/en\.wikipedia\.org\/wiki\/Patrick_Stewart_filmography/);
   assert.ok(r.kinds.includes('web') && !r.kinds.includes('recent'), JSON.stringify(r.kinds));
 
   // 2. Small talk: no lookup at all.
@@ -959,6 +980,8 @@ await check('Fresh context: nothing replayed; a lookup (earlier exchange, web) g
   assert.match(found, /Earlier in this chat:\n- The user asked "freshtest What is the latest movie Patrick Stewart was in\?"; you answered "/);
   assert.match(found, /Web search for "Patrick Stewart freshtest what about his most recent one\?/);
   assert.match(found, /<untrusted source="web search"/);
+  assert.match(found, /Wikipedia and Wikidata:\n<untrusted source="wikipedia and wikidata"/);
+  assert.ok(wikiAsked.includes('Patrick Stewart freshtest his one'), JSON.stringify(wikiAsked));
   assert.doesNotMatch(r.system, /Looked up before/);
   assert.match(r.reply, /^From the lookup: Looked up before answering/);
   assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);

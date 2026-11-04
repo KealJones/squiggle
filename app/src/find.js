@@ -54,6 +54,7 @@ export const PAST_CHAT = /\b(last time|earlier|yesterday|we (talked|discussed|di
 const INTENTS = [
   [/\b(google|duckduckgo|ddg|web ?search|look ?(it |this |that )?up|lookup|search (for )?(it )?(on )?(the )?(web|internet|online|net)|on the (web|internet|net)|online)\b/, { web_search: 6 }],
   [/\b(news|latest|weather|current price|who won|score of)\b/, { web_search: 3 }],
+  [/\b(wikipedia|wikidata|wiki|filmography|discography|bibliography|born|died|age of|how old|birthday|spouse|married to|population|capital of|founded|headquarters|ceo of|movies?|films?|albums?|starred in|played in)\b/, { wiki_lookup: 5 }],
   [/https?:\/\/|\b(link|url|web ?page|website|site|article|blog post)\b/, { fetch_url: 4 }],
   [/\b(open|visit|go to|browse|download|scrape|summari[sz]e|read)\b.*\b(page|site|website|article|link|url)\b/, { fetch_url: 6 }],
   [/\b(open|read|show|view|cat|display|print|look at|peek at|check)\b.*\b(file|contents?|source|script|config|readme|code)\b|\b(open|read|cat|show|view)\b.*\.(js|mjs|ts|json|jsonl|md|html|css|toml|ya?ml|py|txt|csv)\b/, { read_file: 8 }],

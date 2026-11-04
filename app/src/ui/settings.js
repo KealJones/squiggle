@@ -9,7 +9,7 @@ export function loadSettings() {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch {}
   const mobile = engine.isMobile();
-  Object.assign(agent.settings, { model: engine.deviceModel() }, mobile ? { contextSize: 4096, fastDecode: false, semantic: false } : {}, saved);
+  Object.assign(agent.settings, { model: engine.deviceModel() }, mobile ? { contextSize: 4096, fastDecode: false } : {}, saved);
   // Phones only run models that fit a phone; anything else moves to the default.
   if (!engine.MODELS[agent.settings.model] || !engine.modelFitsDevice(agent.settings.model)) {
     agent.settings.model = engine.deviceModel();
@@ -36,6 +36,12 @@ export function loadSettings() {
   if (mobile && !saved.phoneWQ06) {
     if (engine.MODELS.WQ06 && engine.hasWebGpu && engine.hasWebGpu() && ['SQ', 'G3'].includes(agent.settings.model)) agent.settings.model = 'WQ06';
     saved = { ...saved, model: agent.settings.model, phoneWQ06: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
+  // Search by meaning on phones too: its worker sleeps (and frees its memory) 15 s after a search (embed.js).
+  if (mobile && !saved.phoneSemantic) {
+    agent.settings.semantic = true;
+    saved = { ...saved, semantic: true, phoneSemantic: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
   if (mobile && !saved.mobileTuned) {
