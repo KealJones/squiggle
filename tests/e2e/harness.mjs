@@ -72,7 +72,7 @@ function gitBackend(root) {
 // Starts the servers; returns { appUrl, relayUrl, close }.
 // split: true serves the app and the relay on different origins with a
 // config.json pointing at the relay — the GitHub Pages setup.
-export async function start(gitRoot, env = {}, { split = false } = {}) {
+export async function start(gitRoot, env = {}, { split = false, isolate = false } = {}) {
   const backend = gitBackend(gitRoot);
   await new Promise(r => backend.listen(0, '127.0.0.1', r));
   const gitPort = backend.address().port;
@@ -140,7 +140,9 @@ export async function start(gitRoot, env = {}, { split = false } = {}) {
     }
     const p = normalize(join(APP_DIR, u.pathname === '/' ? 'index.html' : u.pathname));
     if (!p.startsWith(APP_DIR) || !existsSync(p) || statSync(p).isDirectory()) { res.writeHead(404); res.end(); return; }
-    res.writeHead(200, { 'Content-Type': TYPES[extname(p)] || 'application/octet-stream' });
+    // isolate: the headers sw.js adds for "Use all CPU cores" (SharedArrayBuffer needs a cross-origin isolated page).
+    const iso = isolate ? { 'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp', 'Cross-Origin-Resource-Policy': 'same-origin' } : {};
+    res.writeHead(200, { 'Content-Type': TYPES[extname(p)] || 'application/octet-stream', ...iso });
     let body = readFileSync(p);
     // The real CSP allows https relays only; the local test relay is http.
     if (split && p.endsWith('index.html')) body = String(body).replace("connect-src 'self' https:", `connect-src 'self' https: ${relayUrl}`);

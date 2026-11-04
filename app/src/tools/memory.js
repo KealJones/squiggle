@@ -9,6 +9,7 @@ import { bestPart } from './workspace.js';
 
 export const remember = defineTool({
   name: 'remember',
+  group: 'memory',
   description: 'Save a lasting fact about the user or their projects (preferences, decisions, names, how things work). Saved as subject → relation → object.',
   parameters: params({ subject: str('Who/what, e.g. "Keal" or "squiggle"'), relation: str('e.g. "prefers", "uses", "is deployed on"'), object: str('the value'), note: str('optional detail') }, ['subject', 'relation', 'object']),
   async run({ subject, relation, object, note }, ctx) {
@@ -19,6 +20,7 @@ export const remember = defineTool({
 
 export const recall = defineTool({
   name: 'recall',
+  group: 'memory',
   description: 'Search saved memory facts.',
   parameters: params({ query: str('What to look for') }, ['query']),
   async run({ query }) {
@@ -29,6 +31,7 @@ export const recall = defineTool({
 
 export const forget = defineTool({
   name: 'forget',
+  group: 'memory',
   description: 'Delete a saved memory fact by id (when the user says it is wrong or outdated).',
   parameters: params({ id: str('Fact id from recall') }, ['id']),
   async run({ id }) {
@@ -38,6 +41,7 @@ export const forget = defineTool({
 
 export const searchHistory = defineTool({
   name: 'search_history',
+  group: 'memory',
   description: 'Search the user\'s past conversations (all sessions) for something discussed before.',
   parameters: params({ query: str('What to look for') }, ['query']),
   async run({ query }, ctx) {

@@ -233,12 +233,15 @@ and parses it.
   (Squiggle Small; it's their training text and the only format their engine parses), **on by default for
   every other small model** (`agent.smallModeDefault`: anything on the wllama runtime, so tiny Gemma 4 and
   the Qwens — with the full prompt and every schema, half of a phone's 4K window was gone before the
-  person typed, and a 0.8B model answered the instructions instead of the person), off by default for
-  big ones (Gemma 4 E2B/E4B, the cloud model). Switched on, those models get `LITE_SYSTEM_NATIVE`:
-  `LITE_SYSTEM`'s first three lines, without the ```` ```tool_call ```` line (their own template declares
-  the tools), plus "Call a tool as soon as you know which one you need; when you don't, find tells you
-  which fits." It used to say "start with plan, done, need and find", and a 0.6B model took that as an
-  order to call those first: told "use web_search", it argued with the prompt until its output ran out.
+  person typed, and a 0.8B model answered the instructions instead of the person; measured 2026-11-04,
+  docs/measurements-2026-11-04.md: 430 more tokens, about 40 s of prefill on a phone-class CPU, no better),
+  off by default for big ones (Gemma 4 E2B/E4B, the cloud model). Switched on, those models get
+  `LITE_SYSTEM_NATIVE`: `LITE_SYSTEM`'s first three lines, without the ```` ```tool_call ```` line (their
+  own template declares the tools), plus one line each on what web_search/fetch_url, find and need are for,
+  and "Plan only when the request takes more than one step". It used to say "Start with plan, done, need and
+  find", which small models obeyed literally: a 0.6B told "use web_search" argued with the prompt until its
+  output ran out, and Qwen3.5 0.8B called need for arithmetic and for facts the user had just stated
+  (measured 2026-11-04).
   Big models still get every tool declared natively; small native models are gated (next section). Context
   budgets and background jobs follow the runtime (wllama or not), not this switch.
   Tools the model has looked up are appended as
@@ -259,15 +262,19 @@ used to get every schema declared, about 3.4k tokens of a 4K phone window, which
 Now (agent.js `gated()`):
 
 - Declared with full schemas from the start (`GATE`): `plan`, `done` (steps), `need`, `find`, `tool_info`,
-  `web_search`, `fetch_url` (and `checkpoint` in AI-managed mode). About 600 tokens (by `estTokens`), plus
-  about 110 for the name line below, against about 3.4k before.
+  `web_search`, `fetch_url`, `remember`, `calculate` (and `checkpoint` in AI-managed mode). About 940 tokens
+  (by `estTokens`), plus about 110 for the name lines below, against about 3.4k before. `remember` and
+  `calculate` joined on 2026-11-04: a 0.8B model told to save a fact with remember called `need` instead of
+  looking remember up first, and did arithmetic with web_search.
 - The prompt names what is declared and what is not, generated from the same sets the engine declares
   (`toolNamesLine`, in both the full prompt and `LITE_SYSTEM_NATIVE`): `Tools ready to call: plan, done,
-  need, find, tool_info, web_search, fetch_url.` then `Other tools: list_files, read_file, … To use one,
-  first call tool_info(names) with every one you expect to need.` Tools looked up earlier in the task
-  (`task.tools`) count as ready. Nothing usable is left unnamed: web_search used to be declared but never
-  mentioned, and a model went looking for it through tool_info instead of calling it. Not in the final
-  reply's prompt (no tools).
+  need, find, tool_info, web_search, fetch_url, remember, calculate.` then the rest grouped by the tool's
+  `group` (tools/registry.js `defineTool`): `Other tools, by area: files: list_files, read_file, …; git and
+  GitHub: …; memory: recall, …; maths and code: run_js. To use one, first call tool_info(names) with every
+  one you expect to need.` Tools looked up earlier in the task (`task.tools`) count as ready. Nothing usable
+  is left unnamed: web_search used to be declared but never mentioned, and a model went looking for it
+  through tool_info instead of calling it. Not in the final reply's prompt (no tools). `need` and `find`
+  called without an argument get an error back (never a question to the user).
 - `tool_info(names)` answers `{"tools": [names], "ready": "… ready to call now."}`, or an error listing the
   valid names. The schema itself reaches the model through the declared tools on the next request, so the
   result stays short. `find` results that name tools declare them the same way.

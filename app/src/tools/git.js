@@ -88,6 +88,7 @@ async function changedPaths(dir, commits) {
 // ── Tools ─────────────────────────────────────────────────────────────────
 export const githubListRepos = defineTool({
   name: 'github_list_repos',
+  group: 'git and GitHub',
   description: 'List the GitHub repos the user has given Squiggle access to.',
   parameters: params({}),
   async run() {
@@ -105,6 +106,7 @@ export const githubListRepos = defineTool({
 
 export const gitClone = defineTool({
   name: 'git_clone',
+  group: 'git and GitHub',
   description: 'Clone a GitHub repo into /repos/<name>. Pulls if it is already cloned.',
   parameters: params({ repo: str('owner/name'), branch: str('Branch to check out (default: the repo default)') }, ['repo']),
   async run({ repo, branch }) {
@@ -132,6 +134,7 @@ export const gitClone = defineTool({
 
 export const gitStatus = defineTool({
   name: 'git_status',
+  group: 'git and GitHub',
   description: 'Show the current branch and changed files of a cloned repo.',
   parameters: params({ repo: str('Folder name under /repos (or owner/name)') }, ['repo']),
   async run({ repo }) {
@@ -142,6 +145,7 @@ export const gitStatus = defineTool({
 
 export const gitBranch = defineTool({
   name: 'git_branch',
+  group: 'git and GitHub',
   description: 'Switch to a branch, or start a new one. Pass an existing branch name (e.g. "main") to switch to it. A new branch gets the "agent/" prefix; you can push agent/ branches freely, while pushing any other branch asks the user first. Uncommitted changes carry over to a new branch.',
   parameters: params({ repo: str('Folder name under /repos'), name: str('Existing branch, or a short name for a new one, e.g. "fix-login"'), from: str('For a new branch: branch or commit to start from (default: current)') }, ['repo', 'name']),
   async run({ repo, name, from }) {
@@ -172,6 +176,7 @@ export const gitBranch = defineTool({
 
 export const gitCommit = defineTool({
   name: 'git_commit',
+  group: 'git and GitHub',
   description: 'Commit all changes in a repo on the current branch.',
   parameters: params({ repo: str('Folder name under /repos'), message: str('Commit message') }, ['repo', 'message']),
   async run({ repo, message }) {
@@ -187,6 +192,7 @@ export const gitCommit = defineTool({
 
 export const gitPush = defineTool({
   name: 'git_push',
+  group: 'git and GitHub',
   description: `Push the current branch to GitHub (never forced). ${AGENT_BRANCH_PREFIX} branches push right away; any other branch (like main) asks the user for permission first.`,
   parameters: params({ repo: str('Folder name under /repos') }, ['repo']),
   async run({ repo }, ctx = {}) {
@@ -235,6 +241,7 @@ export const gitPush = defineTool({
 
 export const gitPull = defineTool({
   name: 'git_pull',
+  group: 'git and GitHub',
   description: 'Fetch and fast-forward the current branch from GitHub.',
   parameters: params({ repo: str('Folder name under /repos') }, ['repo']),
   async run({ repo }) {
@@ -252,6 +259,7 @@ export const gitPull = defineTool({
 
 export const gitLog = defineTool({
   name: 'git_log',
+  group: 'git and GitHub',
   description: 'Recent commits on the current branch.',
   parameters: params({ repo: str('Folder name under /repos'), count: num('How many (default 10)') }, ['repo']),
   async run({ repo, count = 10 }) {
@@ -264,6 +272,7 @@ export const gitLog = defineTool({
 
 export const gitShow = defineTool({
   name: 'git_show',
+  group: 'git and GitHub',
   description: 'Read a file as it was at an earlier commit, with line numbers. To restore it, write that content back with write_file (overwrite: true).',
   parameters: params({ repo: str('Folder name under /repos'), path: str('File path in the repo, e.g. app/src/main.js'), ref: str('Commit id from git_log (short is fine), or HEAD~1 for the one before the latest'), start_line: num('First line (default 1)'), end_line: num('Last line (default start_line + 150)') }, ['repo', 'path', 'ref']),
   async run({ repo, path, ref = 'HEAD', start_line = 1, end_line }, ctx = {}) {
@@ -289,6 +298,7 @@ export const gitShow = defineTool({
 
 export const githubOpenPr = defineTool({
   name: 'github_open_pr',
+  group: 'git and GitHub',
   description: 'Open a pull request from the current (pushed) branch.',
   parameters: params({ repo: str('Folder name under /repos'), title: str('PR title'), body: str('PR description'), base: str('Target branch (default: repo default)') }, ['repo', 'title']),
   async run({ repo, title, body = '', base }) {

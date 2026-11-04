@@ -128,7 +128,7 @@ function smallModeField(S) {
   if (!agent.smallModeSwitchable(id)) {
     return field('Small-model mode', '', `Always on for ${engine.MODELS[id].label}: it's trained on this format. ${what}`);
   }
-  // Saved as true or false per model; unset means the model's default (on for small models, off for big ones).
+  // Saved as true or false per model (an explicit false overrides the default); unset means the model's default.
   return switchRow('Small-model mode', `${what} Off gives ${engine.MODELS[id].label} the full prompt. ${agent.smallModeDefault(id) ? 'On by default for a small model: the full prompt and every tool took half its window.' : 'Off by default for a big model.'} Saved for this model only; applies from the next message.`, agent.smallMode(id), (e) => {
     S.smallMode = { ...(S.smallMode || {}), [id]: e.target.checked };
     saveSettings(); updateComposerNote();
