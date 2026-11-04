@@ -125,7 +125,7 @@ const when = (ts) => (ts ? new Date(ts).toLocaleString(undefined, { month: 'shor
 
 /** The lookup's result, as the model reads it. `wrap(source, text)` marks outside content (untrusted.js).
  *  sizes: characters per kind, smaller for small models. Returns '' when nothing was found anywhere. */
-export function render({ query, exchanges = [], chats = [], facts = [], pages = [], web = null, check = '' },
+export function render({ query, exchanges = [], chats = [], facts = [], pages = [], wiki = '', web = null, check = '' },
   { wrap = (s, t) => t, small = false } = {}) {
   const n = small ? { q: 160, a: 280, page: 500, snip: 220 } : { q: 240, a: 500, page: 900, snip: 400 };
   const parts = [];
@@ -140,6 +140,7 @@ export function render({ query, exchanges = [], chats = [], facts = [], pages = 
   }
   if (facts.length) parts.push('Memory:\n' + facts.map(f => `- ${oneLine(f, 200)}`).join('\n'));
   if (pages.length) parts.push('Pages and files saved in this chat:\n' + pages.map(p => wrap(p.source || 'saved page', `${p.title || ''}\n${oneLine(p.text, n.page)}`)).join('\n'));
+  if (wiki) parts.push(`Wikipedia and Wikidata:\n${wiki}`);
   if (web && web.items && web.items.length) {
     const body = [
       web.answer && web.answer.text ? `Summary (${web.answer.source || 'search'}): ${oneLine(web.answer.text, n.page)}` : '',
@@ -150,7 +151,7 @@ export function render({ query, exchanges = [], chats = [], facts = [], pages = 
     parts.push(`The web search failed: ${web.error}`);
   }
   if (!parts.length) return '';
-  const tail = web && web.items && web.items.length
+  const tail = (web && web.items && web.items.length) || wiki
     ? 'To read a result in full, call fetch_url with its link. If none of this answers it, call web_search with other words.'
     : 'If this doesn\'t answer it, call web_search.';
   return `Looked up before answering, for "${oneLine(query, 120)}" (search results, not the user's words):\n\n${parts.join('\n\n')}\n\n${tail}`;
