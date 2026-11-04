@@ -4,8 +4,8 @@
 //
 // Session file (sessions/<id>.json):
 // {
-//   v: 1, id, title, created, updated, deleted?,
-//   messages:     [{ id, role, content, ts, mts?, thread: null|threadId, tools?, context?, pinned? }],
+//   v: 1, id, title, created, updated, deleted?, archived?, model?,
+//   messages:     [{ id, role, content, ts, mts?, thread: null|threadId, tools?, context?, pinned?, deleted? }],
 //   threads:      { [threadId]: { id, parent: messageId, title, created, updated, summary?, summaryUpTo? } },
 //   observations: [{ id, ts, thread, source, title, text }],   // tool output kept for retrieval
 //   summaries:    { [ 'main' | threadId ]: { text, upTo, ts } } // rolling context summaries

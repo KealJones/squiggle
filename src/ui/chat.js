@@ -14,7 +14,7 @@ import { state } from './state.js';
 import { openThread, openPanel, closeDrawer, renderThreadPanel, renderNotesPanel } from './panels.js';
 import { renderSide } from './side.js';
 import { toggleReadAloud } from './voice-ui.js';
-import { ensureModel, loadCrashMarker, updateComposerNote } from './model-ui.js';
+import { ensureModel, loadCrashMarker, updateComposerNote, useSessionModel } from './model-ui.js';
 
 export const closeSidebar = () => $('#sidebar').classList.remove('open');
 
@@ -34,12 +34,19 @@ export function renderSessions() {
   const q = $('#session-search').value.trim();
   ul.replaceChildren();
   if (q) return renderSearch(ul, q);
-  for (const s of sessions.list()) {
-    ul.append(h('li', {}, h('button', { 'aria-current': String(state.current && s.id === state.current.id), onclick: () => { openSession(s); closeSidebar(); } },
-      h('span', { class: 't' }, s.title), h('span', { class: 'when' }, ago(s.updated)))));
-  }
+  const item = (s) => h('li', {}, h('button', { 'aria-current': String(state.current && s.id === state.current.id), onclick: () => { openSession(s); closeSidebar(); } },
+    h('span', { class: 't' }, s.title), h('span', { class: 'when' }, ago(s.updated))));
+  for (const s of sessions.list()) ul.append(item(s));
   if (!ul.children.length) ul.append(h('li', { class: 'muted', style: 'padding: 8px 10px' }, 'No chats yet.'));
+  const archived = sessions.listArchived();
+  if (archived.length) {
+    const d = h('details', { class: 'archived' }, h('summary', {}, `Archived (${archived.length})`), h('ul', {}, archived.map(item)));
+    d.open = archivedOpen || Boolean(state.current && state.current.archived);
+    d.addEventListener('toggle', () => { archivedOpen = d.open; });
+    ul.append(h('li', { class: 'archived-group' }, d));
+  }
 }
+let archivedOpen = false;
 
 function renderSearch(ul, q) {
   const docs = [];
@@ -71,6 +78,7 @@ export function openSession(s, focusMessage) {
   closeDrawer();
   renderSessions();
   renderChat();
+  useSessionModel(s).catch(() => {});
   if (focusMessage) {
     if (focusMessage.thread) openThread(focusMessage.thread, focusMessage.id);
     else requestAnimationFrame(() => {
@@ -127,7 +135,12 @@ export function messageEl(m, { inThread, streaming, session }) {
       sessions.updateMessage(current, m, { pinned: !m.pinned });
       rerender();
     }, m.pinned));
-    actions.append(iconButton('i-copy', 'Copy', () => navigator.clipboard?.writeText(m.content || '')));
+    const copy = iconButton('i-copy', 'Copy', async () => {
+      try { await navigator.clipboard.writeText(m.content || ''); } catch { return; }
+      copy.replaceChildren(icon('i-check')); copy.classList.add('done'); copy.setAttribute('aria-label', 'Copied');
+      setTimeout(() => { copy.replaceChildren(icon('i-copy')); copy.classList.remove('done'); copy.setAttribute('aria-label', 'Copy'); }, 1500);
+    });
+    actions.append(copy);
     if (m.role === 'assistant' && m.content && voice.support(window).synthesis) {
       const on = Boolean(state.reader && state.reader.id === m.id);
       const b = iconButton(on ? 'i-stop' : 'i-speaker', on ? 'Stop reading' : 'Read aloud', () => toggleReadAloud(m), on);
@@ -136,6 +149,13 @@ export function messageEl(m, { inThread, streaming, session }) {
       actions.append(b);
     }
     if (m.role === 'assistant' && m.context) actions.append(iconButton('i-eye', 'What the model saw', () => openPanel('context', m)));
+    const del = iconButton('i-trash', 'Delete message', () => {
+      if (!confirm('Delete this message? It disappears from the chat on all your devices.')) return;
+      sessions.deleteMessage(current, m);
+      rerender();
+    });
+    del.classList.add('danger');
+    actions.append(del);
     col.append(actions);
     if (!inThread) {
       const t = sessions.threadOf(current, m.id);
@@ -292,6 +312,7 @@ function setBusy(on) {
 // ── A turn ─────────────────────────────────────────────────────────────────
 export async function send(text, threadId, files = []) {
   if (state.busy) return;
+  await useSessionModel(state.current);
   if (state.modelState !== 'ready') {
     if (loadCrashMarker()) return; // the crash banner is showing; let the person choose
     const ok = await ensureModel();
