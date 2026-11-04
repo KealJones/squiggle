@@ -9,6 +9,8 @@
 //             message plus the active goal and step (docs/harness.md,
 //             "Smart context v2"); other chats need a stronger match
 //   compact:  summary + recent only (classic compaction)
+//   fresh:    nothing replayed: the agent looks things up before the model answers (prefetch.js) and
+//             hands it over as a tool result; only the system prompt, notes and harness hints are here
 //   full:     as many recent turns as fit, nothing retrieved
 //
 // Returns the preface for the model plus a report of exactly what was
@@ -32,6 +34,8 @@ export const CONTEXT_MODES = {
     hint: 'Also brings back a few earlier messages that fit the question ("that", "yesterday", "what I said about…"), quoted after your message, plus relevant web pages and files from this chat. Plain chat like "hi" gets nothing extra.' },
   managed: { label: 'AI-managed (experimental)', short: 'AI-managed', recentShare: 0.55, summary: true, retrieve: false, offered: true,
     hint: 'The model runs its own context: it sees how much room is left, plan steps say which earlier results, files or notes they need attached, big pages get a summarize step, and when room runs low it checkpoints and carries on fresh. Experimental: models haven\'t been trained for it yet.' },
+  fresh: { label: 'Fresh (experimental)', short: 'Fresh', recentShare: 0, summary: false, retrieve: false, fresh: true, offered: true,
+    hint: 'Every message starts new: nothing is replayed just for being recent. Before the model answers, Squiggle looks things up for it (earlier messages and pages that match, memory, and the web) and hands that over as a lookup it already did, so none of it reads as you talking. A follow-up like "what about his newest one?" borrows the names from your last question. Experimental.' },
   full: { label: 'Full history', short: 'Full', recentShare: 1, summary: false, retrieve: false, offered: false,
     hint: 'As many recent turns as fit, nothing retrieved.' },
 };
@@ -125,7 +129,7 @@ export async function assembleContext(o) {
   const recentCap = Math.floor((budget - used) * M.recentShare);
   const recent = [];
   let recentTokens = 0;
-  for (let i = line.length - 1; i >= 0; i--) {
+  for (let i = M.fresh ? -1 : line.length - 1; i >= 0; i--) {
     const t = estTokens(messageText(line[i], threadNotes)) + 8;
     if (recent.length >= MIN_RECENT && recentTokens + t > recentCap) break;
     recent.unshift(line[i]);
@@ -164,7 +168,7 @@ export async function assembleContext(o) {
   }
 
   // 2. Pinned messages that fell out of the recent window.
-  const pinned = older.filter(m => m.pinned);
+  const pinned = M.fresh ? [] : older.filter(m => m.pinned);
   if (pinned.length) {
     const body = pinned.map(m => `- (${m.role}, ${day(m.ts)}) ${truncate(messageText(m), 1200)}`).join('\n');
     const t = estTokens(body);
@@ -208,7 +212,7 @@ export async function assembleContext(o) {
   }
 
   // 4. Memory facts (all modes; they're small and about the person).
-  if (o.recall && !o.small) {
+  if (o.recall && !o.small && !M.fresh) {
     const facts = (await o.recall(o.focus ? `${query}\n${o.focus}` : query, 10)).filter(r => r.score >= 0.2);
     const cap = Math.floor(budget * 0.12);
     const lines = [];

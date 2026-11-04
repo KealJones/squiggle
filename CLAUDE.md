@@ -36,6 +36,7 @@ app/                    static app, plain ES modules, no build step
     engine-cloud.js     cloud model through the relay (same conversation interface)
     engine-wllama.js    Gemma 3 270M on llama.cpp WASM (phones): prompt-based tools, <think>, anti-loop
     context.js          context assembly: CONTEXT_MODES registry (smart default / compact / managed / full); report
+    prefetch.js         Fresh context (experimental): the lookup before the model answers (question made standalone, saved exchanges/pages/memory, web), handed over as a seeded find call (docs/harness.md "Fresh context")
     recall.js           smart mode's recalled block: earlier messages (this chat + other chats) and memory, quoted after the request; time phrases, size caps
     search.js           BM25 + blend with optional embeddings (embed.js, MiniLM on CPU)
     tools.js            facade over tools/ (keeps the import path)
@@ -138,7 +139,7 @@ as "(Squiggle: …)" and retitles the memory section, because small models read 
 turn as the person's words. Memory recall uses an absolute bar (`memory-rank.js`), never hops through
 "user"/"Squiggle", and `aboutTheUser` keeps facts about the assistant itself out. Sampling, thinking and a
 thinking budget come from each model's card (`engine.generationFor`); replies save which model wrote them.
-Context modes (`settings.contextMode`, `context.js CONTEXT_MODES`): `compact` (Compress), `smart` (default) and `managed` (AI-managed,
+Context modes (`settings.contextMode`, `context.js CONTEXT_MODES`): `compact` (Compress), `smart` (default), `fresh` (experimental: nothing replayed, a lookup first, seeded as a find call where `engine.seedsToolHistory()`; prefetch.js) and `managed` (AI-managed,
 experimental: budget line, plan steps with `needs`/`kind: 'summarize'`, `checkpoint`). Everything AI-managed adds
 is behind `managed()`; the other modes must stay unchanged (Squiggle Small's prompt is its training text).
 The registry drives the Settings dropdown and the sidebar labels; `registerContextMode` adds one (docs/extending.md).

@@ -87,6 +87,10 @@ export const isLite = (id = loadedModel) => Boolean(MODELS[id] && MODELS[id].run
 // Gemma 4's own tool format through llama.cpp's chat template (engine-wllama.js NativeConversation), not
 // Squiggle Small's ```tool_call blocks: for small builds distilled from E2B (tiny Gemma 4).
 export const nativeTools = (id = loadedModel) => isLite(id) && Boolean(MODELS[id] && MODELS[id].native);
+// Can a conversation start with a tool call already made and its result (Fresh context's lookup)? Models that
+// call tools in their own format (OpenAI-shaped history: wllama, WebLLM) and the cloud model can; LiteRT and the
+// fenced small-model format can't, so they get the lookup in the system prompt.
+export const seedsToolHistory = (id = loadedModel) => nativeTools(id) || Boolean(MODELS[id] && MODELS[id].runtime === 'cloud');
 export const chatOnly = (id = loadedModel) => isLite(id) && !(MODELS[id] && MODELS[id].tools);
 
 export async function webgpuStatus() {

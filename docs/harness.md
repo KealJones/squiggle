@@ -239,6 +239,28 @@ id like facts):
 - The "What the model saw" panel shows every section, including recipe, refs and
   plan.
 
+## Fresh context (prefetch.js)
+
+Settings → Context → Fresh (experimental). Smart context quoted recalled messages after the request, and small
+models read them as the user talking (2026-11-04: Qwen3 0.6B answered recalled questions instead of the new one).
+Fresh replays nothing just for being recent. Before the model sees a message, the agent looks things up for it:
+
+1. **The question on its own.** A follow-up that names nothing ("what about his most recent one?") borrows the
+   names, or failing that the topic words, of the last real question before it ("thanks!" is skipped).
+2. **Saved things.** This chat's earlier exchanges (question + reply; the last one gets +0.05) and its saved pages,
+   other chats when "Bring in other chats" is on, and memory facts (memory.js's own bar, 0.3). By meaning when
+   "Search by meaning" is on (MiniLM cosine ≥ 0.45), else by words (two of the query's words and a third of them).
+   A query that names someone only matches text that names them too.
+3. **The web**, with the same words, unless the message is small talk or bare arithmetic, is about past chats, or
+   is clearly a job for another tool (find's rankTools score over 4). Reranked, best 3 (small) or 5. On pushback
+   ("no, it's X", "confirm that") the claim is searched instead, with the don't-just-agree note.
+
+The result goes in as a `find` call the model already made, with the result as its first input: the question is
+the only user turn. Engines that can't start that way (Gemma 4 on LiteRT, the fenced format) get it as a system
+section headed "Looked up before this message (search results, not the user's words)". Small talk gets nothing.
+The seeded find and web queries count as made, so the repeat guard catches a model that asks again. Step mode is
+unchanged (it was already one fresh prompt per step).
+
 ## Small-model format (Gemma 3 270M / the fine-tune)
 
 This is the exact text the fine-tune is trained on. `engine-wllama.js` renders

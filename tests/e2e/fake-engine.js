@@ -26,6 +26,8 @@ export const modelFitsDevice = (id) => !isMobile() || Boolean(MODELS[id] && MODE
 export const deleteModel = async (id) => { (window.__deleted = window.__deleted || []).push(id); };
 // The fake phone has no WebGPU, so it keeps the CPU default (Squiggle Small).
 export const hasWebGpu = () => false;
+// Fresh context: tests switch between the seeded find call (native models) and the system-section fallback.
+export const seedsToolHistory = () => Boolean(window.__seedTools);
 export const isMobile = () => /iPhone|Android/.test(navigator.userAgent);
 window.__loads = 0;
 export const downloadInfo = async (id) => (window.__noE4B && id === 'E4B' ? { total: 0, stored: 0, complete: false } : { total: 1, stored: 1, complete: true });
@@ -86,6 +88,9 @@ export async function respond(conv, input, { onText } = {}) {
   log.push({ type: 'respond', input, system: conv.cfg && conv.cfg.system });
   // The script answers the person's words, not the recalled block smart context appends.
   if (typeof input === 'string') input = input.split('\n\n---\nPossibly relevant earlier messages')[0];
+  // Fresh context: the first input is the result of the lookup the agent made for the model.
+  const looked = Array.isArray(input) && input[0] && input[0].content[0].name === 'find' && ((input[0].content[0].response || {}).found || '');
+  if (looked && /^Looked up before answering/.test(looked)) return say(`From the lookup: ${looked.split('\n')[0]}`, onText);
   const scripted = stepScript(conv, input, onText);
   if (scripted) return scripted;
   if (typeof input === 'string') {

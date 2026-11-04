@@ -905,6 +905,65 @@ await check('chat details sidebar: model, context window breakdown (live and sav
   assert.equal(await D.page.isVisible('#ctx-side'), true);
 });
 
+await check('Fresh context: nothing replayed; a lookup (earlier exchange, web) goes in as a find call, or a system section where the engine can\'t take one; small talk gets none', async () => {
+  const D = await device('fresh');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.evaluate(async () => { const a = await import('/src/agent.js'); a.settings.contextMode = 'fresh'; a.settings.semantic = false; });
+  await D.page.click('#new-chat');
+  const ask = async (text, n) => {
+    await D.page.fill('#input', text);
+    await D.page.press('#input', 'Enter');
+    await D.page.waitForFunction((k) => document.querySelectorAll('.msg.assistant').length >= k && !document.querySelector('.msg.assistant.streaming'), n, { timeout: 20000 });
+    await D.page.waitForTimeout(200);
+  };
+  const last = () => D.page.evaluate(async () => {
+    const sessions = await import('/src/sessions.js');
+    const s = sessions.list().find(x => x.messages.some(m => /freshtest/.test(m.content)));
+    const reply = [...s.messages].reverse().find(m => m.role === 'assistant');
+    const conv = window.__engineLog.filter(x => x.type === 'conversation').pop();
+    const first = window.__engineLog.filter(x => x.type === 'respond').pop();
+    return { reply: reply.content, trail: (reply.tools || []).map(t => t.label), mode: reply.context.mode, kinds: reply.context.items.map(i => i.kind), system: conv.system, messages: conv.messages, input: first.input };
+  });
+
+  // 1. No seeded calls in this engine: the lookup is a labelled system section; the message is sent alone.
+  await ask('freshtest What is the latest movie Patrick Stewart was in?', 1);
+  let r = await last();
+  assert.equal(r.mode, 'fresh');
+  assert.deepEqual(r.messages, [], 'nothing replayed');
+  assert.match(r.system, /## Looked up before this message \(search results, not the user's words\)\nLooked up before answering, for "freshtest What is the latest movie Patrick Stewart was in\?"/);
+  assert.match(r.system, /Web search for "freshtest What is the latest movie Patrick Stewart was in\?":\n<untrusted source="web search"[^>]*>\nSummary \(Wikipedia\)/);
+  assert.equal(r.input, 'freshtest What is the latest movie Patrick Stewart was in?', 'the user turn is only the user\'s words');
+  assert.ok(r.trail.some(t => /^looked up before answering: .* \(\d from the web\)$/.test(t)), JSON.stringify(r.trail));
+  assert.ok(r.kinds.includes('web') && !r.kinds.includes('recent'), JSON.stringify(r.kinds));
+
+  // 2. Small talk: no lookup at all.
+  await ask('thanks!', 2);
+  r = await last();
+  assert.doesNotMatch(r.system, /Looked up before/);
+  assert.ok(!r.trail.some(t => /looked up before/.test(t)), JSON.stringify(r.trail));
+
+  // 3. A native-format engine: the question is the only user turn, then a find call the model "made", and the
+  // lookup is the first input. The follow-up borrowed the names of the question before it and found that exchange.
+  await D.page.evaluate(() => { window.__seedTools = true; });
+  await ask('freshtest what about his most recent one?', 3);
+  r = await last();
+  assert.equal(r.messages.length, 2, JSON.stringify(r.messages));
+  assert.deepEqual([r.messages[0].role, r.messages[0].content], ['user', 'freshtest what about his most recent one?']);
+  assert.equal(r.messages[1].tool_calls[0].function.name, 'find');
+  assert.match(JSON.parse(r.messages[1].tool_calls[0].function.arguments).query, /^Patrick Stewart freshtest what about his most recent one\?$/);
+  const found = r.input[0].content[0].response.found;
+  assert.match(found, /Earlier in this chat:\n- The user asked "freshtest What is the latest movie Patrick Stewart was in\?"; you answered "/);
+  assert.match(found, /Web search for "Patrick Stewart freshtest what about his most recent one\?/);
+  assert.match(found, /<untrusted source="web search"/);
+  assert.doesNotMatch(r.system, /Looked up before/);
+  assert.match(r.reply, /^From the lookup: Looked up before answering/);
+  assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+});
+
 await check('step mode through the UI: plan, live checklist, find, done, final reply, recipe; need asks and resumes', async () => {
   const D = await device('steps');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));

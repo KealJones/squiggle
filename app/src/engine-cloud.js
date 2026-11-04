@@ -14,14 +14,17 @@ class Conversation {
   constructor({ preface, sessionConfig }) {
     // Squiggle's history uses Gemma's on-device role name "model"; the
     // OpenAI-style API only accepts "assistant".
-    this.messages = preface.messages.map(m => ({ role: m.role === 'model' ? 'assistant' : m.role, content: m.content }));
+    this.messages = preface.messages.map(m => ({ role: m.role === 'model' ? 'assistant' : m.role, content: m.content,
+      ...(m.tool_calls && m.tool_calls.length ? { tool_calls: m.tool_calls } : {}) }));
     this.tools = preface.tools || [];
     this.max = sessionConfig.maxOutputTokens || 1024;
     // The model's sampling profile (engine.js generationFor); greedy for background jobs.
     const s = sessionConfig.sampling || { temperature: 0.7, top_p: 0.95, top_k: 64 };
     const greedy = sessionConfig.samplerParams && sessionConfig.samplerParams.type === 3;
     this.sampling = { temperature: greedy ? 0 : s.temperature, top_p: s.top_p, top_k: s.top_k };
-    this.lastCalls = [];
+    // A seeded tool call (Fresh context) is answered by the first input, like a call the model made.
+    const seeded = [...this.messages].reverse().find(m => m.role === 'assistant');
+    this.lastCalls = seeded && seeded.tool_calls ? seeded.tool_calls : [];
     this.cancelled = false;
   }
   cancel() { this.cancelled = true; }
