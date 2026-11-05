@@ -14,6 +14,7 @@ import { planEl } from './chat.js';
 import { openPanel } from './panels.js';
 import { smallHow, sessionModel, switchModel } from './model-ui.js';
 import { openSession, renderSessions } from './chat.js';
+import { chatLink } from './links.js';
 
 const SIDE_KEY = 'squiggle-side';
 export const sideOverlay = () => matchMedia('(max-width: 1199px)').matches;
@@ -171,7 +172,13 @@ function sideActions() {
     toast('Chat deleted.');
     openSession(sessions.list()[0] || sessions.newSession());
   } }, icon('i-trash'), 'Delete');
-  return sideSection('actions', 'This chat', s.archived ? 'archived' : '', h('div', { class: 'row side-actions' }, archive, del));
+  // A link that reopens this chat on any device signed in to the same storage (links.js); nobody else can open it.
+  const copy = h('button', { class: 'btn', onclick: async () => {
+    const url = chatLink(s.id);
+    try { await navigator.clipboard.writeText(url); toast('Link copied. It opens this chat on any device signed in to your storage.'); }
+    catch { prompt('Link to this chat:', url); }
+  } }, icon('i-link'), 'Copy link');
+  return sideSection('actions', 'This chat', s.archived ? 'archived' : '', h('div', { class: 'row side-actions' }, copy, archive, del));
 }
 
 // Tools grouped by name, plus what came in (attachments, pages, repos) and what went out (files, commits, pushes, PRs).

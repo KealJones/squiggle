@@ -15,6 +15,7 @@ import { openThread, openPanel, closeDrawer, renderThreadPanel, renderNotesPanel
 import { renderSide } from './side.js';
 import { toggleReadAloud } from './voice-ui.js';
 import { ensureModel, loadCrashMarker, updateComposerNote, useSessionModel } from './model-ui.js';
+import { showChatInUrl } from './links.js';
 
 export const closeSidebar = () => $('#sidebar').classList.remove('open');
 
@@ -73,8 +74,11 @@ function snippet(text, q) {
 }
 
 // ── Chat ───────────────────────────────────────────────────────────────────
-export function openSession(s, focusMessage) {
+// url: how the address bar follows ('push' for a chat the person picked, 'replace', or 'none'; links.js).
+export function openSession(s, focusMessage, { url = 'push' } = {}) {
+  const changed = !state.current || state.current.id !== s.id;
   state.current = s;
+  showChatInUrl(s.id, changed ? url : 'replace');
   closeDrawer();
   renderSessions();
   renderChat();

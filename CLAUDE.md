@@ -27,6 +27,7 @@ app/                    static app, plain ES modules, no build step
       settings-panel.js the Settings drawer
       model-ui.js       model download/load with progress, crash-loop guard, banners, composer note
       voice-ui.js       read aloud, voice calls (call bar)
+      links.js          chat links: the open chat's id in the URL hash (#chat=<id>); a link opens that chat if this account has it (else the usual one, after the first sync), back/forward between chats, Copy link in the sidebar
     agent.js            turn loop (docs/harness.md): chat phase → plan → one fresh prompt per step → final reply; need/find; recipes learned after
     tasks.js            step-mode task state, step/final prompts (budgeted), resume rules, DIALECT (v2 frozen fenced text / v3 marked harness text)
     recipes.js          memory/recipes.jsonl: how finished tasks were solved; saved pending, matched only once the user approves; forgotten after 90 days unused

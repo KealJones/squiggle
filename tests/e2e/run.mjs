@@ -906,6 +906,64 @@ await check('chat details sidebar: model, context window breakdown (live and sav
   assert.equal(await D.page.isVisible('#ctx-side'), true);
 });
 
+await check('chat links: #chat=<id> opens that chat (archived too); picking chats updates the URL and back returns; an unknown id opens the usual chat; a chat from another device opens after the first sync', async () => {
+  const D = await device('links');
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  // Three chats on this device, saved and pushed.
+  const ids = await D.page.evaluate(async () => {
+    const mk = (title, archived) => { const s = T.sessions.newSession(); s.title = title; T.sessions.addMessage(s, { role: 'user', content: title }); T.sessions.addMessage(s, { role: 'assistant', content: 'ok' }); if (archived) T.sessions.archive(s, true); return s.id; };
+    const out = { a: mk('Link chat A'), b: mk('Link chat B'), old: mk('Link chat archived', true) };
+    await T.sessions.flush({ sync: false }); await T.storage.sync();
+    return out;
+  });
+  const title = () => D.page.$eval('#chat-title', el => el.textContent);
+  const hash = () => D.page.evaluate(() => location.hash);
+  // A fresh load with the link (goto with only a new hash would stay on the same page).
+  const open = async (h) => { await D.page.goto(`${appUrl}/${h}`); await D.page.reload(); await D.page.waitForSelector('#app:not([hidden])'); };
+
+  await open(`#chat=${ids.a}`);
+  assert.equal(await title(), 'Link chat A');
+  assert.equal(await hash(), `#chat=${ids.a}`);
+  await open(`#chat=${ids.old}`);
+  assert.equal(await title(), 'Link chat archived', 'archived chats open from a link');
+
+  // Picking another chat puts it in the URL; back returns to the one before.
+  await open(`#chat=${ids.a}`);
+  await D.page.evaluate(() => [...document.querySelectorAll("#session-list button")].find(b => b.textContent.includes("Link chat B")).click());
+  assert.equal(await hash(), `#chat=${ids.b}`);
+  await D.page.goBack();
+  await D.page.waitForFunction((id) => location.hash === `#chat=${id}`, ids.a);
+  await D.page.waitForFunction(() => document.querySelector('#chat-title').textContent === 'Link chat A');
+
+  // Not this account's (or never existed): the usual chat, and the URL shows it once the first sync settles.
+  await open('#chat=s0nope000000000000');
+  assert.ok(['Link chat A', 'Link chat B'].includes(await title()));
+  await D.page.waitForFunction(() => location.hash !== '#chat=s0nope000000000000', null, { timeout: 15000 });
+  assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+
+  // A chat made on another device: the link opens it once this device's sync brings it in.
+  const O = await device('links-other');
+  await O.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  const other = await O.page.evaluate(async () => {
+    const s = T.sessions.newSession(); s.title = 'Link chat from A';
+    T.sessions.addMessage(s, { role: 'user', content: 'hi from A' });
+    await T.sessions.flush({ sync: false }); await T.storage.sync();
+    return s.id;
+  });
+  await O.ctx.close();
+  await D.page.goto(`${appUrl}/#chat=${other}`);
+  await D.page.reload();
+  await D.page.waitForFunction(() => document.querySelector('#chat-title') && document.querySelector('#chat-title').textContent === 'Link chat from A', null, { timeout: 20000 });
+  assert.equal(await hash(), `#chat=${other}`);
+
+  // The sidebar's Copy link gives this chat's link.
+  await D.ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: appUrl });
+  await D.page.evaluate(async () => (await import('/src/ui/side.js')).setSideOpen(true));
+  await D.page.click('#ctx-side button:has-text("Copy link")');
+  assert.equal(await D.page.evaluate(() => navigator.clipboard.readText()), `${appUrl}/#chat=${other}`);
+  await D.ctx.close();
+});
+
 await check('Fresh context: nothing replayed; a lookup (earlier exchange, web) goes in as a find call, or a system section where the engine can\'t take one; small talk gets none', async () => {
   const D = await device('fresh');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
