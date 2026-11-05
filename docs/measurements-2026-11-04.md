@@ -134,3 +134,24 @@ and the one under the 1 GB line.
   help memory quality.
 - None of this was run on an iPhone; the CPU here is a stand-in. The WebLLM builds (`WQ35`) with real
   WebGPU should prefill much faster and are the better phone target for Qwen.
+
+## Qwen3 0.6B writing Wikidata SPARQL (no tools)
+
+Asked to "write a SPARQL query for the Wikidata Query Service" for five questions (Emma Stone's films newest
+first; who directed Jaws; when Zig was created; who founded The Coca-Cola Company; Emma Stone's birth year),
+greedy, thinking off and on (transformers, CPU, float32), each query run against query.wikidata.org.
+
+**0 of 10 ran.** It never used a real Q-id or P-id. It invented vocabularies (`owl:Film`, `owl:hasDirector`,
+`wikidata:Person`, `rdfs:directedBy`) and numbers (`rdfs:subject 1000000000000000000`, `q123456789`). One answer
+wrote a run of zeros until the token limit. With thinking, it ran out of 900 tokens still reasoning about Coca-Cola.
+Thinking took 53-268 s per question on two cores and was no better.
+
+So small models get `wiki_lookup` (words in, the harness does the ids and both queries) and never
+`wikidata_query`; big models get both (`agent.js BIG_ONLY`).
+
+The same five questions through `wiki_lookup` on the live APIs: Jaws → Steven Spielberg (after making numbers
+count in the title match: the search ranked Jaws 2 first), Zig → inception 2015 (developer Andrew Kelley),
+Coca-Cola → the drink's inventor John Pemberton (the company is a separate item, offered as another match),
+Emma Stone → born 1988-11-06, her newest released film Bugonia (2025) with The Catch (2027) not out yet.
+Wikipedia's search found nothing useful for "Emma stone's birth year divided by 2" until the possessive and the
+arithmetic were dropped and the name part searched on its own.

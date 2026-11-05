@@ -256,10 +256,18 @@ Fresh replays nothing just for being recent. Before the model sees a message, th
    ("no, it's X", "confirm that") the claim is searched instead, with the don't-just-agree note.
 
 4. **Wikipedia and Wikidata** (`wiki_lookup`, tools/wiki.js), alongside the web search, when the question names
-   someone or something: the article's opening, the item's key facts and its newest works by release date (cast
-   member, performer, author, director…, with "not out yet" past today), and any list/filmography article to
-   fetch. The model can call it itself too (it's in the gate). It passes words only: a 0.6B model doesn't know
-   Wikidata ids or SPARQL, so the harness does the search and both queries.
+   someone or something. Nothing in it is about one kind of question: one Wikipedia search (typos are fine; when no
+   result's title is named in the question, it searches again with just the name part) finds the article and its
+   item; every fact on the item except ids, links and media comes back, ranked by how well each property's name
+   and English aliases match the question ("founder" meets "founded by", "created" meets "inception"), then by
+   property number; and the newest things that link to the item from any property (a person's films, a
+   language's users, a brand's products), dated, with "not out yet" past today; an item with 500+ links is a hub
+   and gets none. Other matches are listed so a wrong pick can be corrected. It takes a Q-id too. The model can
+   call it itself in any mode (it's in the gate). Checked live on 2026-11-04: Jaws → Spielberg, Zig → inception
+   2015, Emma Stone's birth date, her newest released film, Coca-Cola's inventor (the drink and the company are
+   different items).
+5. **`wikidata_query(sparql)`** runs the model's own SPARQL, errors returned as the service wrote them. Big models
+   only (`agent.js BIG_ONLY`): Qwen3 0.6B's SPARQL didn't run (docs/measurements-2026-11-04.md).
 
 The result goes in as a `find` call the model already made, with the result as its first input: the question is
 the only user turn. Engines that can't start that way (Gemma 4 on LiteRT, the fenced format) get it as a system

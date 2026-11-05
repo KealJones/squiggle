@@ -45,7 +45,7 @@ app/                    static app, plain ES modules, no build step
       index.js          registers the built-ins in a fixed order (the order is prompt text for small models)
       workspace.js      /home, /repos and /web path mapping shared by the tools
       files.js notes.js git.js web.js memory.js compute.js   the tools by area (compute.js hosts the run_js sandbox)
-      wiki.js           wiki_lookup: Wikipedia search → article + Wikidata item → SPARQL key facts and newest works, straight from the browser (CORS)
+      wiki.js           wiki_lookup: Wikipedia search → article + Wikidata item → every fact (ranked by the question via property aliases) and newest links, straight from the browser (CORS); wikidata_query: raw SPARQL, big models only (agent.js BIG_ONLY)
     calc.js             `calculate` tool: safe math expression parser (no eval), % and money-friendly
     guard.js            hard limits: push policy, workflow-file check, workspace path resolution
     grants.js           remembered "always allow" push grants (synced)

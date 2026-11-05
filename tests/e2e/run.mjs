@@ -817,6 +817,7 @@ await check('AI-managed context: budget line, steps attach earlier results, chec
   assert.match(r.chatInput, /\n\n\(Squiggle: Context: [\d,]+ of [\d,]+ tokens used \(about [\d,]+ left after room for your reply\)\.\)$/);
   assert.match(r.chatSystem, /call checkpoint and carry on fresh/);
   assert.ok(r.chatTools.includes('checkpoint') && r.chatTools.includes('plan'), JSON.stringify(r.chatTools));
+  assert.ok(r.chatTools.includes('wikidata_query') && r.chatTools.includes('wiki_lookup'), 'big models get both Wikidata tools');
   assert.match(r.step3, /## Attached for this step \(\d+ tokens\)\n### step:1 \(\d+ tokens\)\nStep 1 \(Find when Ada was born\): Ada was born in 1950/);
   assert.doesNotMatch(r.step3, /Found earlier in this task/);
   assert.equal(r.stepPrompts, 4, 'three steps, one of them started twice (the checkpoint)');
@@ -926,10 +927,10 @@ await check('Fresh context: nothing replayed; a lookup (earlier exchange, web) g
   await D.ctx.route('https://query.wikidata.org/sparql**', r => {
     const q = new URL(r.request().url()).searchParams.get('query');
     const b = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, { type: 'literal', value: v }]));
-    const bindings = /\?work/.test(q)
-      ? [b({ work: 'http://www.wikidata.org/entity/Q5', workLabel: 'Avengers: Doomsday', date: '2026-12-18T00:00:00Z', rel: 'http://www.wikidata.org/prop/direct/P161', typeLabel: 'film' }),
-        b({ work: 'http://www.wikidata.org/entity/Q6', workLabel: 'Smurfs', date: '2025-07-18T00:00:00Z', rel: 'http://www.wikidata.org/prop/direct/P725', typeLabel: 'animated film' })]
-      : [b({ p: 'http://www.wikidata.org/entity/P569', pLabel: 'date of birth', v: '1940-07-13T00:00:00Z', vLabel: '1940-07-13T00:00:00Z' })];
+    const bindings = /\?x \?dp/.test(q)
+      ? [b({ x: 'http://www.wikidata.org/entity/Q5', xLabel: 'Avengers: Doomsday', date: '2026-12-18T00:00:00Z', pLabel: 'cast member', type: 'film' }),
+        b({ x: 'http://www.wikidata.org/entity/Q6', xLabel: 'Smurfs', date: '2025-07-18T00:00:00Z', pLabel: 'voice actor', type: 'animated film' })]
+      : [b({ p: 'http://www.wikidata.org/entity/P569', pLabel: 'date of birth', v: '1940-07-13T00:00:00Z', vLabel: '1940-07-13T00:00:00Z', aliases: 'born on|birthdate' })];
     return r.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ results: { bindings } }) });
   });
   await D.page.click('#new-chat');
@@ -958,7 +959,7 @@ await check('Fresh context: nothing replayed; a lookup (earlier exchange, web) g
   assert.equal(r.input, 'freshtest What is the latest movie Patrick Stewart was in?', 'the user turn is only the user\'s words');
   assert.ok(r.trail.some(t => /^looked up before answering: .* \(Wikipedia, \d from the web\)$/.test(t)), JSON.stringify(r.trail));
   assert.ok(r.trail.includes('looked up "Patrick Stewart" on Wikipedia and Wikidata (Q16297) (looked up first)'), JSON.stringify(r.trail));
-  assert.match(r.system, /Wikipedia and Wikidata:\n<untrusted source="wikipedia and wikidata"[^>]*>\nWikipedia: Patrick Stewart \(English actor \(born 1940\)\)[\s\S]*- date of birth: 1940-07-13[\s\S]*- Avengers: Doomsday \(film\), 2026-12-18 \(not out yet\): cast member\n- Smurfs \(animated film\), 2025-07-18: voice actor[\s\S]*- Patrick Stewart filmography: https:\/\/en\.wikipedia\.org\/wiki\/Patrick_Stewart_filmography/);
+  assert.match(r.system, /Wikipedia and Wikidata:\n<untrusted source="wikipedia and wikidata"[^>]*>\nWikipedia: Patrick Stewart \(English actor \(born 1940\)\)[\s\S]*- date of birth: 1940-07-13[\s\S]*- Avengers: Doomsday \(film\), 2026-12-18 \(not out yet\): its cast member\n- Smurfs \(animated film\), 2025-07-18: its voice actor[\s\S]*- Patrick Stewart filmography: https:\/\/en\.wikipedia\.org\/wiki\/Patrick_Stewart_filmography/);
   assert.ok(r.kinds.includes('web') && !r.kinds.includes('recent'), JSON.stringify(r.kinds));
 
   // 2. Small talk: no lookup at all.
@@ -1311,6 +1312,7 @@ await check('Squiggle Small (fine-tuned) gets the harness: system prompt and too
   const c = await D.page.evaluate(() => window.__engineLog.find(e => e.type === 'conversation'));
   assert.match(c.system, /^You are Squiggle, an assistant that figures things out\./);
   assert.ok(c.tools.includes('find') && c.tools.includes('plan') && c.tools.includes('web_search'), JSON.stringify(c.tools));
+  assert.ok(c.tools.includes('wiki_lookup') && !c.tools.includes('wikidata_query'), 'small models get wiki_lookup, never raw SPARQL');
   assert.deepEqual(c.known, ['web_search', 'fetch_url'], 'web search and page reading start out looked up');
   await D.page.waitForTimeout(2500);
   assert.equal(await D.page.evaluate(() => window.__engineLog.filter(e => e.type === 'complete').length), 0, 'no titles, facts or summaries from a small model');

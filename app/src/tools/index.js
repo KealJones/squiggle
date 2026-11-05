@@ -9,7 +9,7 @@ import { listFiles, readFile, grep, writeFile, editFile, deleteFile } from './fi
 import { note } from './notes.js';
 import { githubListRepos, gitClone, gitStatus, gitBranch, gitCommit, gitPush, gitPull, gitLog, gitShow, githubOpenPr } from './git.js';
 import { fetchUrl, webSearch } from './web.js';
-import { wikiTool } from './wiki.js';
+import { wikiTool, wikidataQuery } from './wiki.js';
 import { remember, recall, forget, searchHistory } from './memory.js';
 import { calculate, runJs } from './compute.js';
 
@@ -19,7 +19,7 @@ export const BUILTIN = [
   // Git and GitHub
   githubListRepos, gitClone, gitStatus, gitBranch, gitCommit, gitPush, gitPull, gitLog, gitShow, githubOpenPr,
   // Web
-  fetchUrl, webSearch, wikiTool,
+  fetchUrl, webSearch, wikiTool, wikidataQuery,
   // Memory
   remember, recall, forget, searchHistory,
   // Maths and code
