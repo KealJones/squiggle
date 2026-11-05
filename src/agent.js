@@ -979,8 +979,10 @@ class Turn {
     const own = ['recipes', 'facts', 'chats', 'task'].some(k => r[k] && r[k].length);
     const toolAsked = r.tools.some(t => !LOOKUP_TOOLS.includes(t.name) && (t.score || 0) > 4);
     if (web && !own && !toolAsked && !PAST_CHAT.test(String(query).toLowerCase()) && this.webOn()) {
-      const w = await this.webFallback(query);
-      if (w) return { text: w, tools: [], empty: false, answers, web: true };
+      // A question naming someone or something gets Wikipedia and Wikidata too, alongside the web.
+      const wikiOn = prefetchLib.namesIn(query).length && modelTools().some(t => t.name === 'wiki_lookup');
+      const [w, wiki] = await Promise.all([this.webFallback(query), wikiOn ? this.wikiTop(query, 'for find') : null]);
+      if (w) return { text: wiki ? `Wikipedia and Wikidata:\n${wiki}\n\n${w}` : w, tools: [], empty: false, answers, web: true };
     }
     return { text, tools: r.tools.map(t => t.name), empty, answers };
   }
@@ -1024,13 +1026,13 @@ class Turn {
   }
 
   // wiki_lookup for Fresh's lookup: the text it found (already marked as outside content), or null.
-  async wikiTop(query) {
+  async wikiTop(query, why = 'looked up first') {
     const call = { function: { name: 'wiki_lookup', arguments: { query } } };
     const res = await runTool(call, { session: this.session, threadId: this.threadId, pageCards: lite() });
     this.seenCalls && this.seenCalls.set(`wiki_lookup:${JSON.stringify({ query })}`, 1);
     (this.prefetchedCalls = this.prefetchedCalls || []).push(`wiki_lookup:${JSON.stringify({ query })}`);
     this.noteUrls(res);
-    this.toolEvent({ name: 'wiki_lookup', label: `${res.label} (looked up first)`, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
+    this.toolEvent({ name: 'wiki_lookup', label: `${res.label} (${why})`, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
     if (!res.ok || !res.model || !res.model.found) return null;
     if (res.observation) sessions.addObservation(this.session, { ...res.observation, thread: this.threadId });
     return res.model.found;
@@ -1059,7 +1061,10 @@ class Turn {
     const cands = [...exchanges, ...pages, ...others];
     const vecs = settings.semantic && embedReady() && cands.length ? await embed([query, ...cands.map(c => truncate(c.text, 1500))]).catch(() => null) : null;
     const found = prefetchLib.rank(query, cands, { vecs, k: small ? 4 : 8 });
-    const facts = (await memory.recall(query, 6).catch(() => [])).filter(r => r.score >= 0.3).slice(0, small ? 3 : 6);
+    // A named question only takes memory that names them too (find's rule: "Emma Stone's real name" ≠ "the user's name").
+    const asked = prefetchLib.namesIn(query).map(n => n.toLowerCase());
+    const facts = (await memory.recall(query, 6).catch(() => [])).filter(r => r.score >= 0.3)
+      .filter(r => !asked.length || asked.some(n => memory.factText(r.fact).toLowerCase().includes(n))).slice(0, small ? 3 : 6);
     // The web, unless the message is about the user's own things or clearly a job for another tool.
     let web = null, check = '', wiki = null;
     const own = PAST_CHAT.test(said.toLowerCase());
