@@ -163,9 +163,14 @@ function preloaded(tools) {
 // wiki_lookup is in too: names, dates and filmographies are most of what phone questions ask (2026-11-04).
 const GATE = ['plan', 'done', 'need', 'find', 'checkpoint', 'tool_info', ...PRELOADED, 'wiki_lookup', 'remember', 'calculate'];
 
+// The tools this model may have: every enabled one, minus the ones only big models can use (wikidata_query: a
+// 0.6B model's SPARQL didn't run or asked about the wrong item; docs/measurements-2026-11-04.md).
+const BIG_ONLY = ['wikidata_query'];
+const modelTools = () => toolSpecs(settings.tools).filter(t => !(lite() && BIG_ONLY.includes(t.name)));
+
 function phaseTools(step) {
   if (plain()) return [];
-  const base = toolSpecs(settings.tools).filter(t => !(step && t.name === 'note'));
+  const base = modelTools().filter(t => !(step && t.name === 'note'));
   const h = tasks.HARNESS_SPECS;
   const info = gated() ? [tasks.TOOL_INFO_SPEC] : [];
   if (managed()) return [...base, tasks.MANAGED_SPECS.plan, ...(step ? [h.done] : []), h.need, h.find, ...info, tasks.MANAGED_SPECS.checkpoint];
@@ -928,7 +933,7 @@ class Turn {
     let want = args.names !== undefined ? args.names : (args.name !== undefined ? args.name : args.tools);
     if (typeof want === 'string') want = want.split(/[\s,]+/);
     want = [...new Set((Array.isArray(want) ? want : []).map(s => String(s).trim()).filter(Boolean))];
-    const avail = toolSpecs(settings.tools).map(t => t.name).filter(n => !(step && n === 'note'));
+    const avail = modelTools().map(t => t.name).filter(n => !(step && n === 'note'));
     const found = want.filter(n => avail.includes(n));
     const missing = want.filter(n => !avail.includes(n) && !GATE.includes(n));
     if (task && found.length) task.tools = [...new Set([...(task.tools || []), ...found])];
@@ -944,7 +949,7 @@ class Turn {
   // through to the web"): small models reach for find to look up facts, and then kept calling it.
   async find(query, task, { web = true } = {}) {
     const r = await findAll(query, {
-      tools: toolSpecs(settings.tools),
+      tools: modelTools(),
       recipes,
       recall: (q, k) => memory.recall(q, k),
       // Small models read past-chat snippets as part of this conversation ("the past chats
@@ -997,7 +1002,7 @@ class Turn {
   }
 
   webOn() {
-    return !plain() && toolSpecs(settings.tools).some(t => t.name === 'web_search');
+    return !plain() && modelTools().some(t => t.name === 'web_search');
   }
 
   // find's fall-through: one web_search, reranked against the query (by meaning when the search model is
@@ -1059,8 +1064,8 @@ class Turn {
     let web = null, check = '', wiki = null;
     const own = PAST_CHAT.test(said.toLowerCase());
     // Wikipedia and Wikidata when the question names someone or something, alongside the web search.
-    const wikiP = !own && prefetchLib.namesIn(query).length && toolSpecs(settings.tools).some(t => t.name === 'wiki_lookup') ? this.wikiTop(query) : null;
-    const toolJob = rankTools(said, toolSpecs(settings.tools)).some(t => !LOOKUP_TOOLS.includes(t.name) && t.score > 4);
+    const wikiP = !own && prefetchLib.namesIn(query).length && modelTools().some(t => t.name === 'wiki_lookup') ? this.wikiTop(query) : null;
+    const toolJob = rankTools(said, modelTools()).some(t => !LOOKUP_TOOLS.includes(t.name) && t.score > 4);
     if (this.webOn() && !own && (!toolJob || pushback)) {
       const answer = pushback ? [...line].reverse().find(m => m.role === 'assistant' && m.content) : null;
       const q = pushback ? checkQuery(said, { question: prevQ && prevQ.content, answer: answer && answer.content }) || query : query;
