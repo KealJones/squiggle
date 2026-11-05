@@ -389,7 +389,7 @@
   },
   {
     "name": "web_search",
-    "description": "Search the web (DuckDuckGo). Returns a short summary when one exists, plus titles, links and snippets. To read a result in full, pass its url to fetch_url.",
+    "description": "Search the web. Returns a short summary when one exists, plus titles, links and snippets. To read a result in full, pass its url to fetch_url.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -404,6 +404,38 @@
       },
       "required": [
         "query"
+      ]
+    }
+  },
+  {
+    "name": "wiki_lookup",
+    "description": "Look up facts about anyone or anything on Wikipedia and Wikidata: the article's opening, every fact Wikidata has (dates, people, places, numbers…; the ones matching your question first), and the newest things linked to it (a person's films, a company's products). Pass the question, a name, or a Wikidata id like Q42.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "The question, a name (\"Jaws\", \"Zig programming language\") or a Q-id"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    }
+  },
+  {
+    "name": "wikidata_query",
+    "description": "Run your own SPARQL on the Wikidata Query Service (wd:, wdt:, p:, ps:, pq:, wikibase:label are predefined). For questions wiki_lookup can't answer: lists, counts, comparisons, joins. Errors come back as the service wrote them, so you can fix the query.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "sparql": {
+          "type": "string",
+          "description": "The SPARQL query"
+        }
+      },
+      "required": [
+        "sparql"
       ]
     }
   },

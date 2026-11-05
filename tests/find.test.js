@@ -61,10 +61,11 @@ test('find ranks tools better than the old word-overlap findTools', () => {
   assert.ok(before <= CASES.length - 10, `old ranking got ${before}/${CASES.length} first place`);
 });
 
-test('chit-chat and general knowledge questions match no tool', () => {
-  for (const q of ['hey whats up lol', 'thanks that was great', 'what is the capital of france', 'tell me a joke', 'lol', '', 'umm uh yeah']) {
+test('chit-chat matches no tool; a general-knowledge question goes to wiki_lookup (look it up, don\'t guess)', () => {
+  for (const q of ['hey whats up lol', 'thanks that was great', 'tell me a joke', 'lol', '', 'umm uh yeah']) {
     assert.deepEqual(top(q), [], q);
   }
+  assert.equal(top('what is the capital of france')[0], 'wiki_lookup');
 });
 
 test('tool ranking accepts both spec shapes and skips the harness tools', () => {
@@ -268,7 +269,7 @@ test('renderFind writes a compact block a small model can use', async () => {
 
 test('renderFind shows optional arguments with a question mark', () => {
   const out = renderFind({ tools: rankTools('google something', TOOLS, { k: 1 }) });
-  assert.match(out, /^Tools:\n- web_search\(query, count\?\): Search the web \(DuckDuckGo\)\./);
+  assert.match(out, /^Tools:\n- web_search\(query, count\?\): Search the web\./);
 });
 
 test('renderFind labels task items and says when nothing matched', async () => {
@@ -335,4 +336,16 @@ test('pushback: disputes and "confirm that?" are caught; the check query is the 
   assert.equal(checkQuery('No it’s not. The correct answer is Bugonia in 2025', { question: q, answer: a }), 'Emma stones latest movie Bugonia 2025');
   assert.equal(checkQuery('Can you confirm that?', { question: q, answer: a }), 'Emma stones latest movie Poor Things', 'no claim: the disputed answer');
   assert.equal(checkQuery('are you sure?', {}), '');
+});
+
+test('a question naming someone only takes memory and chats that name them (Emma Stone is not the user)', async () => {
+  const fact = (s, p, o) => ({ fact: { s, p, o }, score: 0.8 });
+  const recall = async () => [fact('user', 'name is', 'Keal'), fact('Emma Stone', 'is', "the user's favourite actress")];
+  const chats = async () => [{ session: 's1', title: 'names', text: 'my name is Keal, remember my name', score: 5 }];
+  const r = await find("What is Emma Stone's real name?", { recall, searchHistory: chats });
+  assert.deepEqual(r.facts.map(f => f.fact.s), ['Emma Stone'], 'the user\'s own name does not answer a question about her');
+  assert.deepEqual(r.chats, []);
+  // A question about the user still finds the user's facts.
+  const mine = await find('what is my name?', { recall });
+  assert.ok(mine.facts.some(f => f.fact.o === 'Keal'));
 });

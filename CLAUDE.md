@@ -161,6 +161,13 @@ under "Result" in the tool list and synced with the session file. Web searches s
   removed (Nov 2026); calls use system voices only. `settings.js` drops its old settings and
   crash marker once, and sw.js frees its `squiggle-tts-v1` cache.
 
+## Failure casebook (docs/failures.md)
+
+Every fix that comes from something a model did gets an entry: what it was asked, what it did (the chat id in the
+storage repo, the tool calls, the model by name), why that's a bad choice, the good answer, the fix, and the test
+that catches it (tests/failures.test.js is named after the cases; "not covered" is allowed, a missing line isn't).
+Never put the bad answers in a model's prompt or fine-tune on them; they're the rejected half of preference pairs.
+
 ## Verifying changes
 
 `npm run check` (ESLint + unit tests), `npm run test:e2e` and `npm run test:e2e:split`

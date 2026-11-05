@@ -5,6 +5,7 @@
 //
 // Pure apart from the sources passed in, so it runs in node tests.
 import { bm25, tokenize } from './search.js';
+import { namesIn } from './prefetch.js';
 
 // Relevance bars (see each ranking function for the scale).
 export const BARS = {
@@ -185,6 +186,11 @@ export async function find(query, sources = {}, { k = 3 } = {}) {
   const qw = words(query);
   const src = sources || {};
   const attempt = async (fn) => { try { return await fn(); } catch { return null; } };
+  // A question that names someone or something only matches memory and chats that name them too: "What is Emma
+  // Stone's real name?" matched "the user's name is Keal" on "name", and a 0.6B model answered "Keal" (2026-11-04,
+  // docs/failures.md). Same rule as Fresh's lookup (prefetch.js rank).
+  const names = namesIn(query).map(n => n.toLowerCase());
+  const named = (text) => !names.length || names.some(n => String(text || '').toLowerCase().includes(n));
 
   if (src.tools) out.tools = rankTools(query, src.tools, { k });
 
@@ -198,7 +204,7 @@ export async function find(query, sources = {}, { k = 3 } = {}) {
     const seen = new Set();
     out.facts = (r || []).filter(x => x && x.fact && (x.score == null || x.score >= BARS.fact))
       .map(x => ({ fact: x.fact, text: factLine(x.fact), score: x.score ?? 1 }))
-      .filter(x => !seen.has(x.text.toLowerCase()) && seen.add(x.text.toLowerCase()))
+      .filter(x => named(x.text) && !seen.has(x.text.toLowerCase()) && seen.add(x.text.toLowerCase()))
       .slice(0, k);
   }
 
@@ -207,7 +213,7 @@ export async function find(query, sources = {}, { k = 3 } = {}) {
     const need = needed(qw);
     const best = new Map();
     for (const x of r || []) {
-      if (!x || !x.text) continue;
+      if (!x || !x.text || !named(`${x.title || ''} ${x.text}`)) continue;
       const hits = Math.max(lexHits(qw, `${x.title || ''} ${x.text}`), 0);
       if (hits < need) continue;
       const rank = hits + 0.01 * Math.min(Number(x.score) || 0, 50);
