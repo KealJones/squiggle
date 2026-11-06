@@ -66,6 +66,7 @@
           <option value="wllama-cpu">wllama, CPU (what Squiggle uses)</option>
           <option value="wllama-gpu">wllama, WebGPU</option>
           <option value="webllm">WebLLM (MLC), WebGPU</option>
+          <option value="onnx">transformers.js (ONNX), WebGPU</option>
           <option value="none">No model (baseline)</option>
         </select>
       </label>
@@ -80,12 +81,28 @@
         </select>
       </label>
     </div>
+    <div class="row" style="margin-top:10px">
+      <label for="ctx">Context window
+        <select id="ctx">
+          <option value="2048">2K (the earlier runs)</option>
+          <option value="4096">4K (what Squiggle uses)</option>
+          <option value="8192">8K</option>
+        </select>
+      </label>
+      <label for="fill">Prompt
+        <select id="fill">
+          <option value="short">Short question</option>
+          <option value="full">Fill about 3/4 of the window</option>
+        </select>
+      </label>
+    </div>
+    <p id="buildnote" style="margin-top:8px"></p>
     <div class="row" style="margin-top:12px">
       <button class="primary" id="auto">Run everything</button>
       <button id="stop" hidden>Stop</button>
       <button id="run">Run just this one</button>
     </div>
-    <p id="autonote" style="margin-top:10px">Runs the baselines, then every engine with every model, smallest first. The tab will die and reload many times; that's the test. If Safari shows an error page instead of reloading, tap reload and it carries on. Keep the phone awake and on Wi-Fi: it downloads about 6 GB the first time.</p>
+    <p id="autonote" style="margin-top:10px">Runs the baselines, then every engine with every model, smallest first. The tab will die and reload many times; that's the test. If Safari shows an error page instead of reloading, tap reload and it carries on. Keep the phone awake and on Wi-Fi: everything is about 11 GB the first time. <code>?models=q06,lf35,lf07,lf12,lf12t</code> runs just Qwen3 0.6B and the LFM models; <code>?engines=webllm,onnx</code> narrows the engines. A model is only tried on engines it has a build for. Context and prompt use the choices above.</p>
     <div id="status" style="margin-top:12px">Ready.</div>
   </section>
 
@@ -97,7 +114,7 @@
       <button id="clear">Clear results</button>
     </div>
     <div class="tablewrap"><table>
-      <thead><tr><th>engine</th><th>model</th><th>load s</th><th>tok/s</th><th>left after</th><th>outcome</th></tr></thead>
+      <thead><tr><th>engine</th><th>model</th><th>ctx</th><th>load s</th><th>1st token s</th><th>tok/s</th><th>left after</th><th>outcome</th></tr></thead>
       <tbody id="results"></tbody>
     </table></div>
     <details style="margin-top:10px"><summary>How to read this</summary>
@@ -114,18 +131,49 @@
 
 <script type="module">
 const WLLAMA_VERSION = '3.8.1';
-const WEBLLM_VERSION = '0.2.87';
+const WEBLLM_VERSION = '0.2.87';   // has tensor-cache.json and hybrid KV + RNN state, which the LFM2 MLC build needs
+const TRANSFORMERS_VERSION = '4.3.2';
 const HF = 'https://huggingface.co/';
+// family: a model that fails to load on an engine skips the bigger models of the same family on that engine.
+// LFM2 is its own family: 10 of its 16 layers are convolutions with no KV cache (~12 KB of cache per token
+// vs ~112 KB for Qwen3 0.6B at 16-bit), so a bigger LFM can fit where a smaller transformer doesn't.
+// mlcRecord: a community MLC build that isn't in WebLLM's prebuilt list. onnx: a transformers.js repo (q4f16).
 const MODELS = {
-  q06: { label: 'Qwen3 0.6B', gguf: HF + 'unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_0.gguf', ggufMB: 382, mlc: 'Qwen3-0.6B-q4f16_1-MLC' },
-  q35: { label: 'Qwen3.5 0.8B', gguf: HF + 'unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_0.gguf', ggufMB: 507, mlc: 'Qwen3.5-0.8B-q4f16_1-MLC' },
-  ll1: { label: 'Llama 3.2 1B', gguf: HF + 'unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_0.gguf', ggufMB: 773, mlc: 'Llama-3.2-1B-Instruct-q4f16_1-MLC' },
-  q2b: { label: 'Qwen3.5 2B', gguf: HF + 'unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_0.gguf', ggufMB: 1215, mlc: 'Qwen3.5-2B-q4f16_1-MLC' },
+  q06: { label: 'Qwen3 0.6B', family: 'transformer', gguf: HF + 'unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_0.gguf', ggufMB: 382, mlc: 'Qwen3-0.6B-q4f16_1-MLC' },
+  q35: { label: 'Qwen3.5 0.8B', family: 'transformer', gguf: HF + 'unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_0.gguf', ggufMB: 507, mlc: 'Qwen3.5-0.8B-q4f16_1-MLC' },
+  ll1: { label: 'Llama 3.2 1B', family: 'transformer', gguf: HF + 'unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_0.gguf', ggufMB: 773, mlc: 'Llama-3.2-1B-Instruct-q4f16_1-MLC' },
+  q2b: { label: 'Qwen3.5 2B', family: 'transformer', gguf: HF + 'unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_0.gguf', ggufMB: 1215, mlc: 'Qwen3.5-2B-q4f16_1-MLC' },
+  lf35: { label: 'LFM2.5 350M', family: 'lfm', gguf: HF + 'LiquidAI/LFM2.5-350M-GGUF/resolve/main/LFM2.5-350M-Q4_0.gguf', ggufMB: 219,
+    onnx: 'LiquidAI/LFM2.5-350M-ONNX', onnxMB: 255 },
+  lf07: { label: 'LFM2 700M', family: 'lfm', gguf: HF + 'LiquidAI/LFM2-700M-GGUF/resolve/main/LFM2-700M-Q4_0.gguf', ggufMB: 446,
+    onnx: 'onnx-community/LFM2-700M-ONNX', onnxMB: 496 },
+  lf12: { label: 'LFM2.5 1.2B Instruct', family: 'lfm', gguf: HF + 'LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q4_0.gguf', ggufMB: 696,
+    mlc: 'LFM2.5-1.2B-Instruct-q4f16_1-MLC', mlcF16Only: true,
+    mlcRecord: {   // naklitechie's port (Kiln fork of mlc-llm); compiled for a 4K window, so 8K isn't offered here
+      model: HF + 'naklitechie/LFM2.5-1.2B-Instruct-q4f16_1-MLC/resolve/main/',
+      model_lib: HF + 'naklitechie/LFM2.5-1.2B-Instruct-q4f16_1-MLC/resolve/main/LFM2.5-1.2B-Instruct-q4f16_1-webgpu.wasm',
+      maxCtx: 4096 },
+    onnx: 'LiquidAI/LFM2.5-1.2B-Instruct-ONNX', onnxMB: 760 },
+  lf12t: { label: 'LFM2.5 1.2B Thinking', family: 'lfm', gguf: HF + 'LiquidAI/LFM2.5-1.2B-Thinking-GGUF/resolve/main/LFM2.5-1.2B-Thinking-Q4_0.gguf', ggufMB: 696,
+    onnx: 'LiquidAI/LFM2.5-1.2B-Thinking-ONNX', onnxMB: 760 },
 };
-const PROMPT = 'In three sentences, explain why the sky is blue.';
+// Which engines can run a model: wllama needs a GGUF, WebLLM an MLC build, transformers.js an ONNX repo.
+const hasBuild = (engine, m) => engine === 'none' || (engine.startsWith('wllama') ? Boolean(m.gguf) : engine === 'webllm' ? Boolean(m.mlc) : engine === 'onnx' ? Boolean(m.onnx) : false);
+const SHORT_PROMPT = 'In three sentences, explain why the sky is blue.';
 const MAX_TOKENS = 64;
-const CTX = 2048;
 const params = new URLSearchParams(location.search);
+// "Fill" prompt: numbered notes up to about 3/4 of the window (~15 tokens a note), then one question about
+// them, so the KV cache and the prefill peak are what a full Squiggle turn would use, not a 16-token prompt.
+const COLORS = ['blue', 'red', 'green', 'gray', 'yellow', 'brown', 'white', 'black'];
+const ANIMALS = ['jay', 'fox', 'cat', 'dog', 'crow', 'goat', 'hare', 'owl', 'mole'];
+const PLACES = ['old barn', 'river', 'fence', 'bakery', 'bridge', 'library', 'garden', 'station', 'pier', 'school'];
+function promptFor(fill, ctx) {
+  if (fill !== 'full') return SHORT_PROMPT;
+  const notes = Math.floor(((ctx - MAX_TOKENS - 80) * 0.75) / 15);
+  const lines = [];
+  for (let i = 1; i <= notes; i++) lines.push(`Note ${i}: the ${COLORS[i % 8]} ${ANIMALS[i % 9]} waited by the ${PLACES[i % 10]}.`);
+  return `${lines.join('\n')}\n\nAbove are numbered notes. In one sentence: which animal waited in note 7, and where?`;
+}
 const STEP_MB = 32;
 const CAP_MB = Number(params.get('cap')) || 4096;   // ?cap=512 for desktop testing
 const STEP_PAUSE = 200;                              // ms between steps, so the marker reaches disk before a kill
@@ -145,7 +193,15 @@ for (const [id, m] of Object.entries(MODELS)) {
 }
 // Remember the last choice so a reopen after a kill lands on the same settings.
 const last = store.get('memtest-choice', null);
-if (last) for (const k of ['engine', 'model', 'probe']) if (last[k]) $(k).value = last[k];
+if (last) for (const k of ['engine', 'model', 'probe', 'ctx', 'fill']) if (last[k]) $(k).value = last[k];
+const ENGINE_NAMES = { 'wllama-cpu': 'wllama', 'wllama-gpu': 'wllama', webllm: 'WebLLM', onnx: 'transformers.js' };
+function showBuilds() {
+  const m = MODELS[$('model').value];
+  const on = [...new Set(['wllama-cpu', 'webllm', 'onnx'].filter(e => hasBuild(e, m)).map(e => ENGINE_NAMES[e]))];
+  $('buildnote').textContent = `${m.label} has builds for: ${on.join(', ')}.${m.mlcRecord ? ' Its WebLLM build is a community port, compiled for 4K at most.' : ''}`;
+}
+$('model').onchange = showBuilds;
+showBuilds();
 
 // ── Device facts ──────────────────────────────────────────────────────────
 async function deviceFacts() {
@@ -184,10 +240,11 @@ function renderResults() {
   const rows = store.get(KEY_RESULTS, []);
   $('results').replaceChildren(...(rows.length ? rows : [{ empty: true }]).map(r => {
     const tr = document.createElement('tr');
-    if (r.empty) { tr.innerHTML = '<td colspan="6" style="color:var(--muted)">No runs yet. Start with the baseline.</td>'; return tr; }
+    if (r.empty) { tr.innerHTML = '<td colspan="8" style="color:var(--muted)">No runs yet. Start with the baseline.</td>'; return tr; }
     const cells = [
       r.engine, r.engine === 'none' ? '—' : MODELS[r.model]?.label || r.model,
-      r.loadS ?? '—', r.tokS ?? '—',
+      r.engine === 'none' ? '—' : `${(r.ctx || 2048) / 1024}K${r.fill === 'full' ? ' full' : ''}`,
+      r.loadS ?? '—', r.firstS ?? '—', r.tokS ?? '—',
       r.leftMB == null ? '—' : `${r.capped ? '≥' : '~'}${r.leftMB} MB ${r.probe.toUpperCase()}`,
     ];
     for (const c of cells) { const td = document.createElement('td'); td.textContent = c; tr.append(td); }
@@ -215,15 +272,15 @@ function recoverCrash() {
     ? `Last run finished: the tab hit its limit with about ${run.mb} MB of ${run.probe.toUpperCase()} memory still free after the model. Saved below.`
     : `The last run's tab died while ${run.stage} (${run.engine}, ${MODELS[run.model]?.label || run.model}). Saved below.`;
 }
-const pick = (run) => ({ engine: run.engine, model: run.model, probe: run.probe, loadS: run.loadS, tokS: run.tokS, ts: run.ts });
+const pick = (run) => ({ engine: run.engine, model: run.model, probe: run.probe, ctx: run.ctx, fill: run.fill, loadS: run.loadS, firstS: run.firstS, tokS: run.tokS, ts: run.ts });
 
 // ── Run everything ────────────────────────────────────────────────────────
 // The queue lives in localStorage so it survives the tab being killed. Each step reloads the page
 // first, so every measurement starts from a clean tab.
 const KEY_AUTO = 'memtest-auto';
-const ENGINES = ['wllama-cpu', 'wllama-gpu', 'webllm'];
-const MODEL_ORDER = ['q06', 'q35', 'll1', 'q2b'];   // smallest first
-function buildQueue() {
+const ENGINES = ['wllama-cpu', 'wllama-gpu', 'webllm', 'onnx'];
+const MODEL_ORDER = ['lf35', 'q06', 'lf07', 'q35', 'lf12', 'lf12t', 'll1', 'q2b'];   // smallest download first
+function buildQueue(ctx, fill) {
   const gpu = FACTS.WebGPU !== 'no' && FACTS.WebGPU !== 'no adapter' && !String(FACTS.WebGPU).startsWith('error');
   const q = [{ engine: 'none', model: 'q06', probe: 'js' }];
   if (gpu) q.push({ engine: 'none', model: 'q06', probe: 'gpu' });
@@ -232,17 +289,22 @@ function buildQueue() {
   for (const engine of ENGINES) {
     if (engine !== 'wllama-cpu' && !gpu) continue;
     if (onlyE && !onlyE.includes(engine)) continue;
-    for (const model of MODEL_ORDER) if (!onlyM || onlyM.includes(model)) q.push({ engine, model, probe: engine === 'wllama-cpu' ? 'js' : 'gpu' });
+    for (const model of MODEL_ORDER) {
+      if (onlyM && !onlyM.includes(model)) continue;
+      if (!hasBuild(engine, MODELS[model])) continue;
+      q.push({ engine, model, probe: engine === 'wllama-cpu' ? 'js' : 'gpu', ctx, fill });
+    }
   }
   return q;
 }
 // After a step ends (finished, errored or killed): move on, and if the engine couldn't even load
-// this model, skip its bigger models.
+// this model, skip the bigger models of its family on that engine.
+const deadKey = (engine, model) => `${engine}|${MODELS[model]?.family}`;
 function autoAfter(run, result) {
   const auto = store.get(KEY_AUTO, null);
   if (!auto || run.autoIndex == null || run.autoIndex !== auto.i) return;
   const failedEarly = /while (downloading|loading|starting)/.test(result.outcome);
-  if (failedEarly && run.engine !== 'none') auto.dead[run.engine] = MODEL_ORDER.indexOf(run.model);
+  if (failedEarly && run.engine !== 'none') auto.dead[deadKey(run.engine, run.model)] = MODEL_ORDER.indexOf(run.model);
   auto.i += 1;
   store.set(KEY_AUTO, auto);
 }
@@ -251,7 +313,7 @@ function nextAutoStep() {
   if (!auto) return null;
   while (auto.i < auto.queue.length) {
     const s = auto.queue[auto.i];
-    const deadAt = auto.dead[s.engine];
+    const deadAt = auto.dead[deadKey(s.engine, s.model)];
     if (deadAt != null && MODEL_ORDER.indexOf(s.model) > deadAt) {
       addResult({ ...s, ts: new Date().toISOString(), outcome: `skipped: ${MODELS[MODEL_ORDER[deadAt]].label} already failed to load`, cls: 'warn' });
       auto.i += 1; store.set(KEY_AUTO, auto); continue;
@@ -278,7 +340,9 @@ function resumeAuto() {
   };
   tick();
 }
-const label = (s) => s.engine === 'none' ? `baseline, ${s.probe.toUpperCase()} memory` : `${s.engine}, ${MODELS[s.model].label}`;
+const label = (s) => s.engine === 'none' ? `baseline, ${s.probe.toUpperCase()} memory` : `${s.engine}, ${MODELS[s.model].label}, ${(s.ctx || 2048) / 1024}K${s.fill === 'full' ? ' full' : ''}`;
+// Seconds from sending the prompt to the first token (the prefill, which is also the memory peak with a full prompt).
+const since = (t) => +((performance.now() - t) / 1000).toFixed(1);
 
 // ── Engines ───────────────────────────────────────────────────────────────
 async function runWllama(run, gpu) {
@@ -296,15 +360,16 @@ async function runWllama(run, gpu) {
   mark(run, { stage: 'loading' });
   say(`Loading ${m.label} with wllama (${gpu ? 'WebGPU' : 'CPU'})…`);
   const t0 = performance.now();
-  await w.loadModelFromUrl(m.gguf, { n_ctx: CTX, n_gpu_layers: gpu ? 999 : 0, n_threads: 1 });
-  mark(run, { loadS: +((performance.now() - t0) / 1000).toFixed(1), stage: 'answering', compat: !!w.getWorkerResources?.().compat });
+  await w.loadModelFromUrl(m.gguf, { n_ctx: run.ctx, n_gpu_layers: gpu ? 999 : 0, n_threads: 1 });
+  mark(run, { loadS: since(t0), stage: 'answering', compat: !!w.getWorkerResources?.().compat });
   say('Answering the test prompt…');
   let n = 0, text = '', t1 = 0;
-  const stream = await w.createChatCompletion({ messages: [{ role: 'user', content: PROMPT }], max_tokens: MAX_TOKENS, temperature: 0, stream: true });
+  const tp = performance.now();
+  const stream = await w.createChatCompletion({ messages: [{ role: 'user', content: promptFor(run.fill, run.ctx) }], max_tokens: MAX_TOKENS, temperature: 0, stream: true });
   for await (const c of stream) {
     const d = c.choices?.[0]?.delta || {};
     const piece = (d.content || '') + (d.reasoning_content || '');
-    if (piece) { if (!n) t1 = performance.now(); n++; text += piece; }
+    if (piece) { if (!n) { t1 = performance.now(); mark(run, { firstS: since(tp) }); } n++; text += piece; }
   }
   const tokS = n > 1 ? +((n - 1) / ((performance.now() - t1) / 1000)).toFixed(1) : null;
   mark(run, { tokS, sample: text.slice(0, 120) });
@@ -315,29 +380,72 @@ async function runWebLLM(run) {
   const m = MODELS[run.model];
   if (!navigator.gpu) throw new Error('This browser has no WebGPU');
   // q4f16 needs the GPU's shader-f16 feature; fall back to the f32 build without it.
+  if (FACTS['shader-f16'] !== 'yes' && m.mlcF16Only) throw new Error('this GPU has no shader-f16, and this model only has a q4f16 build');
+  if (m.mlcRecord?.maxCtx && run.ctx > m.mlcRecord.maxCtx) throw new Error(`this build was compiled for ${m.mlcRecord.maxCtx / 1024}K at most`);
   const mlcId = FACTS['shader-f16'] === 'yes' ? m.mlc : m.mlc.replace('q4f16_1', 'q4f32_1');
   mark(run, { mlcId });
   const webllm = await import(`https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@${WEBLLM_VERSION}/+esm`);
+  // A community build isn't in WebLLM's prebuilt list: add it to that list for this engine.
+  const appConfig = m.mlcRecord ? { ...webllm.prebuiltAppConfig, model_list: [...webllm.prebuiltAppConfig.model_list,
+    { model_id: mlcId, model: m.mlcRecord.model, model_lib: m.mlcRecord.model_lib }] } : undefined;
   mark(run, { stage: 'downloading or loading' });
   const t0 = performance.now();
   const engine = await webllm.CreateMLCEngine(mlcId, {
+    appConfig,
     initProgressCallback: (p) => {
       const stage = /fetch/i.test(p.text) ? 'downloading' : 'loading';
       if (stage !== run.stage) mark(run, { stage });
       say(`WebLLM: ${p.text}`);
     },
-  }, { context_window_size: CTX });
-  mark(run, { loadS: +((performance.now() - t0) / 1000).toFixed(1), stage: 'answering' });
+  }, { context_window_size: run.ctx });
+  mark(run, { loadS: since(t0), stage: 'answering' });
   say('Answering the test prompt…');
   let n = 0, text = '', t1 = 0;
-  const chunks = await engine.chat.completions.create({ messages: [{ role: 'user', content: PROMPT }], max_tokens: MAX_TOKENS, temperature: 0, stream: true });
+  const tp = performance.now();
+  const chunks = await engine.chat.completions.create({ messages: [{ role: 'user', content: promptFor(run.fill, run.ctx) }], max_tokens: MAX_TOKENS, temperature: 0, stream: true });
   for await (const c of chunks) {
     const piece = c.choices?.[0]?.delta?.content || '';
-    if (piece) { if (!n) t1 = performance.now(); n++; text += piece; }
+    if (piece) { if (!n) { t1 = performance.now(); mark(run, { firstS: since(tp) }); } n++; text += piece; }
   }
   const tokS = n > 1 ? +((n - 1) / ((performance.now() - t1) / 1000)).toFixed(1) : null;
   mark(run, { tokS, sample: text.slice(0, 120) });
   return { unload: () => engine.unload().catch(() => {}) };
+}
+
+// transformers.js on WebGPU (onnxruntime-web underneath), the q4f16 export (q4 without shader-f16).
+// Not on WASM: the 4-bit exports use GatherBlockQuantized, which the WASM build lacks (CLAUDE.md, Phones).
+// Its KV cache grows with the conversation instead of being reserved up front, so "ctx" only matters
+// through the prompt: use "Fill" to see what a full window costs.
+async function runOnnx(run) {
+  const m = MODELS[run.model];
+  if (!navigator.gpu) throw new Error('This browser has no WebGPU');
+  const dtype = FACTS['shader-f16'] === 'yes' ? 'q4f16' : 'q4';
+  mark(run, { onnxDtype: dtype });
+  const tf = await import(`https://cdn.jsdelivr.net/npm/@huggingface/transformers@${TRANSFORMERS_VERSION}/dist/transformers.min.js`);
+  const progress_callback = (p) => {
+    if (p.status === 'progress_total') {
+      if (run.stage !== 'downloading') mark(run, { stage: 'downloading' });
+      say(`Downloading ${m.label} (ONNX ${dtype}): ${Math.round(p.progress)}%`);
+    } else if (p.status === 'done' && run.stage !== 'loading') { mark(run, { stage: 'loading' }); say(`Loading ${m.label} on WebGPU…`); }
+  };
+  mark(run, { stage: 'downloading or loading' });
+  const t0 = performance.now();
+  const tokenizer = await tf.AutoTokenizer.from_pretrained(m.onnx, { progress_callback });
+  const model = await tf.AutoModelForCausalLM.from_pretrained(m.onnx, { dtype, device: 'webgpu', progress_callback });
+  mark(run, { loadS: since(t0), stage: 'answering' });
+  say('Answering the test prompt…');
+  const inputs = tokenizer.apply_chat_template([{ role: 'user', content: promptFor(run.fill, run.ctx) }], { add_generation_prompt: true, return_dict: true });
+  let n = 0, text = '', t1 = 0;
+  const tp = performance.now();
+  const streamer = new tf.TextStreamer(tokenizer, {
+    skip_prompt: true,
+    token_callback_function: () => { if (!n) { t1 = performance.now(); mark(run, { firstS: since(tp) }); } n++; },
+    callback_function: (piece) => { text += piece; },
+  });
+  await model.generate({ ...inputs, max_new_tokens: MAX_TOKENS, do_sample: false, streamer });
+  const tokS = n > 1 ? +((n - 1) / ((performance.now() - t1) / 1000)).toFixed(1) : null;
+  mark(run, { tokS, sample: text.slice(0, 120) });
+  return { unload: () => model.dispose().catch(() => {}) };
 }
 
 // ── Headroom probes ───────────────────────────────────────────────────────
@@ -392,9 +500,11 @@ async function probeGPU(run) {
 
 // ── Run ───────────────────────────────────────────────────────────────────
 async function runTest(step, autoIndex) {
-  const choice = step || { engine: $('engine').value, model: $('model').value, probe: $('probe').value };
+  const choice = step ? { ctx: 2048, fill: 'short', ...step }
+    : { engine: $('engine').value, model: $('model').value, probe: $('probe').value, ctx: Number($('ctx').value), fill: $('fill').value };
   if (!step) store.set('memtest-choice', choice);
   if (choice.engine === 'none' && choice.probe === 'off') { say('Pick JS or GPU to measure for a baseline.'); return; }
+  if (!hasBuild(choice.engine, MODELS[choice.model])) { say(`${MODELS[choice.model].label} has no build for that engine.`); return; }
   for (const b of document.querySelectorAll('button, select')) if (b.id !== 'stop') b.disabled = true;
   $('crash').hidden = true;
   const run = { ...choice, ts: new Date().toISOString(), facts: FACTS, autoIndex };
@@ -404,16 +514,17 @@ async function runTest(step, autoIndex) {
     if (choice.engine === 'wllama-cpu') session = await runWllama(run, false);
     else if (choice.engine === 'wllama-gpu') session = await runWllama(run, true);
     else if (choice.engine === 'webllm') session = await runWebLLM(run);
+    else if (choice.engine === 'onnx') session = await runOnnx(run);
     let left = { leftMB: null };
     if (choice.probe === 'js') left = await probeJS(run);
     if (choice.probe === 'gpu') left = await probeGPU(run);
     store.del(KEY_RUN);
-    result = { ...pick(run), ...left, outcome: left.how ? `finished (${left.how})` : 'loaded and answered', cls: 'ok', sample: run.sample, compat: run.compat, mlcId: run.mlcId, facts: FACTS };
+    result = { ...pick(run), ...left, outcome: left.how ? `finished (${left.how})` : 'loaded and answered', cls: 'ok', sample: run.sample, compat: run.compat, mlcId: run.mlcId, onnxDtype: run.onnxDtype, facts: FACTS };
     addResult(result);
     say(`Done.${run.sample ? `\nIt said: “${run.sample}…”` : ''}`);
   } catch (e) {
     store.del(KEY_RUN);
-    result = { ...pick(run), outcome: `error while ${run.stage || 'starting'}: ${e && e.message || e}`, cls: 'bad', mlcId: run.mlcId, facts: FACTS };
+    result = { ...pick(run), outcome: `error while ${run.stage || 'starting'}: ${e && e.message || e}`, cls: 'bad', mlcId: run.mlcId, onnxDtype: run.onnxDtype, facts: FACTS };
     addResult(result);
     say('Error: ' + (e && e.message || e));
   } finally {
@@ -429,7 +540,8 @@ async function runTest(step, autoIndex) {
 
 $('run').onclick = () => runTest();
 $('auto').onclick = () => {
-  store.set(KEY_AUTO, { queue: buildQueue(), i: 0, dead: {}, started: new Date().toISOString() });
+  store.set('memtest-choice', { ...store.get('memtest-choice', {}), ctx: $('ctx').value, fill: $('fill').value });
+  store.set(KEY_AUTO, { queue: buildQueue(Number($('ctx').value), $('fill').value), i: 0, dead: {}, started: new Date().toISOString() });
   location.reload();
 };
 $('stop').onclick = () => {
