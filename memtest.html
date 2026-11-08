@@ -151,7 +151,9 @@ const MODELS = {
     mlc: 'LFM2.5-1.2B-Instruct-q4f16_1-MLC', mlcF16Only: true,
     mlcRecord: {   // naklitechie's port (Kiln fork of mlc-llm); compiled for a 4K window, so 8K isn't offered here
       model: HF + 'naklitechie/LFM2.5-1.2B-Instruct-q4f16_1-MLC/resolve/main/',
-      model_lib: HF + 'naklitechie/LFM2.5-1.2B-Instruct-q4f16_1-MLC/resolve/main/LFM2.5-1.2B-Instruct-q4f16_1-webgpu.wasm',
+      // Its .wasm with five runtime names patched for WebLLM 0.2.87 (app/models/README.md); the original stops
+      // with "Cannot find global function runtime.TensorAllocWithScope".
+      model_lib: new URL('models/LFM2.5-1.2B-Instruct-q4f16_1-webgpu.tensor-names.wasm', location.href).href,
       maxCtx: 4096 },
     onnx: 'LiquidAI/LFM2.5-1.2B-Instruct-ONNX', onnxMB: 760 },
   lf12t: { label: 'LFM2.5 1.2B Thinking', family: 'lfm', gguf: HF + 'LiquidAI/LFM2.5-1.2B-Thinking-GGUF/resolve/main/LFM2.5-1.2B-Thinking-Q4_0.gguf', ggufMB: 696,
