@@ -92,7 +92,7 @@ test('Conversation (fenced format) over the shim passes plain text through and n
 });
 
 // ── Gemma 4 (tiny Gemma 4 on WebLLM) ─────────────────────────────────────
-import { gemma4Prompt, parseGemmaCalls, splitGemma } from '../app/src/engine-webllm.js';
+import { gemma4Prompt, parseGemmaCalls, splitGemma, registerModel } from '../app/src/engine-webllm.js';
 import { readFileSync } from 'node:fs';
 
 const GEMMA_FIXTURES = JSON.parse(readFileSync(new URL('./fixtures/gemma4-template.json', import.meta.url), 'utf8'));
@@ -134,6 +134,8 @@ function fakeCompletionEngine(text) {
 
 test('NativeConversation over the WebLLM shim with Gemma 4: one rendered prompt, thinking, text, then a parsed native call', async () => {
   const fake = fakeCompletionEngine('<|channel>thought\nThe name is in this turn.\n<channel|>Searching.<|tool_call>call:web_search{query:<|"|>patrick stewart<|"|>}<tool_call|>');
+  // Our Gemma build ships an artifact manifest, so WebLLM adds <bos> itself and the prompt starts at the system turn.
+  registerModel({ model_id: 'tiny-gemma4-heal4a-q4f16_1-MLC', model: 'https://example.invalid/', model_lib: 'https://example.invalid/lib.wasm', model_manifest: 'mlc-model-manifest.json' });
   const w = await createShim('tiny-gemma4-heal4a-q4f16_1-MLC', 4096, () => {}, { format: 'gemma4', engine: fake });
   const conv = new NativeConversation(w, { preface: { messages: [{ role: 'system', content: 'You are Squiggle.' }], tools: TOOLS, extra_context: { enable_thinking: true } }, sessionConfig: { maxOutputTokens: 256 } });
   const got = { thinking: '', text: '', calls: [] };

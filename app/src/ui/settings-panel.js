@@ -138,8 +138,8 @@ export function renderSettingsPanel() {
     section('Model',
       modelField(S),
       smallModeField(S),
-      field('Context window', seg([[4096, '4K'], [8192, '8K'], [16384, '16K']], S.contextSize, async (v) => { S.contextSize = v; await reloadIfReady(); }),
-        'Bigger remembers more per turn but uses more memory and is slower to start. Phones are safest at 4K.'),
+      field('Context window', seg([[4096, '4K'], [8192, '8K'], [16384, '16K']].filter(([v]) => !M.maxContext || v <= M.maxContext), S.contextSize, async (v) => { S.contextSize = v; await reloadIfReady(); }),
+        M.maxContext ? `This build was compiled for ${M.maxContext / 1024}K at most.` : 'Bigger remembers more per turn but uses more memory and is slower to start. Phones are safest at 4K.'),
       M.runtime === 'litert' ? switchRow('Speed boost', 'Replies come noticeably faster, but it loads an extra helper model and needs more memory. Off by default on phones.', S.fastDecode, async (e) => { S.fastDecode = e.target.checked; saveSettings(); await reloadIfReady(); }) : '',
       plainWllama ? switchRow('Use the GPU (experimental)', 'Runs this model on WebGPU instead of the CPU: could be much faster, or could crash the tab. If it crashes, Squiggle offers to turn it off.', S.smallGpu, async (e) => { S.smallGpu = e.target.checked; saveSettings(); await reloadIfReady(); }) : '',
       plainWllama ? switchRow('Use all CPU cores (experimental)', 'Splits the work across several cores, mostly speeding up the wait before a reply starts. Reloads the page.', S.smallThreads, async (e) => {

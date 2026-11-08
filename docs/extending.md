@@ -109,6 +109,38 @@ Models are entries in `MODELS` in `app/src/engine.js` (`runtime: 'litert' |
 and WebLLM sections of [CLAUDE.md](../CLAUDE.md) for what each flag does;
 `tests/e2e/model-probes.mjs` runs behaviour probes against a real GGUF.
 
+A WebLLM model is a few fields: `mlc` (the build's id), `mlcRecord` for a build
+that isn't in WebLLM's prebuilt list (`model`, `model_lib`, optionally
+`model_manifest` and `overrides`), `webllm` when the build's runtime needs a
+WebLLM other than the default (a library compiled with an older TVM loads only
+on the WebLLM of its time), `maxContext` when it was compiled for a smaller
+window, and `toolFormat` for a model that calls tools in its own format.
+
+### Tool formats
+
+WebLLM has no chat-template engine, so each model family's template lives in
+`app/src/toolformats/`, one module per format (`qwen.js`, `gemma4.js`,
+`lfm2.js`), registered in `toolformats/index.js`. A model picks one with
+`toolFormat: '<id>'`. A format either goes through WebLLM's chat API (`mode:
+'chat'`, `messages()`) or renders the whole prompt and sends it as a raw
+completion (`mode: 'raw'`, `prompt()`, `stop`, `bos`) when the template has turns
+the chat API can't express (a tool role, a reply that continues after a result).
+Either way it names where calls start in a reply (`callStart`), reads them back
+(`parseCalls`) and splits thinking from the answer (`split`); the shim in
+`engine-webllm.js` does the streaming for all of them. The interface is
+documented at the top of `toolformats/index.js`.
+
+```js
+import { registerToolFormat } from './toolformats/index.js';
+registerToolFormat({ id: 'mine', mode: 'raw', prompt: (history, tools) => '…', stop: ['<end>'],
+  bos: '<s>', callStart: '<call>', parseCalls: (text) => [], split: (raw) => ({ thinking: '', text: raw }) });
+```
+
+Pin a raw format to the real template the way `tests/fixtures/gemma4-template.json`
+and `lfm2-template.json` do: render the model's `chat_template.jinja` in Python
+for a few conversations (tools, calls with odd arguments, results, thinking) and
+assert the port's output is identical (`tests/toolformats.test.js`).
+
 ## UI
 
 The UI is plain DOM under `app/src/ui/`, one module per area, sharing one state
