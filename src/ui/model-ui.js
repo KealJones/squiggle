@@ -223,7 +223,7 @@ export function updateComposerNote() {
 export function smallHow() {
   const i = engine.isLite() ? engine.smallInfo() : null;
   if (!i) return '';
-  const parts = [i.webllm ? 'GPU, WebLLM' : i.gpu ? 'GPU' : `${i.threads} CPU core${i.threads === 1 ? '' : 's'}`];
+  const parts = [i.webllm ? `GPU, WebLLM${i.webllmVersion ? ' ' + i.webllmVersion : ''}` : i.gpu ? 'GPU' : `${i.threads} CPU core${i.threads === 1 ? '' : 's'}`];
   if (i.compat) parts.push('Safari compatibility build');
   if (i.asked && i.asked.gpu && !i.gpu) parts.push('no WebGPU here');
   if (i.asked && i.asked.threads && i.threads === 1) parts.push(i.asked.isolated ? 'threads unavailable' : 'cores need a reload');
@@ -245,6 +245,10 @@ export async function setIsolation(on) {
 export async function loadModel() {
   state.modelState = 'loading';
   const S = agent.settings;
+  // A build compiled for a smaller window (MODELS maxContext, e.g. a community MLC build at 4K) can't take
+  // more; the agent budgets from settings.contextSize, so the setting itself comes down to match.
+  const maxContext = engine.MODELS[S.model].maxContext;
+  if (maxContext && S.contextSize > maxContext) { S.contextSize = maxContext; saveSettings(); }
   const cloud = engine.MODELS[S.model].runtime === 'cloud';
   const step = h('span', { class: 'muted' });
   banner(h('div', { class: 'dl' }, h('div', { class: 'dl-head' }, squiggleWait(), h('span', {}, cloud ? 'Connecting to the cloud model…' : `Loading ${engine.MODELS[S.model].label}…`)), step));

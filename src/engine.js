@@ -55,6 +55,18 @@ export const MODELS = {
     mlc: 'Qwen3-0.6B-q4f16_1-MLC', bytes: 350000000 },
   WQ35: { label: 'Qwen3.5 0.8B (GPU)', size: '~500 MB', experimental: true, note: 'stock Qwen3.5 0.8B on WebLLM (WebGPU) with tools in its own format: about 14 words a second on an iPhone (3x the CPU build). Runs without thinking, as its model card recommends for this size. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'qwen35', family: 'qwen35', thinking: false,
     mlc: 'Qwen3.5-0.8B-q4f16_1-MLC', bytes: 500000000 },
+  // LFM2.5 1.2B Instruct on WebLLM (Keal, 2026-11-08): naklitechie's community MLC build, compiled with Kiln's
+  // fork of mlc-llm before TVM's October changes, so it names WebLLM 0.2.86 (`webllm`; 0.2.87 can't load it).
+  // Tools in LFM2's own format (toolformats/lfm2.js: Pythonic calls, results in a tool turn), so it's native
+  // and small: the short find-first prompt with gated tools. On an iPhone (memtest, full 4K prompt): first
+  // word in 19 s, 18.7 tok/s, ahead of Qwen3 0.6B on WebLLM; its KV cache is in 6 of 16 layers.
+  WLF12: { label: 'Test: LFM2.5 1.2B (GPU)', size: '~630 MB', experimental: true, note: 'stock LFM2.5 1.2B Instruct on WebLLM (WebGPU) with tools in its own format: about 19 words a second on an iPhone, faster than Qwen3 0.6B and twice its size. A community build, 4K context at most. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm2', family: 'lfm2', thinking: false, webllm: '0.2.86', maxContext: 4096,
+    mlc: 'LFM2.5-1.2B-Instruct-q4f16_1-MLC', bytes: 630000000,
+    mlcRecord: {
+      model: HF + 'naklitechie/LFM2.5-1.2B-Instruct-q4f16_1-MLC/resolve/main/',
+      model_lib: HF + 'naklitechie/LFM2.5-1.2B-Instruct-q4f16_1-MLC/resolve/main/LFM2.5-1.2B-Instruct-q4f16_1-webgpu.wasm',
+      overrides: { context_window_size: 4096 },
+    } },
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true, family: 'gemma4' },
 };
 
@@ -138,7 +150,10 @@ export const modelFitsDevice = (id) => !isMobile() || Boolean(MODELS[id] && MODE
 // WebLLM, with our own MLC builds (a model's `mlcRecord`) registered so its calls can find them.
 async function webllm() {
   const w = await import('./engine-webllm.js');
-  for (const m of Object.values(MODELS)) if (m.mlcRecord) w.registerModel({ model_id: m.mlc, ...m.mlcRecord });
+  for (const m of Object.values(MODELS)) {
+    if (m.mlcRecord) w.registerModel({ model_id: m.mlc, ...m.mlcRecord }, { version: m.webllm });
+    else if (m.mlc && m.webllm) w.setVersion(m.mlc, m.webllm);
+  }
   return w;
 }
 const metaKey = (url) => 'model-meta:' + url;
@@ -411,7 +426,8 @@ const SAMPLING = {
   gemma4: { temperature: 1.0, top_k: 64, top_p: 0.95, min_p: 0, repeat: 1.0, presence: 0 },      // Gemma 4 model card: one setting for all uses
   qwen3: { temperature: 0.6, top_k: 20, top_p: 0.95, min_p: 0, repeat: 1.0, presence: 1.5 },     // Qwen3 card, thinking mode; presence penalty against repetition, not repeat penalty
   qwen35: { temperature: 1.0, top_k: 20, top_p: 1.0, min_p: 0, repeat: 1.0, presence: 2.0 },     // Qwen3.5-0.8B card, non-thinking text (how it runs here)
-  default: { temperature: 0.7, top_k: 64, top_p: 0.95, min_p: 0, repeat: 1.15, presence: 0 },    // stock models with no card guidance here (Llama 3.2, LFM2.5 1.2B)
+  lfm2: { temperature: 0.1, top_k: 50, top_p: 1.0, min_p: 0, repeat: 1.05, presence: 0 },       // LFM2.5-1.2B-Instruct card (no top_p given)
+  default: { temperature: 0.7, top_k: 64, top_p: 0.95, min_p: 0, repeat: 1.15, presence: 0 },    // stock models with no card guidance here (Llama 3.2)
 };
 // A model's generation profile: its sampling, whether it thinks, and how much (docs/harness.md).
 //   thinking: false means the model never gets thinking turned on (trained without it, or its card says so for this size).
