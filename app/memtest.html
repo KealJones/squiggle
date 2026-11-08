@@ -394,6 +394,7 @@ async function runWebLLM(run) {
   const t0 = performance.now();
   const engine = await webllm.CreateMLCEngine(mlcId, {
     appConfig,
+    logLevel: 'INFO',   // the runtime's own error text goes through WebLLM's logger, which is quiet by default
     initProgressCallback: (p) => {
       const stage = /fetch/i.test(p.text) ? 'downloading' : 'loading';
       if (stage !== run.stage) mark(run, { stage });
@@ -501,6 +502,23 @@ async function probeGPU(run) {
 }
 
 // ── Run ───────────────────────────────────────────────────────────────────
+// The engines print their real errors to the console (WebLLM's runtime writes TVM's "Check failed: …" traceback
+// there before it hits a wasm trap), and a phone has no console to read. Keep the last lines and save them with an error.
+function captureConsole(max = 40) {
+  const lines = [];
+  const saved = {};
+  for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
+    saved[level] = console[level];
+    console[level] = (...args) => {
+      const text = args.map((a) => (a instanceof Error ? a.stack || a.message : typeof a === 'string' ? a : (() => { try { return JSON.stringify(a); } catch { return String(a); } })())).join(' ');
+      for (const line of text.split('\n')) if (line.trim()) lines.push(`${level}: ${line.slice(0, 400)}`);
+      if (lines.length > max) lines.splice(0, lines.length - max);
+      saved[level].apply(console, args);
+    };
+  }
+  return { lines, restore: () => Object.assign(console, saved) };
+}
+
 async function runTest(step, autoIndex) {
   const choice = step ? { ctx: 2048, fill: 'short', ...step }
     : { engine: $('engine').value, model: $('model').value, probe: $('probe').value, ctx: Number($('ctx').value), fill: $('fill').value };
@@ -512,6 +530,7 @@ async function runTest(step, autoIndex) {
   const run = { ...choice, ts: new Date().toISOString(), facts: FACTS, autoIndex };
   let result = null;
   let session = null;
+  const logs = captureConsole();
   try {
     if (choice.engine === 'wllama-cpu') session = await runWllama(run, false);
     else if (choice.engine === 'wllama-gpu') session = await runWllama(run, true);
@@ -526,10 +545,12 @@ async function runTest(step, autoIndex) {
     say(`Done.${run.sample ? `\nIt said: “${run.sample}…”` : ''}`);
   } catch (e) {
     store.del(KEY_RUN);
-    result = { ...pick(run), outcome: `error while ${run.stage || 'starting'}: ${e && e.message || e}`, cls: 'bad', mlcId: run.mlcId, onnxDtype: run.onnxDtype, facts: FACTS };
+    result = { ...pick(run), outcome: `error while ${run.stage || 'starting'}: ${e && e.message || e}`, cls: 'bad', mlcId: run.mlcId, onnxDtype: run.onnxDtype, facts: FACTS,
+      log: logs.lines.slice() };
     addResult(result);
     say('Error: ' + (e && e.message || e));
   } finally {
+    logs.restore();
     if (session) await session.unload();
     for (const b of document.querySelectorAll('button, select')) b.disabled = false;
   }
