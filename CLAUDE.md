@@ -216,7 +216,7 @@ budget shared by JS and GPU memory): Llama 3.2 1B ~30 tok/s and ~1.3 GB vs wllam
 ~34 tok/s; Qwen3.5 0.8B ~14 tok/s; Qwen3.5 2B loaded but died on its first reply. The GPU/cores toggles don't apply.
 memtest.html also covers the LFM2 family (LFM2.5 350M, LFM2 700M, LFM2.5 1.2B Instruct and Thinking) on every runtime
 each has a build for: wllama GGUFs, a community WebLLM build of the 1.2B Instruct (naklitechie, 4K max, q4f16 only) and
-transformers.js ONNX on WebGPU (`onnx` engine). That WebLLM build was compiled mid-way through TVM's NDArray→Tensor rename (`runtime.TVMTensor*`), so memtest loads a copy with five names patched to what 0.2.87 asks for (`scripts/patch-mlc-wasm.mjs`, `app/models/`); the weights still come from naklitechie's repo. LFM2 keeps a KV cache in only 6 of its 16 layers (~12 KB a token vs
+transformers.js ONNX on WebGPU (`onnx` engine). That WebLLM build's runtime predates TVM's Oct 2026 changes (`runtime.TVMTensor*` names, 3-value device groups for the VM), so memtest loads it with WebLLM 0.2.86 (`mlcRecord.webllm`); 0.2.87 fails on it ("Cannot find global function runtime.TensorAllocWithScope", then `vm.cc` "args.size() % 3 == 0" if the names are patched). In headless Chromium 0.2.86 loads it through VM and hybrid KV + RNN state setup and stops only at the f16 shaders SwiftShader can't compile. LFM2 keeps a KV cache in only 6 of its 16 layers (~12 KB a token vs
 ~112 KB for Qwen3 0.6B at 16-bit), so a context choice (2K/4K/8K) and a prompt that fills 3/4 of the window are there to
 measure what a full window costs; the auto run skips bigger models only within a family (`family`: transformer / lfm).
 

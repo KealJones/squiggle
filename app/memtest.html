@@ -131,7 +131,7 @@
 
 <script type="module">
 const WLLAMA_VERSION = '3.8.1';
-const WEBLLM_VERSION = '0.2.87';   // has tensor-cache.json and hybrid KV + RNN state, which the LFM2 MLC build needs
+const WEBLLM_VERSION = '0.2.87';   // a community build can ask for its own (mlcRecord.webllm) when its runtime is older
 const TRANSFORMERS_VERSION = '4.3.2';
 const HF = 'https://huggingface.co/';
 // family: a model that fails to load on an engine skips the bigger models of the same family on that engine.
@@ -151,9 +151,10 @@ const MODELS = {
     mlc: 'LFM2.5-1.2B-Instruct-q4f16_1-MLC', mlcF16Only: true,
     mlcRecord: {   // naklitechie's port (Kiln fork of mlc-llm); compiled for a 4K window, so 8K isn't offered here
       model: HF + 'naklitechie/LFM2.5-1.2B-Instruct-q4f16_1-MLC/resolve/main/',
-      // Its .wasm with five runtime names patched for WebLLM 0.2.87 (app/models/README.md); the original stops
-      // with "Cannot find global function runtime.TensorAllocWithScope".
-      model_lib: new URL('models/LFM2.5-1.2B-Instruct-q4f16_1-webgpu.tensor-names.wasm', location.href).href,
+      model_lib: HF + 'naklitechie/LFM2.5-1.2B-Instruct-q4f16_1-MLC/resolve/main/LFM2.5-1.2B-Instruct-q4f16_1-webgpu.wasm',
+      // Its runtime is from before TVM's Oct 2026 changes: WebLLM 0.2.87 can't find runtime.TensorAllocWithScope in it
+      // and starts its VM with arguments it rejects. 0.2.86 matches (TVMTensor* names, 3-value device groups).
+      webllm: '0.2.86',
       maxCtx: 4096 },
     onnx: 'LiquidAI/LFM2.5-1.2B-Instruct-ONNX', onnxMB: 760 },
   lf12t: { label: 'LFM2.5 1.2B Thinking', family: 'lfm', gguf: HF + 'LiquidAI/LFM2.5-1.2B-Thinking-GGUF/resolve/main/LFM2.5-1.2B-Thinking-Q4_0.gguf', ggufMB: 696,
@@ -386,7 +387,7 @@ async function runWebLLM(run) {
   if (m.mlcRecord?.maxCtx && run.ctx > m.mlcRecord.maxCtx) throw new Error(`this build was compiled for ${m.mlcRecord.maxCtx / 1024}K at most`);
   const mlcId = FACTS['shader-f16'] === 'yes' ? m.mlc : m.mlc.replace('q4f16_1', 'q4f32_1');
   mark(run, { mlcId });
-  const webllm = await import(`https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@${WEBLLM_VERSION}/+esm`);
+  const webllm = await import(`https://cdn.jsdelivr.net/npm/@mlc-ai/web-llm@${m.mlcRecord?.webllm || WEBLLM_VERSION}/+esm`);
   // A community build isn't in WebLLM's prebuilt list: add it to that list for this engine.
   const appConfig = m.mlcRecord ? { ...webllm.prebuiltAppConfig, model_list: [...webllm.prebuiltAppConfig.model_list,
     { model_id: mlcId, model: m.mlcRecord.model, model_lib: m.mlcRecord.model_lib }] } : undefined;
