@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { namesIn, isFollowUp, standalone, smallTalk, rank, exchangeCandidates, render, doRequest, pointsBack, standingInstructions } from '../app/src/prefetch.js';
+import { namesIn, isFollowUp, standalone, smallTalk, rank, exchangeCandidates, render, doRequest, pointsBack, standingInstructions, refsIn } from '../app/src/prefetch.js';
 
 const PREV = 'What is the latest movie that Patrick Stewart was is?';
 const LINE = [
@@ -111,4 +111,22 @@ test('render puts standing instructions first, as the user\'s own rules, and ren
   const text = render({ query: 'capital of Peru', standing: ['From now on answer in Spanish.'] });
   assert.match(text, /Instructions the user gave earlier in this chat, still in force:\n- "From now on answer in Spanish\."/);
   assert.match(text, /^Looked up before answering/);
+});
+
+test('case 15 (pull bubbles, got squiggle): a link or repo path only matches saved things with that exact path', () => {
+  assert.deepEqual(refsIn('Can you pull GitHub.com/kealjones/bubbles'), ['github.com/kealjones/bubbles']);
+  assert.deepEqual(refsIn('read https://example.com/a/b. Thanks'), ['example.com/a/b']);
+  assert.deepEqual(refsIn('what is 5 / 129?'), []);
+  const cands = [
+    { id: 'c1', kind: 'chat', text: 'List the repo details for github.com/kealjones/squiggle\nIt is a browser agent.' },
+    { id: 'c2', kind: 'chat', text: 'clone github.com/KealJones/bubbles please\nCloned it.' },
+  ];
+  assert.deepEqual(rank('Can you pull GitHub.com/kealjones/bubbles', cands).map(x => x.id), ['c2']);
+  assert.deepEqual(rank('Can you pull GitHub.com/kealjones/bubbles', [cands[0]]), []);
+});
+
+test('render lists the tools that fit, ready to call, and says not to search the web for it', () => {
+  const text = render({ query: 'pull github.com/kealjones/bubbles', tools: [{ name: 'git_clone', description: 'Clone a GitHub repo.', args: [{ name: 'url', required: true }, { name: 'name', required: false }] }] });
+  assert.match(text, /Tools for this \(ready to call\):\n- git_clone\(url, name\?\): Clone a GitHub repo\./);
+  assert.match(text, /Call git_clone for this; don't search the web for it\.$/);
 });

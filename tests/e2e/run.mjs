@@ -1058,6 +1058,13 @@ await check('Fresh context: nothing replayed; a lookup (earlier exchange, web) g
   assert.ok(wikiAsked.includes('Patrick Stewart freshtest his one'), JSON.stringify(wikiAsked));
   assert.doesNotMatch(r.system, /Looked up before/);
   assert.match(r.reply, /^From the lookup: Looked up before answering/);
+  // A job for a tool (case 15): the lookup names the tool, ready to call, and doesn't search the web.
+  await ask('freshtest can you pull github.com/tester/app', 4);
+  r = await last();
+  const res = r.input[0].content[0].response;
+  assert.match(res.found, /Tools for this \(ready to call\):\n- git_clone\(/);
+  assert.deepEqual(res.tools, ['git_clone']);
+  assert.doesNotMatch(res.found, /Web search for|Wikipedia/);
   assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
 });
 

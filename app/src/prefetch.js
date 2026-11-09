@@ -73,6 +73,17 @@ export function standalone(message, { prevUser = '' } = {}) {
   return { query: borrowed ? `${borrowed} ${rest || text}` : text, borrowed };
 }
 
+/** Links and repo paths in a message ("github.com/kealjones/bubbles", "https://example.com/a"), lower-cased,
+ *  without the scheme or trailing punctuation. */
+export function refsIn(text) {
+  const out = [];
+  for (const m of String(text || '').matchAll(/(?:https?:\/\/)?((?:[\w-]+\.)+[a-z]{2,}\/[^\s"'<>)\]]+)/gi)) {
+    const r = m[1].toLowerCase().replace(/[.,;:!?]+$/, '').replace(/\.git$/, '').replace(/\/$/, '');
+    if (!out.includes(r)) out.push(r);
+  }
+  return out;
+}
+
 // ── Is it worth looking anything up? ───────────────────────────────────────
 
 const SMALL_TALK = /^\s*(hi|hey|hello|yo|sup|thanks?( you)?|thank u|ty|thx|ok(ay)?|k|cool|nice|great|awesome|lol|lmao|haha|bye|good ?(morning|night|evening)|yes|yeah|yep|no|nope|sure|got it|perfect|sounds good)\b[\s!.,?]*$/i;
@@ -94,7 +105,10 @@ export function rank(query, candidates, { vecs = null, k = 6 } = {}) {
   const all = (candidates || []).filter(c => c && String(c.text || '').trim());
   // A query that names someone or something only matches text that names them too: "Emma Stone's latest
   // movie" shares "latest movie" with a Patrick Stewart question, and by meaning they're close as well.
-  const names = namesIn(query).map(n => n.toLowerCase());
+  // A link or repo path is a name too, and an exact one: "pull github.com/kealjones/bubbles" matched an old chat
+  // about github.com/kealjones/squiggle on the word "GitHub.com", and the model went after squiggle (2026-11-09).
+  const refs = refsIn(query);
+  const names = refs.length ? refs : namesIn(query).map(n => n.toLowerCase());
   const named = (c) => !names.length || names.some(n => String(c.text).toLowerCase().includes(n));
   const keep = all.map((c, i) => [c, i]).filter(([c]) => named(c));
   const list = keep.map(([c]) => c);
@@ -172,12 +186,14 @@ const when = (ts) => (ts ? new Date(ts).toLocaleString(undefined, { month: 'shor
 
 /** The lookup's result, as the model reads it. `wrap(source, text)` marks outside content (untrusted.js).
  *  sizes: characters per kind, smaller for small models. Returns '' when nothing was found anywhere. */
-export function render({ query, exchanges = [], chats = [], facts = [], pages = [], wiki = '', web = null, check = '', standing = [] },
+export function render({ query, exchanges = [], chats = [], facts = [], pages = [], wiki = '', web = null, check = '', standing = [], tools = [] },
   { wrap = (s, t) => t, small = false } = {}) {
   const n = small ? { q: 160, a: 280, page: 500, snip: 220 } : { q: 240, a: 500, page: 900, snip: 400 };
   const parts = [];
   if (check) parts.push(check);
   if (standing.length) parts.push('Instructions the user gave earlier in this chat, still in force:\n' + standing.map(s => `- "${s}"`).join('\n'));
+  // Tools that fit the request, as the model's own find would list them (they're ready to call after this).
+  if (tools.length) parts.push('Tools for this (ready to call):\n' + tools.map(t => `- ${t.name}(${(t.args || []).map(a => a.required ? a.name : a.name + '?').join(', ')}): ${t.description}`).join('\n'));
   if (exchanges.length) {
     // `full`: the exchange a pointing-back message is about ("run that script"), with the reply as written
     // (code keeps its lines), not squeezed to one line.
@@ -205,6 +221,7 @@ export function render({ query, exchanges = [], chats = [], facts = [], pages = 
   if (!parts.length) return '';
   const tail = (web && web.items && web.items.length) || wiki
     ? 'To read a result in full, call fetch_url with its link. If none of this answers it, call web_search with other words.'
+    : tools.length ? `Call ${tools[0].name} for this; don't search the web for it.`
     : 'If this doesn\'t answer it, call web_search.';
   return `Looked up before answering, for "${oneLine(query, 120)}" (search results, not the user's words):\n\n${parts.join('\n\n')}\n\n${tail}`;
 }

@@ -51,6 +51,9 @@
       "expect": "\\bKeal\\b" },
     { "id": 16, "name": "A standing instruction holds on the next message (Fresh keeps it; others replay it)",
       "messages": ["From now on, answer in Spanish.", "What is the capital of Peru?"],
-      "expect": "Lima", "reject": "^(The capital of Peru is Lima)" }
+      "expect": "Lima", "reject": "^(The capital of Peru is Lima)" },
+    { "id": 17, "name": "Casebook 15: asked to pull a repo, it clones that repo (not a web search, not another repo)",
+      "messages": ["Can you pull github.com/tester/app"],
+      "tools": ["git_clone"], "noTools": ["web_search"], "reject": "squiggle" }
   ]
 }

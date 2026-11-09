@@ -277,6 +277,12 @@ Fresh replays nothing just for being recent. Before the model sees a message, th
 7. **The user's own things stay off the web.** A question about the user ("what's my name?", "my dog") that memory
    or this chat has something for gets no web or Wikipedia search ("What's my name?" went to both, 2026-11-09).
 
+8. **Tools that fit.** A real `find` lists matching tools; the seeded one didn't, so a gated model asked to pull a
+   repo saw only an unrelated old chat (failures.md case 15). Tools that clearly fit the message (named, or an
+   intent phrase: find's score over 4, lookup tools aside) are listed as "Tools for this (ready to call)" and
+   returned by name, which declares their schemas. A link or repo path in the message is an exact name: saved
+   things match only if they contain it.
+
 The result goes in as a `find` call the model already made, with the result as its first input: the question is
 the only user turn. Engines that can't start that way (Gemma 4 on LiteRT, the fenced format) get it as a system
 section headed "Looked up before this message (search results, not the user's words)". Small talk gets nothing.

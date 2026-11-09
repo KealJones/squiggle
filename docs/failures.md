@@ -194,3 +194,23 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   web or Wikipedia lookup; a message that points back ("that", "it") brings the exchange it points at, with the
   reply as written.
 - **Caught by:** tests/prefetch.test.js (the two messages above); e2e "Fresh context" for the pointed-at exchange.
+
+### 15. Asked to pull bubbles, went looking for squiggle
+
+- **Asked:** "Can you pull GitHub.com/kealjones/bubbles"
+- **Model:** LFM2.5 1.2B Instruct on WebLLM (WLF12), Fresh context, a new chat, 2026-11-09 (Keal's screenshot).
+- **What it did:** Fresh's lookup came back with "1 saved": an old chat about Kealjones/squiggle. The model planned
+  "List the current GitHub repository details for Kealjones/squiggle" and ran `web_search("Kealjones/squiggle")`
+  twice. It never called `git_clone`.
+- **Why it's bad:** the wrong repo, and the wrong kind of action. Three harness mistakes stacked: "GitHub.com" was
+  taken as the name in the question, so any saved chat mentioning github.com matched; "pull <repo>" wasn't
+  recognised as a job for a tool (only "clone" was); and the seeded find result, unlike a real `find`, listed no
+  tools, so the only thing in front of a model with gated tools was an unrelated chat. It did what the lookup
+  suggested.
+- **Good answer:** `git_clone("https://github.com/kealjones/bubbles")`, then a line saying it's at /repos/bubbles.
+- **Fix:** a link or repo path in the question is an exact name: saved things match only if they contain that
+  path (prefetch.js `refsIn`, `rank`); a GitHub repo named outright scores as git_clone whatever the verb, a
+  deeper link (…/pull/3) stays a page to read (find.js INTENTS); Fresh's lookup lists the tools that clearly fit
+  as "Tools for this (ready to call)" and returns their names, which declares them for gated models, and tells
+  the model not to search the web for it (agent.js `prefetch`, prefetch.js `render`).
+- **Caught by:** tests/prefetch.test.js and tests/find.test.js "case 15"; e2e "Fresh context"; eval case 17.
