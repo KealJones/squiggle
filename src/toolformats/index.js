@@ -1,5 +1,5 @@
 // Tool formats: how a model's own chat template writes tools, calls and results, for runtimes that
-// have no template engine of their own (WebLLM). One module per format; adding a model family means
+// have no template engine of their own (WebLLM). One module per format (Qwen3/3.5, Gemma 4, LFM2, LFM3); adding a model family means
 // adding a module here and naming it in the model's `toolFormat` (engine.js MODELS). docs/extending.md.
 //
 // A format is:
@@ -23,6 +23,7 @@ import { splitRaw } from './text.js';
 import { toWebLLMMessages, qwen3, qwen35 } from './qwen.js';
 import { gemma4 } from './gemma4.js';
 import { lfm2 } from './lfm2.js';
+import { lfm3 } from './lfm3.js';
 
 const formats = new Map();
 
@@ -49,4 +50,4 @@ export const PLAIN = {
   split: (raw, { thinking }) => splitRaw(raw, thinking === true),
 };
 
-for (const f of [qwen3, qwen35, gemma4, lfm2]) registerToolFormat(f);
+for (const f of [qwen3, qwen35, gemma4, lfm2, lfm3]) registerToolFormat(f);
