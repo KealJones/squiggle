@@ -88,6 +88,16 @@ function smallModeField(S) {
   });
 }
 
+// No prompt (experimental): the same models as the Small-model mode switch, saved per model.
+function noPromptField(S) {
+  const id = S.model;
+  if (!agent.smallModeSwitchable(id)) return '';
+  return switchRow('No prompt (experimental)', `Squiggle sends ${engine.MODELS[id].label} no instructions of its own: no persona, rules or tool-names line, only its tools in its own format and the conversation. For seeing how the model does on its own training. Saved for this model only; applies from the next message.`, agent.noPrompt(id), (e) => {
+    S.noPrompt = { ...(S.noPrompt || {}), [id]: e.target.checked };
+    saveSettings(); updateComposerNote();
+  });
+}
+
 // The device's default model. The main models are listed; test and experimental
 // ones fold away unless one of them is the current choice.
 function modelField(S) {
@@ -138,6 +148,7 @@ export function renderSettingsPanel() {
     section('Model',
       modelField(S),
       smallModeField(S),
+      noPromptField(S),
       field('Context window', seg([[4096, '4K'], [8192, '8K'], [16384, '16K']].filter(([v]) => !M.maxContext || v <= M.maxContext), S.contextSize, async (v) => { S.contextSize = v; await reloadIfReady(); }),
         M.maxContext ? `This build was compiled for ${M.maxContext / 1024}K at most.` : 'Bigger remembers more per turn but uses more memory and is slower to start. Phones are safest at 4K.'),
       M.runtime === 'litert' ? switchRow('Speed boost', 'Replies come noticeably faster, but it loads an extra helper model and needs more memory. Off by default on phones.', S.fastDecode, async (e) => { S.fastDecode = e.target.checked; saveSettings(); await reloadIfReady(); }) : '',

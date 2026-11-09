@@ -35,6 +35,7 @@ export const settings = {
   tools: null,              // Set of enabled tool names, or null for all
   debugTools: false,        // save each tool's full result on the reply (Settings → Debug), synced with the chat
   smallMode: {},            // model id → true/false: small-model mode for a model that can switch (smallModeSwitchable); unset = the model's default (smallMode)
+  noPrompt: {},             // model id → true: no system prompt from Squiggle, just the tools in the model's own format (experimental)
 };
 
 const MAX_OUTPUT = 1536;
@@ -93,6 +94,11 @@ export const smallModeSwitchable = (id = settings.model) => Boolean(engine.MODEL
 // instructions instead of the person; measured 2026-11-04 with Qwen3.5 0.8B: 430 more tokens, about 40 s of
 // prefill on a phone-class CPU, and no better.)
 export const smallModeDefault = (id = settings.model) => engine.isLite(id);
+// No prompt (experimental, per model): Squiggle sends no system prompt of its own (no persona, rules, tool-names
+// line, date) in any phase; the model gets its tools in its own format and the conversation. For seeing how a
+// model behaves on its own training (LFM2.5 1.2B over-used tools under the short prompt, 2026-11-09). Same
+// models as the Small-model mode switch.
+export const noPrompt = (id = settings.model) => smallModeSwitchable(id) && Boolean(settings.noPrompt && settings.noPrompt[id]);
 export const smallMode = (id = settings.model) => fencedId(id)
   || (smallModeSwitchable(id) && (settings.smallMode && typeof settings.smallMode[id] === 'boolean' ? settings.smallMode[id] : smallModeDefault(id)));
 // AI-managed context (Settings → Context: AI-managed): the model sees what everything costs, steps say what
@@ -126,7 +132,7 @@ function toolNamesLine(phase, known = []) {
 }
 
 function systemPrompt(threadId, session, phase = 'chat', known = []) {
-  if (plain()) return '';
+  if (plain() || noPrompt()) return '';
   const names = toolNamesLine(phase, known);
   if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : LITE_SYSTEM_NATIVE}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
   const thread = threadId && session.threads[threadId];
@@ -290,7 +296,7 @@ function replyModel() {
   const m = engine.MODELS[id] || {};
   const info = engine.smallInfo && engine.smallInfo();
   const how = m.runtime === 'cloud' ? 'relay' : m.runtime === 'litert' ? 'webgpu' : info ? (info.webllm ? 'webllm' : info.gpu ? 'wllama-gpu' : `wllama-cpu${info.threads > 1 ? `-${info.threads}` : ''}`) : m.runtime || '';
-  return { id, label: m.label || id, how, ...(smallModeSwitchable(id) ? { smallMode: smallMode(id) } : {}), contextSize: settings.contextSize, contextMode: settings.contextMode };
+  return { id, label: m.label || id, how, ...(smallModeSwitchable(id) ? { smallMode: smallMode(id) } : {}), ...(noPrompt(id) ? { noPrompt: true } : {}), contextSize: settings.contextSize, contextMode: settings.contextMode };
 }
 
 // One turn's state: the reply being written, counters, and the phases.
