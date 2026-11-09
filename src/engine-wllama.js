@@ -518,9 +518,13 @@ export class NativeConversation {
     let tFirst = 0, pieces = 0, thinkPieces = 0, text = '', reasoning = '', checked = 0, looped = false, overBudget = false;
     const parts = [];                                          // streamed tool calls, by index
     try {
+      // A runtime whose tool format lists every tool (w.info.toolNames: WebLLM with LFM2) also gets the names of
+      // the tools the gate hasn't declared yet, so they sit in the model's own tool list, by name only.
+      const undeclared = this.gate && this.w.info && this.w.info.toolNames ? this.tools.map(nameOf).filter(n => !tools.some(t => nameOf(t) === n)) : [];
       const stream = await this.w.createChatCompletion({
         messages: nativeMessages(this.messages),
         ...(tools.length ? { tools } : {}),
+        ...(undeclared.length ? { tool_names: undeclared } : {}),
         chat_template_kwargs: { enable_thinking: thinking },
         stream: true,
         max_tokens: this.max,

@@ -8,8 +8,11 @@
 //               here and sent as a raw completion (when the template needs turns WebLLM's chat API
 //               can't express: a tool role, or a reply that continues after a result)
 //   messages(history, tools, { thinking })  chat mode: OpenAI-shaped history → WebLLM chat messages
-//   prompt(history, tools, { thinking })    raw mode: OpenAI-shaped history → prompt text (no BOS), ending
-//                                           with the generation prompt
+//   prompt(history, tools, { thinking, names })   raw mode: OpenAI-shaped history → prompt text (no BOS), ending
+//                                           with the generation prompt. names: tools not declared yet (gated
+//                                           small models), passed only to formats with listsNames
+//   listsNames  true when the model only treats what's in its tool list as tools (LFM2), so gated tools go in
+//               that list by name; otherwise the agent names them in the system prompt alone
 //   stop        raw mode: strings that end generation
 //   bos         raw mode: the start-of-text token as text. WebLLM adds it to a raw completion only for builds
 //               with an artifact manifest; for the others the shim puts it at the front of the prompt
