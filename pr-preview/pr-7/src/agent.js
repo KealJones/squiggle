@@ -480,7 +480,10 @@ class Turn {
       // The question is the only user turn; the lookup is the model's own find call and its result.
       const call = { id: 'lookup1', type: 'function', function: { name: 'find', arguments: { query: seed.query } } };
       messages = [{ role: 'user', content: pending }, { role: 'model', content: '', tool_calls: [{ id: call.id, type: 'function', function: { name: 'find', arguments: JSON.stringify({ query: seed.query }) } }] }];
-      pending = [toolResult(call, { found: seed.text })];
+      // `tools`: the names the lookup found, which declares them for gated models (as a real find result does).
+      const found = { found: seed.text, ...(seed.tools.length ? { tools: seed.tools } : {}) };
+      pending = [toolResult(call, found)];
+      used += this.declare(tools, call, found);
       this.seenCalls.set(`find:${JSON.stringify({ query: seed.query })}`, 1);
     }
     if (fresh()) {
@@ -1095,7 +1098,13 @@ class Turn {
     // Only a question about something is looked up: a request to do or make something ("help me write a
     // generator", "run that with run_js") or a job for another tool goes to the model as is (2026-11-09: Fresh
     // threw whole requests at Wikipedia and the web and the junk sent LFM2.5 1.2B planning).
-    const toolJob = rankTools(said, modelTools()).some(t => !LOOKUP_TOOLS.includes(t.name) && t.score > 4);
+    // The tools that clearly fit (named, or an intent phrase) come back in the lookup, as the model's own find
+    // would list them: without them LFM2.5 1.2B, asked to pull a repo, saw only an unrelated old chat and went
+    // web-searching (2026-11-09).
+    // The best one, and a second only when it scores close to it: a small model takes a list as a to-do.
+    const ranked = rankTools(said, modelTools()).filter(t => !LOOKUP_TOOLS.includes(t.name) && t.score > 4);
+    const fit = ranked.filter(t => t.score >= ranked[0].score * 0.8).slice(0, 2);
+    const toolJob = fit.length > 0;
     const lookup = pushback || (!toolJob && !prefetchLib.doRequest(said));
     // Wikipedia and Wikidata when the question names someone or something, alongside the web search.
     const wikiP = lookup && !own && prefetchLib.namesIn(query).length && modelTools().some(t => t.name === 'wiki_lookup') ? this.wikiTop(query) : null;
@@ -1112,9 +1121,9 @@ class Turn {
     const standing = prefetchLib.standingInstructions(line, { textOf: (m) => messageText(m) });   // line leaves out the current message
     const text = prefetchLib.render({
       query, exchanges: pick('exchange'), chats: pick('chat'), pages: pick('page'),
-      facts: facts.map(r => memory.factText(r.fact)), web, check, wiki, standing,
+      facts: facts.map(r => memory.factText(r.fact)), web, check, wiki, standing, tools: fit,
     }, { wrap: wrapUntrusted, small });
-    const counts = [found.length && `${found.length} saved`, facts.length && `${facts.length} from memory`, standing.length && `${standing.length} standing`, wiki && 'Wikipedia', web && web.items.length && `${web.items.length} from the web`].filter(Boolean);
+    const counts = [fit.length && `tools: ${fit.map(t => t.name).join(', ')}`, found.length && `${found.length} saved`, facts.length && `${facts.length} from memory`, standing.length && `${standing.length} standing`, wiki && 'Wikipedia', web && web.items.length && `${web.items.length} from the web`].filter(Boolean);
     this.toolEvent({ name: 'find', label: `looked up before answering: "${truncate(query, 60)}"${counts.length ? ` (${counts.join(', ')})` : ' (nothing)'}`, ok: true, args: { query } }, text || '(nothing found)');
     if (!text) return null;
     const items = [
@@ -1124,7 +1133,7 @@ class Turn {
       ...(wiki ? [{ kind: 'web', label: 'Wikipedia and Wikidata' }] : []),
       ...(web && web.items.length ? [{ kind: 'web', label: `web search: ${truncate(web.query, 60)} (${web.items.length})` }] : []),
     ];
-    return { query, text, items };
+    return { query, text, items, tools: fit.map(t => t.name) };
   }
 
   async webFallback(query) {
