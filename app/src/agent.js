@@ -160,6 +160,16 @@ function systemPrompt(threadId, session, phase = 'chat', known = []) {
 const PRELOADED = ['web_search', 'fetch_url'];
 // Tools for looking things up: a strong match for one of these doesn't stop find or Fresh from searching.
 const LOOKUP_TOOLS = ['web_search', 'fetch_url', 'wiki_lookup'];
+// Tools a message clearly asks for: named, or an intent phrase (find.js rankTools over 4), lookups aside (they're
+// declared already). The best one, and a second only when it scores close: a small model takes a list as a to-do.
+// Every mode hands these over up front, declared and named as ready to call: with them only listed by name, no
+// small model asked to "list my GitHub repos" ever called github_list_repos (failures.md case 16), and Fresh's
+// lookup, which already listed them, was the only mode that worked (case 15).
+export function fitTools(text, tools) {
+  const ranked = rankTools(String(text || ''), tools).filter(t => !LOOKUP_TOOLS.includes(t.name) && t.score > 4);
+  return ranked.filter(t => t.score >= ranked[0].score * 0.8).slice(0, 2);
+}
+
 function preloaded(tools) {
   if (!lite() || plain() || native()) return [];
   const names = new Set(tools.map(t => t.name));
@@ -290,6 +300,8 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
     // read by "What the model saw". Kept with "Save tool results and prompts" on (the default).
     if (settings.debugTools && turn.trace.convs.length) {
       reply.trace = `prompts/${session.id}/${uid('t')}.json`;
+      // Not awaited: the write queues behind the storage lock, and a turn that waited on it could stall behind a
+      // sync (the next message never sent, e2e 2026-11-09). The panel retries while the file lands.
       storage.write(reply.trace, JSON.stringify(turn.trace)).catch(e => console.warn('trace', e));
     }
     const saved = sessions.addMessage(session, reply);
@@ -447,7 +459,7 @@ class Turn {
     const { session, threadId, shown } = this;
     return assembleContext({
       line, session, threadId, query: shown, budget, mode: settings.contextMode,
-      system: systemPrompt(threadId, session), extra, focus,
+      system: systemPrompt(threadId, session, 'chat', this.fitNames()), extra, focus,
       // Smart mode recalls a few earlier messages (this chat's and, with the setting
       // on, other chats') and, for small models, memory facts into a labelled block
       // after the request (recall.js); only on a real question and above a bar.
@@ -461,11 +473,18 @@ class Turn {
   }
 
   // ── Chat phase: answer directly, or make a plan ─────────────────────────
+  // The tools this message clearly asks for, by name (fitTools), for the chat phase's `known`.
+  fitNames() {
+    if (this.fit === undefined) this.fit = fitTools(this.shown, phaseTools(false)).map(t => t.name);
+    return this.fit;
+  }
+
   async chat() {
     const tools = phaseTools(false);
-    const toolTokens = toolCost(tools);
-    checkOverhead(systemPrompt(this.threadId, this.session), toolTokens);
-    this.declaredNames = new Set(tools.map(t => t.name).filter(n => !gated() || GATE.includes(n)));
+    const fit = this.fitNames();
+    const toolTokens = toolCost(tools, fit);
+    checkOverhead(systemPrompt(this.threadId, this.session, 'chat', fit), toolTokens);
+    this.declaredNames = new Set(tools.map(t => t.name).filter(n => !gated() || GATE.includes(n) || fit.includes(n)));
     // History gets about half the window; the rest stays free for this turn's
     // tool results and the reply (a full window made turns fail at the start).
     // Small models get less: on a 4K phone window half left too little room for a lookup. (A quarter was
@@ -520,7 +539,7 @@ class Turn {
       for (const k of (this.prefetchedCalls || [])) this.seenCalls.set(k, 1);
     }
     if (seed) chatCalls = 1;   // the lookup counts as a call (an empty reply after it gets the nudge)
-    await this.open('Chat', { system: ctx.system, messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: preloaded(tools), gate: gated() ? GATE : null });
+    await this.open('Chat', { system: ctx.system, messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: [...new Set([...preloaded(tools), ...fit])], gate: gated() ? GATE : null });
     // "No, it's X" / "can you confirm that?": small models just agree. Search first and hand them the results.
     // (Fresh does this in its lookup.)
     const checked = fresh() ? '' : await this.checkClaim();
@@ -757,7 +776,7 @@ class Turn {
   async runStep(task, step) {
     this.seenCalls = new Map();
     const tools = phaseTools(true);
-    const known = [...new Set([...preloaded(tools), ...(task.tools || [])])];
+    const known = [...new Set([...preloaded(tools), ...(task.tools || []), ...fitTools(`${step.text}\n${task.goal}`, tools).map(t => t.name)])];
     const toolTokens = toolCost(tools, known);
     checkOverhead(systemPrompt(this.threadId, this.session, 'step', known), toolTokens);
     this.declaredNames = new Set(tools.map(t => t.name).filter(n => !gated() || GATE.includes(n) || known.includes(n)));
@@ -1132,8 +1151,7 @@ class Turn {
     // would list them: without them LFM2.5 1.2B, asked to pull a repo, saw only an unrelated old chat and went
     // web-searching (2026-11-09).
     // The best one, and a second only when it scores close to it: a small model takes a list as a to-do.
-    const ranked = rankTools(said, modelTools()).filter(t => !LOOKUP_TOOLS.includes(t.name) && t.score > 4);
-    const fit = ranked.filter(t => t.score >= ranked[0].score * 0.8).slice(0, 2);
+    const fit = fitTools(said, modelTools());
     const toolJob = fit.length > 0;
     const lookup = pushback || (!toolJob && !prefetchLib.doRequest(said));
     // Wikipedia and Wikidata when the question names someone or something, alongside the web search.

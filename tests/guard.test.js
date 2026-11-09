@@ -61,3 +61,8 @@ test('workflow file changes are detected', async () => {
   const { touchesWorkflows } = await import('../app/src/guard.js');
   assert.deepEqual(touchesWorkflows(['src/a.js', '.github/workflows/ci.yml', '.github/dependabot.yml', 'docs/.github/workflows/x.yml']), ['.github/workflows/ci.yml']);
 });
+
+test('parseRepo takes owner/name and github.com links, with or without https', () => {
+  for (const s of ['tester/app', 'https://github.com/tester/app', 'github.com/tester/app', 'GitHub.com/tester/app.git', 'www.github.com/tester/app/']) assert.deepEqual(parseRepo(s), { owner: 'tester', name: 'app' }, s);
+  assert.throws(() => parseRepo('tester'), /Use owner\/name/);
+});

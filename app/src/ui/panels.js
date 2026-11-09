@@ -207,7 +207,9 @@ function fullContext(m) {
   }
   const status = h('p', { class: 'muted' }, 'Loading…');
   box.append(status);
-  storage.read(m.trace).then((text) => {
+  // Written in the background as the reply finishes, so it may land a moment after the panel opens.
+  const readSoon = async (tries = 10) => { for (let i = 0; i < tries; i++) { const t = await storage.read(m.trace); if (t) return t; await new Promise(r => setTimeout(r, 300)); } return null; };
+  readSoon().then((text) => {
     let t = null;
     try { t = JSON.parse(text); } catch {}
     if (!t || !t.convs) { status.textContent = 'The saved context isn\'t on this device yet (it syncs with the chat).'; return; }

@@ -5,6 +5,12 @@
 //
 //   node tests/eval/run.mjs --model WQ06 [--mode smart|fresh|compact] [--small 0|1] [--ctx 4096]
 //        [--cases 1,2,10] [--timeout 300] [--no-live] [--out docs/evals/WQ06-fresh.json] [--verbose] [--fake]
+//        [--llm http://127.0.0.1:8711]
+//
+// --llm runs a WebLLM model (raw tool formats: LFM2.5 1.2B, the phone default) on native llama.cpp instead of
+// WebGPU, so a machine with no GPU (CI, a cloud box) can run the phone model at a usable speed: the app, the
+// agent and the model's own prompt format are the real ones; only the completion is swapped
+// (tests/eval/llm_server.py, tests/eval/native-webllm.js).
 //
 // Needs a WebGPU device for the GPU models (WLF12, WQ06, TG4A's MLC build) or a few cores for the CPU ones; the
 // model downloads once into a persistent profile in the OS temp dir, like tests/e2e/model-drive.mjs. The real web
@@ -34,17 +40,29 @@ const cases = spec.cases.filter(c => !ONLY || ONLY.has(c.id));
 
 const profile = join(tmpdir(), `squiggle-drive-${has('--fake') ? 'fake' : MODEL}`); mkdirSync(profile, { recursive: true });
 const root = makeGitRoot(); makeRepo(root, 'tester', 'state', { 'README.md': '# state\n' });
+makeRepo(root, 'tester', 'app', { 'README.md': '# app\nA test app.\n', 'src/index.js': 'console.log("hi")\n' });
+// The repos the GitHub App "can reach" (github_list_repos; git_clone completes partial names from them).
+const REPOS = [['tester/app', 'A test app', false], ['tester/bubbles', 'Bubble physics toy', false], ['tester/state', 'Squiggle storage', true]]
+  .map(([f, d, p]) => ({ full_name: f, name: f.split('/')[1], owner: { login: 'tester' }, private: p, default_branch: 'main', description: d }));
 const { appUrl, close } = await start(root, {}, { liveWeb: LIVE });
 const ctx = await chromium.launchPersistentContext(profile, { viewport: { width: 1280, height: 800 }, args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan'] });
 await ctx.route('https://api.github.com/**', async (route) => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET,POST' };
   if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
-  if (new URL(route.request().url()).pathname === '/user') return route.fulfill({ status: 200, headers: cors, contentType: 'application/json', body: JSON.stringify({ login: 'tester', id: 42, name: 'Test Er' }) });
-  return route.fulfill({ status: 404, headers: cors, contentType: 'application/json', body: '{"message":"Not Found"}' });
+  const p = new URL(route.request().url()).pathname;
+  const body = p === '/user' ? { login: 'tester', id: 42, name: 'Test Er' } : p === '/user/installations' ? { installations: [{ id: 1, account: { login: 'tester' } }] }
+    : p === '/user/installations/1/repositories' ? { total_count: REPOS.length, repositories: REPOS } : null;
+  return route.fulfill({ status: body ? 200 : 404, headers: cors, contentType: 'application/json', body: JSON.stringify(body || { message: 'Not Found' }) });
 });
+// --llm: WebLLM's completions go to native llama.cpp (see the top of this file).
+const LLM = arg('--llm', '');
+if (LLM) {
+  await ctx.route(/cdn\.jsdelivr\.net\/npm\/@mlc-ai\/web-llm@/, r => r.fulfill({ contentType: 'text/javascript', headers: { 'Access-Control-Allow-Origin': '*' }, body: readFileSync(new URL('./native-webllm.js', import.meta.url), 'utf8') }));
+}
 // --fake swaps in the e2e suite's scripted engine: for checking the runner itself, not a model.
 if (has('--fake')) await ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: readFileSync(new URL('../e2e/fake-engine.js', import.meta.url)) }));
 const page = ctx.pages()[0] || await ctx.newPage();
+if (LLM) await page.exposeFunction('__llm', async (body) => (await fetch(LLM, { method: 'POST', body })).text());
 const errors = [];
 page.on('pageerror', e => errors.push('pageerror: ' + String(e).slice(0, 300)));
 page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text().slice(0, 300)); if (VERBOSE) console.log('  [' + m.type() + '] ' + m.text().slice(0, 200)); });

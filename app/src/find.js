@@ -81,7 +81,9 @@ const INTENTS = [
   [/\b(git status|what changed|what'?s changed|modified files|uncommitted|dirty|diff)\b/, { git_status: 4 }],
   [/\b(git log|recent commits|commit history|commits)\b/, { git_log: 4 }],
   [/\b(pull request|open a pr|make a pr|pr for)\b/, { github_open_pr: 5 }],
-  [/\b(my repos|list (my )?repos|which repos|what repos|repositories)\b/, { github_list_repos: 4 }],
+  // "List my GitHub repos" fell through every one of these (a word between "my" and "repos"), and no model was
+  // handed github_list_repos (failures.md case 16).
+  [/\b((list|show|see|get|what are|which are)\b.{0,24}\brepo(s|sitories)\b|my (\w+ )?(repos|repositories)\b|which repos|what repos|repositories)\b/, { github_list_repos: 6 }],
   [/\bgit\b/, { 'git_*': 1.5 }],
   [/\b(calculate|compute|math|sum of|average|total|percent|percentage|how much (is|are|would|will|does|do)|how many days|convert|times|plus|minus|divided|multiply|split .* (ways|between))\b|\d\s*[-+*/x×÷^%]\s*\d|\$\s?\d/, { calculate: 6 }],
   [/\b(javascript|js code|run (this |some )?code|regex|parse (this|the)|sort)\b/, { run_js: 4 }],

@@ -54,6 +54,9 @@
       "expect": "Lima", "reject": "^(The capital of Peru is Lima)" },
     { "id": 17, "name": "Casebook 15: asked to pull a repo, it clones that repo (not a web search, not another repo)",
       "messages": ["Can you pull github.com/tester/app"],
-      "tools": ["git_clone"], "noTools": ["web_search"], "reject": "squiggle" }
+      "tools": ["git_clone"], "noTools": ["web_search"], "reject": "squiggle" },
+    { "id": 18, "name": "Casebook 16: \"list my GitHub repos\" lists them with the tool, not the web",
+      "messages": ["List my GitHub repos"],
+      "tools": ["github_list_repos"], "noTools": ["web_search", "fetch_url"], "expect": "tester/app" }
   ]
 }

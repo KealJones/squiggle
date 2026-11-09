@@ -65,7 +65,7 @@ The part built for people who care about retrieval.
   being often wrong; both prove the pipeline. The stock small models (Qwen3, Qwen3.5, LFM2.5, LFM3) run
   through their own tool formats on llama.cpp (WASM) or MLC (WebGPU), with a few schemas declared up front
   and the rest looked up by name, because every schema at once was 99% of a 4K window.
-- **The failure casebook** ([docs/failures.md](docs/failures.md)): 15 real bad answers, each with the chat id,
+- **The failure casebook** ([docs/failures.md](docs/failures.md)): 16 real bad answers, each with the chat id,
   the model, why it's wrong, the fix, and the unit test that now catches it. The bad answers are never put in
   a prompt or trained on; each pair is a preference pair for the next fine-tune. The same cases run as an
   eval against any model (`node tests/eval/run.mjs --model WQ06 --mode fresh`).

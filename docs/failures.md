@@ -214,3 +214,31 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   as "Tools for this (ready to call)" and returns their names, which declares them for gated models, and tells
   the model not to search the web for it (agent.js `prefetch`, prefetch.js `render`).
 - **Caught by:** tests/prefetch.test.js and tests/find.test.js "case 15"; e2e "Fresh context"; eval case 17.
+
+### 16. "List my GitHub repos": no small model ever listed them
+
+- **Asked:** "List my GitHub repos" and close variants ("can you list my github repos", "list my repos"), 2026-11-09.
+- **Models:** LFM2.5 1.2B (WLF12; Compress and Fresh, chats `s0mw9ng3v2000bw85c`, `s0mw9mwjpz000damii`,
+  `s0mw9o0q6d000scn4k`, `s0mw9qckwz000u38nj`), Squiggle Small (`s0mw9nsex6000wgf0m`, `s0mw9odtia0007yn1j`), Qwen3 0.6B
+  on the CPU and on WebLLM (`s0mw9oexxp000rb2ah`, `s0mw9oh9y6000107e6`), Qwen3.5 0.8B (`s0mw9p2wfg000233vy`), tiny Gemma 4
+  heal 4 (`s0mw9obewv000uown1`, `s0mw9ocnbg0006bcdl`). Gemma 4 26B on the relay (`s0mw9nyfiv00050042`) and Gemma 4 E4B
+  (`s0mvpupefy000y1mde`) did list them.
+- **What they did:** web searches for "list GitHub repositories" (and answered from a WordPress plugin page),
+  `list_files("/")` ("your repositories are in /repos/"), a made-up `https://github.com/user/repos`, `need` restating the
+  request, "I don't have access to your GitHub account", or `tool_info(github_list_repos)` followed by a promise
+  instead of the call.
+- **Why it's bad:** the tool exists and is one call. Every big model, which sees every schema, used it; every
+  small one, which sees `github_list_repos` only as a name in the "Other tools" line, didn't. Two harness causes:
+  find's intent for it (`my repos`, `list (my )?repos`) missed "my GitHub repos", so neither `find` nor Fresh's
+  lookup offered it; and outside Fresh nothing ever put a matching tool's schema in front of a gated model.
+- **Good answer:** `github_list_repos()`, then the list.
+- **Fix:** the intent covers "list/show/see … repos" and "my … repos"; every mode declares the one or two tools a
+  message clearly asks for (agent.js `fitTools`, find's score over 4, lookups aside), and names them as ready to
+  call, for the chat phase and for each plan step. The same run turned up the next failure: asked to pull
+  github.com/tester/app, LFM2.5 1.2B called `git_clone(repo="tester")`; a part of a repo name is now completed when
+  one repo fits, from the user's message and then the repos the app can reach (guard.js `completeRepo`), and the
+  result says what it was taken as.
+- **Checked on the real model:** LFM2.5 1.2B through the real app with its own LFM2 prompt format, on native
+  llama.cpp (tests/eval/run.mjs `--llm`): "List my GitHub repos" now calls `github_list_repos` in Compress, Smart
+  and Fresh; "pull github.com/tester/app" clones tester/app in Fresh (in Compress it listed the repos instead).
+- **Caught by:** tests/find.test.js, tests/tools-git-resolve.test.js "case 16", tests/guard.test.js; eval case 18.
