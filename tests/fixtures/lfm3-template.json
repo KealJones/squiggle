@@ -1,0 +1,752 @@
+{
+ "off": {
+  "system and user, no tools": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok."
+    },
+    {
+     "role": "user",
+     "content": "hi there"
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.<|im_end|>\n<|im_start|>user\nhi there<|im_end|>\n<|im_start|>assistant\n<think></think>"
+  },
+  "tools in the system turn": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok."
+    },
+    {
+     "role": "user",
+     "content": "weather in phoenix?"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for, e.g. \"weather in Phoenix\""
+       },
+       "count": {
+        "type": "integer",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "tool_info",
+     "description": "Get the full schemas of tools by name.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "names": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      },
+      "required": [
+       "names"
+      ]
+     }
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.\n\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for, e.g. \\\"weather in Phoenix\\\"\"}, \"count\": {\"type\": \"integer\", \"description\": \"How many results\"}}, \"required\": [\"query\"]}}\n{\"name\": \"tool_info\", \"description\": \"Get the full schemas of tools by name.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"names\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"names\"]}}\n</tools><|im_end|>\n<|im_start|>user\nweather in phoenix?<|im_end|>\n<|im_start|>assistant\n<think></think>"
+  },
+  "tools without a system message": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "weather in phoenix?"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for, e.g. \"weather in Phoenix\""
+       },
+       "count": {
+        "type": "integer",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   ],
+   "expected": "<|im_start|>system\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for, e.g. \\\"weather in Phoenix\\\"\"}, \"count\": {\"type\": \"integer\", \"description\": \"How many results\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\nweather in phoenix?<|im_end|>\n<|im_start|>assistant\n<think></think>"
+  },
+  "a call, its result, then the reply is due": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok."
+    },
+    {
+     "role": "user",
+     "content": "weather in phoenix?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "c1",
+       "type": "function",
+       "function": {
+        "name": "web_search",
+        "arguments": {
+         "query": "phoenix weather now",
+         "count": 3
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "c1",
+     "content": "{\"results\": [{\"title\": \"Phoenix, AZ\", \"snippet\": \"61°F, light rain\"}]}"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for, e.g. \"weather in Phoenix\""
+       },
+       "count": {
+        "type": "integer",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.\n\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for, e.g. \\\"weather in Phoenix\\\"\"}, \"count\": {\"type\": \"integer\", \"description\": \"How many results\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\nweather in phoenix?<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=web_search>\n<parameter=query>\nphoenix weather now\n</parameter>\n<parameter=count>\n3\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\n{\"results\": [{\"title\": \"Phoenix, AZ\", \"snippet\": \"61°F, light rain\"}]}\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>"
+  },
+  "argument kinds: quotes, newlines, backslashes, lists, objects, booleans, null, numbers": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "go"
+    },
+    {
+     "role": "assistant",
+     "content": "Checking.",
+     "tool_calls": [
+      {
+       "id": "c1",
+       "type": "function",
+       "function": {
+        "name": "tool_info",
+        "arguments": {
+         "names": [
+          "recall",
+          "grep"
+         ]
+        }
+       }
+      },
+      {
+       "id": "c2",
+       "type": "function",
+       "function": {
+        "name": "web_search",
+        "arguments": {
+         "query": "it's a \"test\"\nline two \\ done",
+         "count": 2.5,
+         "safe": true,
+         "region": null,
+         "opts": {
+          "a": 1,
+          "b": [
+           true,
+           null
+          ]
+         }
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "content": "ok 1"
+    },
+    {
+     "role": "tool",
+     "content": "ok 2"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for, e.g. \"weather in Phoenix\""
+       },
+       "count": {
+        "type": "integer",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "tool_info",
+     "description": "Get the full schemas of tools by name.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "names": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      },
+      "required": [
+       "names"
+      ]
+     }
+    }
+   ],
+   "expected": "<|im_start|>system\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for, e.g. \\\"weather in Phoenix\\\"\"}, \"count\": {\"type\": \"integer\", \"description\": \"How many results\"}}, \"required\": [\"query\"]}}\n{\"name\": \"tool_info\", \"description\": \"Get the full schemas of tools by name.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"names\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"names\"]}}\n</tools><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think></think>Checking.<tool_call>\n<function=tool_info>\n<parameter=names>\n[\"recall\", \"grep\"]\n</parameter>\n</function>\n</tool_call>\n\n<tool_call>\n<function=web_search>\n<parameter=query>\nit's a \"test\"\nline two \\ done\n</parameter>\n<parameter=count>\n2.5\n</parameter>\n<parameter=safe>\ntrue\n</parameter>\n<parameter=region>\nnull\n</parameter>\n<parameter=opts>\n{\"a\": 1, \"b\": [true, null]}\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\nok 1\n</tool_response><|im_end|>\n<|im_start|>tool\n<tool_response>\nok 2\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>"
+  },
+  "a finished exchange, then a new question": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok."
+    },
+    {
+     "role": "user",
+     "content": "weather?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "c1",
+       "type": "function",
+       "function": {
+        "name": "web_search",
+        "arguments": {
+         "query": "weather"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "content": "61°F"
+    },
+    {
+     "role": "assistant",
+     "content": "It's 61°F and rainy."
+    },
+    {
+     "role": "user",
+     "content": "and tomorrow?"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for, e.g. \"weather in Phoenix\""
+       },
+       "count": {
+        "type": "integer",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.\n\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for, e.g. \\\"weather in Phoenix\\\"\"}, \"count\": {\"type\": \"integer\", \"description\": \"How many results\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\nweather?<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=web_search>\n<parameter=query>\nweather\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\n61°F\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>It's 61°F and rainy.<|im_end|>\n<|im_start|>user\nand tomorrow?<|im_end|>\n<|im_start|>assistant\n<think></think>"
+  },
+  "thinking kept only on the last assistant turn": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "a"
+    },
+    {
+     "role": "assistant",
+     "content": "<think>old</think>first answer"
+    },
+    {
+     "role": "user",
+     "content": "b"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "reasoning_content": "look it up",
+     "tool_calls": [
+      {
+       "id": "c1",
+       "type": "function",
+       "function": {
+        "name": "web_search",
+        "arguments": {
+         "query": "b"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "content": "B!"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for, e.g. \"weather in Phoenix\""
+       },
+       "count": {
+        "type": "integer",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   ],
+   "expected": "<|im_start|>system\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for, e.g. \\\"weather in Phoenix\\\"\"}, \"count\": {\"type\": \"integer\", \"description\": \"How many results\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\na<|im_end|>\n<|im_start|>assistant\n<think></think>first answer<|im_end|>\n<|im_start|>user\nb<|im_end|>\n<|im_start|>assistant\n<think>look it up</think><tool_call>\n<function=web_search>\n<parameter=query>\nb\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\nB!\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>"
+  }
+ },
+ "on": {
+  "system and user, no tools": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok."
+    },
+    {
+     "role": "user",
+     "content": "hi there"
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.<|im_end|>\n<|im_start|>user\nhi there<|im_end|>\n<|im_start|>assistant\n<think>"
+  },
+  "tools in the system turn": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok."
+    },
+    {
+     "role": "user",
+     "content": "weather in phoenix?"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for, e.g. \"weather in Phoenix\""
+       },
+       "count": {
+        "type": "integer",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "tool_info",
+     "description": "Get the full schemas of tools by name.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "names": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      },
+      "required": [
+       "names"
+      ]
+     }
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.\n\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for, e.g. \\\"weather in Phoenix\\\"\"}, \"count\": {\"type\": \"integer\", \"description\": \"How many results\"}}, \"required\": [\"query\"]}}\n{\"name\": \"tool_info\", \"description\": \"Get the full schemas of tools by name.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"names\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"names\"]}}\n</tools><|im_end|>\n<|im_start|>user\nweather in phoenix?<|im_end|>\n<|im_start|>assistant\n<think>"
+  },
+  "tools without a system message": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "weather in phoenix?"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for, e.g. \"weather in Phoenix\""
+       },
+       "count": {
+        "type": "integer",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   ],
+   "expected": "<|im_start|>system\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for, e.g. \\\"weather in Phoenix\\\"\"}, \"count\": {\"type\": \"integer\", \"description\": \"How many results\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\nweather in phoenix?<|im_end|>\n<|im_start|>assistant\n<think>"
+  },
+  "a call, its result, then the reply is due": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok."
+    },
+    {
+     "role": "user",
+     "content": "weather in phoenix?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "c1",
+       "type": "function",
+       "function": {
+        "name": "web_search",
+        "arguments": {
+         "query": "phoenix weather now",
+         "count": 3
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "c1",
+     "content": "{\"results\": [{\"title\": \"Phoenix, AZ\", \"snippet\": \"61°F, light rain\"}]}"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for, e.g. \"weather in Phoenix\""
+       },
+       "count": {
+        "type": "integer",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.\n\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for, e.g. \\\"weather in Phoenix\\\"\"}, \"count\": {\"type\": \"integer\", \"description\": \"How many results\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\nweather in phoenix?<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=web_search>\n<parameter=query>\nphoenix weather now\n</parameter>\n<parameter=count>\n3\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\n{\"results\": [{\"title\": \"Phoenix, AZ\", \"snippet\": \"61°F, light rain\"}]}\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>"
+  },
+  "argument kinds: quotes, newlines, backslashes, lists, objects, booleans, null, numbers": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "go"
+    },
+    {
+     "role": "assistant",
+     "content": "Checking.",
+     "tool_calls": [
+      {
+       "id": "c1",
+       "type": "function",
+       "function": {
+        "name": "tool_info",
+        "arguments": {
+         "names": [
+          "recall",
+          "grep"
+         ]
+        }
+       }
+      },
+      {
+       "id": "c2",
+       "type": "function",
+       "function": {
+        "name": "web_search",
+        "arguments": {
+         "query": "it's a \"test\"\nline two \\ done",
+         "count": 2.5,
+         "safe": true,
+         "region": null,
+         "opts": {
+          "a": 1,
+          "b": [
+           true,
+           null
+          ]
+         }
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "content": "ok 1"
+    },
+    {
+     "role": "tool",
+     "content": "ok 2"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for, e.g. \"weather in Phoenix\""
+       },
+       "count": {
+        "type": "integer",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "tool_info",
+     "description": "Get the full schemas of tools by name.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "names": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      },
+      "required": [
+       "names"
+      ]
+     }
+    }
+   ],
+   "expected": "<|im_start|>system\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for, e.g. \\\"weather in Phoenix\\\"\"}, \"count\": {\"type\": \"integer\", \"description\": \"How many results\"}}, \"required\": [\"query\"]}}\n{\"name\": \"tool_info\", \"description\": \"Get the full schemas of tools by name.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"names\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}}, \"required\": [\"names\"]}}\n</tools><|im_end|>\n<|im_start|>user\ngo<|im_end|>\n<|im_start|>assistant\n<think></think>Checking.<tool_call>\n<function=tool_info>\n<parameter=names>\n[\"recall\", \"grep\"]\n</parameter>\n</function>\n</tool_call>\n\n<tool_call>\n<function=web_search>\n<parameter=query>\nit's a \"test\"\nline two \\ done\n</parameter>\n<parameter=count>\n2.5\n</parameter>\n<parameter=safe>\ntrue\n</parameter>\n<parameter=region>\nnull\n</parameter>\n<parameter=opts>\n{\"a\": 1, \"b\": [true, null]}\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\nok 1\n</tool_response><|im_end|>\n<|im_start|>tool\n<tool_response>\nok 2\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>"
+  },
+  "a finished exchange, then a new question": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok."
+    },
+    {
+     "role": "user",
+     "content": "weather?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "c1",
+       "type": "function",
+       "function": {
+        "name": "web_search",
+        "arguments": {
+         "query": "weather"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "content": "61°F"
+    },
+    {
+     "role": "assistant",
+     "content": "It's 61°F and rainy."
+    },
+    {
+     "role": "user",
+     "content": "and tomorrow?"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for, e.g. \"weather in Phoenix\""
+       },
+       "count": {
+        "type": "integer",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.\n\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for, e.g. \\\"weather in Phoenix\\\"\"}, \"count\": {\"type\": \"integer\", \"description\": \"How many results\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\nweather?<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=web_search>\n<parameter=query>\nweather\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\n61°F\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>It's 61°F and rainy.<|im_end|>\n<|im_start|>user\nand tomorrow?<|im_end|>\n<|im_start|>assistant\n<think>"
+  },
+  "thinking kept only on the last assistant turn": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "a"
+    },
+    {
+     "role": "assistant",
+     "content": "<think>old</think>first answer"
+    },
+    {
+     "role": "user",
+     "content": "b"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "reasoning_content": "look it up",
+     "tool_calls": [
+      {
+       "id": "c1",
+       "type": "function",
+       "function": {
+        "name": "web_search",
+        "arguments": {
+         "query": "b"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "content": "B!"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for, e.g. \"weather in Phoenix\""
+       },
+       "count": {
+        "type": "integer",
+        "description": "How many results"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    }
+   ],
+   "expected": "<|im_start|>system\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for, e.g. \\\"weather in Phoenix\\\"\"}, \"count\": {\"type\": \"integer\", \"description\": \"How many results\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\na<|im_end|>\n<|im_start|>assistant\n<think></think>first answer<|im_end|>\n<|im_start|>user\nb<|im_end|>\n<|im_start|>assistant\n<think>look it up</think><tool_call>\n<function=web_search>\n<parameter=query>\nb\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\nB!\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>"
+  }
+ }
+}

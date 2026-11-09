@@ -5,13 +5,15 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { toolFormat, toolFormats, registerToolFormat, PLAIN } from '../app/src/toolformats/index.js';
 import { lfm2Prompt, parseLfmCalls, pyJson } from '../app/src/toolformats/lfm2.js';
+import { lfm3Prompt, lfm3 } from '../app/src/toolformats/lfm3.js';
 import { createShim, setVersion, versionFor, DEFAULT_VERSION } from '../app/src/engine-webllm.js';
 import { NativeConversation } from '../app/src/engine-wllama.js';
 
 const LFM = JSON.parse(readFileSync(new URL('./fixtures/lfm2-template.json', import.meta.url), 'utf8'));
+const LFM3 = JSON.parse(readFileSync(new URL('./fixtures/lfm3-template.json', import.meta.url), 'utf8'));
 
 test('the registry has every built-in format, each with the parts the shim needs', () => {
-  assert.deepEqual(toolFormats().sort(), ['gemma4', 'lfm2', 'qwen3', 'qwen35']);
+  assert.deepEqual(toolFormats().sort(), ['gemma4', 'lfm2', 'lfm3', 'qwen3', 'qwen35']);
   for (const id of toolFormats()) {
     const f = toolFormat(id);
     assert.ok(f.mode === 'chat' ? typeof f.messages === 'function' : typeof f.prompt === 'function' && Array.isArray(f.stop), id);
@@ -162,4 +164,23 @@ test('runtimes whose format doesn\'t list names get no tool_names (Qwen on WebLL
   for await (const x of conv.sendMessageStreaming('hi')) void x;
   const sys = seen[0].messages[0].content;
   assert.ok(sys.includes('"name":"web_search"') && !sys.includes('run_js'));
+});
+
+test('lfm3Prompt matches LFM3\'s own chat template exactly, thinking off and on (<tools> block, XML calls, <tool_response>, kept thinking)', () => {
+  for (const [mode, cases] of Object.entries(LFM3)) for (const [name, c] of Object.entries(cases)) {
+    const opts = { thinking: mode === 'on' };
+    assert.equal(lfm3Prompt(c.messages, c.tools || [], opts), c.expected, `${mode}: ${name}`);
+    const s = asSquiggle(c);
+    assert.equal(lfm3Prompt(s.messages, s.tools, opts), c.expected, `${mode}: ${name} (Squiggle shapes)`);
+  }
+});
+
+test('lfm3: gated tools go in the <tools> block by name; calls read back through the Qwen3.5 parser; the reply starts inside <think> when thinking is on', () => {
+  const p = lfm3Prompt([{ role: 'user', content: 'hi' }], TOOLS, { thinking: false, names: ['run_js'] });
+  assert.ok(p.includes('</parameters>') === false && p.includes('\n{"name": "run_js"}\n</tools><|im_end|>'), p);
+  assert.deepEqual(lfm3.parseCalls('<tool_call>\n<function=run_js>\n<parameter=code>\nconsole.log(1)\n</parameter>\n</function>\n</tool_call>'), [{ name: 'run_js', arguments: { code: 'console.log(1)' } }]);
+  const on = lfm3.prompt([{ role: 'user', content: 'hi' }], [], { thinking: true });
+  assert.deepEqual(lfm3.split('I should just say hi.</think>Hello!', { prompt: on }), { thinking: 'I should just say hi.', text: 'Hello!' });
+  const off = lfm3.prompt([{ role: 'user', content: 'hi' }], [], { thinking: false });
+  assert.deepEqual(lfm3.split('Hello!', { prompt: off }), { thinking: '', text: 'Hello!' });
 });
