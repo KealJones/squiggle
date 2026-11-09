@@ -207,7 +207,7 @@ export function renderSettingsPanel() {
 
     section('Lab',
       switchRow('Lab mode', 'Shows the research models (size tests, stock small models, older builds) and the experimental switches: the bare-prompt test, GPU and all cores for CPU models, AI-managed context. Also ?lab=1 in the address. See docs/lab.md for what each one was for.', Boolean(S.lab), (e) => { S.lab = e.target.checked; engine.setLab(S.lab); saveSettings(); renderSettingsPanel(); }),
-      switchRow('Save tool results', 'Keeps what each tool returned (search results, pages, find) with the reply, under "Result" in its tool list. On by default: it\'s the evidence the failure casebook is written from. Saved in your storage repo with the chat; long results are cut at 12,000 characters. Applies from the next message.', S.debugTools, (e) => { S.debugTools = e.target.checked; saveSettings(); }),
+      switchRow('Save tool results and prompts', 'Keeps what each tool returned (under "Result" in a reply\'s tool list) and everything the model was sent: system prompt, tool schemas, messages and each round, in "What the model saw". On by default: it\'s the evidence the failure casebook is written from. Saved in your storage repo (the full context in its own file per reply, prompts/); long results are cut. Applies from the next message.', S.debugTools, (e) => { S.debugTools = e.target.checked; saveSettings(); }),
     ),
 
     section('This device',

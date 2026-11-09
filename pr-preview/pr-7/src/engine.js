@@ -31,7 +31,10 @@ export const MODELS = {
   // KV settings (docs/measurements-2026-11-04.md; 1.2 GB with llama.cpp's defaults). Thinking is budgeted (generationFor).
   Q06: { label: 'Qwen3 0.6B', size: '382 MB', experimental: true, lab: true, note: 'stock Qwen3 0.6B with tools in its own format (no Squiggle training): the smallest model here that uses tools, and it stays under 1 GB of memory on a phone. Thinks before answering, so it\'s slow. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, family: 'qwen3',
     url: HF + 'unsloth/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_0.gguf', bytes: 382156480 },
-  LF12: { label: 'Test: LFM2.5 1.2B', size: '696 MB', experimental: true, lab: true, note: 'phone size test: Squiggle Small\'s bigger sibling (1.2B). Chat only, no tools', phone: true, runtime: 'wllama',
+  // The phone default's weights on the CPU (llama.cpp WASM): tools through the GGUF's own LFM2 template, so a
+  // machine without WebGPU (and the eval runner on a CI box, tests/eval/run.mjs) can run what phones run. The
+  // renderer differs from the phone's (jinja here, toolformats/lfm2.js there, pinned to the same template).
+  LF12: { label: 'Test: LFM2.5 1.2B (CPU)', size: '696 MB', experimental: true, lab: true, note: 'the phone default\'s model on the CPU, tools in its own format: for computers without WebGPU and for testing. Slower than the GPU build', phone: true, runtime: 'wllama', tools: true, native: true, family: 'lfm2', thinking: false,
     url: HF + 'LiquidAI/LFM2.5-1.2B-Instruct-GGUF/resolve/main/LFM2.5-1.2B-Instruct-Q4_0.gguf', bytes: 695751488 },
   LL1: { label: 'Test: Llama 3.2 1B', size: '773 MB', experimental: true, lab: true, note: 'phone size test: probably right at the edge. Chat only, no tools', phone: true, runtime: 'wllama',
     url: HF + 'unsloth/Llama-3.2-1B-Instruct-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_0.gguf', bytes: 773025824 },
