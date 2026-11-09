@@ -18,7 +18,8 @@ import { toolSpecs, listTools, runTool } from './tools.js';
 import { UNTRUSTED_RULES, wrapUntrusted } from './untrusted.js';
 import { embed, embedReady } from './embed.js';
 import { bm25, tokenize } from './search.js';
-import { estTokens, truncate } from './util.js';
+import { estTokens, truncate, uid } from './util.js';
+import { createTrace, openConv, addRound, takeRendered } from './trace.js';
 import { parseJsonl } from './merge.js';
 import { attachmentPrompt, saveAttachments, toRecord } from './attachments.js';
 
@@ -285,6 +286,12 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
     if (turn.thinking) reply.thinking = turn.thinking.slice(-20000); // shown in the UI only; never replayed to the model
     if (turn.task) reply.task = turn.task.id;
     if (signal?.aborted && !reply.content) reply.content = '_(stopped)_';
+    // The whole context, exactly as sent, in its own file (it's big: system prompts, every schema, every result),
+    // read by "What the model saw". Kept with "Save tool results and prompts" on (the default).
+    if (settings.debugTools && turn.trace.convs.length) {
+      reply.trace = `prompts/${session.id}/${uid('t')}.json`;
+      storage.write(reply.trace, JSON.stringify(turn.trace)).catch(e => console.warn('trace', e));
+    }
     const saved = sessions.addMessage(session, reply);
     ui.onDone && ui.onDone(saved);
     if (session.title === 'New chat' && !threadId) nameSession(session);
@@ -308,6 +315,8 @@ class Turn {
   constructor({ session, threadId, shown, attachments, ui, signal, userMsg }) {
     Object.assign(this, { session, threadId, shown, attachments, ui, signal, userMsg });
     this.reply = { role: 'assistant', content: '', thread: threadId, tools: [], context: null };
+    this.trace = createTrace();   // the whole context, exactly as sent (trace.js); saved with the reply
+    this.pendingAdded = [];
     this.prefix = '';        // the reply text so far
     this.thinking = '';      // thinking + step narration (UI only)
     this.calls = 0;          // tool calls this turn (check-ins every CHECK_IN_EVERY)
@@ -384,13 +393,33 @@ class Turn {
     return saved;
   }
 
+  // Opens the model conversation for a phase and records it in the trace: the system prompt, the tools given to
+  // the engine and which of them the model sees in full (gated small models: the GATE set and what's known; the
+  // fenced format: names only, details through find), and the messages it starts with.
+  async open(phase, cfg) {
+    const names = (cfg.tools || []).map(t => t.name);
+    const declared = !(cfg.tools || []).length ? [] : lite() && !native() ? [] : cfg.gate ? names.filter(n => cfg.gate.includes(n) || (cfg.known || []).includes(n)) : null;
+    openConv(this.trace, { phase, system: cfg.system, tools: cfg.tools || [], declared, messages: cfg.messages || [], model: (engine.MODELS[settings.model] || {}).label || settings.model });
+    takeRendered();
+    this.conv = await engine.conversation(cfg);
+    return this.conv;
+  }
+
   async respond(input, { show = true } = {}) {
     const base = this.thinking;
-    const r = await engine.respond(this.conv, input, {
-      signal: this.signal,
-      onText: (t) => { if (show) this.ui.onText && this.ui.onText(this.prefix + t); },
-      onThinking: (t) => this.ui.onThinking && this.ui.onThinking((base ? base + '\n\n' : '') + t),
-    });
+    const added = this.pendingAdded; this.pendingAdded = [];
+    let r;
+    try {
+      r = await engine.respond(this.conv, input, {
+        signal: this.signal,
+        onText: (t) => { if (show) this.ui.onText && this.ui.onText(this.prefix + t); },
+        onThinking: (t) => this.ui.onThinking && this.ui.onThinking((base ? base + '\n\n' : '') + t),
+      });
+    } catch (e) {
+      addRound(this.trace, { input, output: { text: `(failed: ${e && e.message || e})` }, rendered: takeRendered(), added });
+      throw e;
+    }
+    addRound(this.trace, { input, output: r, rendered: takeRendered(), added });
     if (r.thinking && r.thinking.trim()) this.thinking = (base ? base + '\n\n' : '') + r.thinking.trim();
     r.saved = this.trimJunk(input, r);
     return r;
@@ -491,7 +520,7 @@ class Turn {
       for (const k of (this.prefetchedCalls || [])) this.seenCalls.set(k, 1);
     }
     if (seed) chatCalls = 1;   // the lookup counts as a call (an empty reply after it gets the nudge)
-    this.conv = await engine.conversation({ system: ctx.system, messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: preloaded(tools), gate: gated() ? GATE : null });
+    await this.open('Chat', { system: ctx.system, messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: preloaded(tools), gate: gated() ? GATE : null });
     // "No, it's X" / "can you confirm that?": small models just agree. Search first and hand them the results.
     // (Fresh does this in its lookup.)
     const checked = fresh() ? '' : await this.checkClaim();
@@ -710,6 +739,7 @@ class Turn {
     const add = tools.filter(t => names.includes(t.name) && !this.declaredNames.has(t.name));
     if (!add.length) return 0;
     for (const t of add) this.declaredNames.add(t.name);
+    this.pendingAdded.push(...add.map(t => t.name));   // the trace notes them with the next input
     const n = estTokens(JSON.stringify(add));
     const w = this.reply.context && this.reply.context.window;
     if (w) w.parts.tools += n;
@@ -741,7 +771,7 @@ class Turn {
     this.reply.context = { mode: 'step', budget: settings.contextSize, used: estTokens(system),
       items: [{ kind: 'plan', label: `Step ${n}: ${truncate(step.text, 80)} (goal, plan and results)`, tokens: estTokens(tasks.stepSystem('', task)) },
         ...sections.filter(x => prompt.shown.includes(x.title)).map(x => ({ kind: 'section', label: x.title, tokens: estTokens(x.text) }))] };
-    this.conv = await engine.conversation({ system, messages: [], tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known, gate: gated() ? GATE : null });
+    await this.open(`Step ${n}: ${step.text}`, { system, messages: [], tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known, gate: gated() ? GATE : null });
     const reserve = Math.min(MAX_OUTPUT, 700);
     const d = dialect();
     let pending = tasks.stepUser(task, { dialect: d });
@@ -880,7 +910,7 @@ class Turn {
     this.finishedNow = true;
     this.ui.onPlan && this.ui.onPlan(task);
     const maxTokens = Math.max(600, settings.contextSize - Math.min(MAX_OUTPUT, 1024) - 300);
-    this.conv = await engine.conversation({ system: tasks.finalSystem(systemPrompt(this.threadId, this.session, 'final'), task, { maxTokens }), messages: [], tools: [], maxOutputTokens: MAX_OUTPUT });
+    await this.open('Final reply', { system: tasks.finalSystem(systemPrompt(this.threadId, this.session, 'final'), task, { maxTokens }), messages: [], tools: [], maxOutputTokens: MAX_OUTPUT });
     if (this.prefix && !/\n\n$/.test(this.prefix)) this.prefix += '\n\n';
     const r = await this.respond(tasks.finalUser(task, { dialect: dialect() }));
     this.prefix += r.text || '';

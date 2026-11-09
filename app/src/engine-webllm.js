@@ -12,6 +12,7 @@ import { toolFormat, PLAIN } from './toolformats/index.js';
 import { heldBack } from './toolformats/text.js';
 
 // Older names, kept for the tests and anything importing them from here.
+import { noteRendered } from './trace.js';
 export { toolSystem, toWebLLMMessages, parseQwenCalls } from './toolformats/qwen.js';
 export { gemmaArg, gemma4Prompt, parseGemmaCalls, splitGemma } from './toolformats/gemma4.js';
 export { splitRaw } from './toolformats/text.js';
@@ -138,12 +139,14 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
         // WebLLM puts the conversation's prefix tokens (BOS) in front of a raw completion only on its manifest
         // path; a build without a manifest gets the prompt as is (web-llm 0.2.86/0.2.87 getInputData).
         prompt = (f.bos && !manifest ? f.bos : '') + f.prompt(history, tools, { thinking: Boolean(thinking), names: opts.tool_names || [] });
+        noteRendered('raw prompt', prompt);   // the exact text the model reads ("What the model saw", trace.js)
         try { await engine.resetChat(); } catch {}         // raw completions need an empty KV cache
         chunks = await engine.completions.create({ prompt, stream: true, max_tokens: opts.max_tokens, ...sampling(opts), stop: f.stop });
       } else {
         let messages = f.messages(history, tools, { thinking });
         // WebLLM can't continue an assistant turn; a prefilled retry starts the reply fresh instead.
         while (messages.length && messages[messages.length - 1].role === 'assistant') messages = messages.slice(0, -1);
+        noteRendered('chat messages (WebLLM applies the template)', messages);
         chunks = await engine.chat.completions.create({
           messages,
           stream: true,

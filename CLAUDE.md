@@ -35,6 +35,7 @@ app/                    static app, plain ES modules, no build step
     tasks.js            step-mode task state, step/final prompts (budgeted), resume rules, DIALECT (v2 frozen fenced text / v3 marked harness text)
     recipes.js          memory/recipes.jsonl: how finished tasks were solved; saved pending, matched only once the user approves; forgotten after 90 days unused
     find.js             `find`: one search over tools, recipes, memory, past chats and this task; web reranking, URL ledger, pushback check (falls through to web_search, docs/harness.md)
+    trace.js            the whole context a turn sent (each conversation's system prompt, tool schemas, messages, every round in and out, the exact prompt text where our code renders it), saved per reply as prompts/<session>/<id>.json and shown in "What the model saw"
     refs.js             reference resolution ("that", "the repo", links) → hints in the prompt
     engine.js           model registry (families, generationFor: sampling/thinking/thinkBudget per model), download (resumable, IndexedDB chunks), LiteRT engine, generation
     engine-cloud.js     cloud model through the relay (same conversation interface)
@@ -167,8 +168,13 @@ The registry drives the Settings dropdown and the sidebar labels; `registerConte
 
 ## Debug: saved tool results
 
-Settings → Lab → "Save tool results" (`settings.debugTools`, per device, on by default since 2026-11-09; devices that
-saved the old default move over once, settings.js `debugToolsOn`): each tool call on a
+Settings → Lab → "Save tool results and prompts" (`settings.debugTools`, per device, on by default since 2026-11-09; devices that
+saved the old default move over once, settings.js `debugToolsOn`). It also saves the whole context each reply sent (trace.js):
+agent.js `open()` records every conversation (chat phase, each step, the final reply) and `respond()` every round; WebLLM's raw
+formats note the exact prompt text (`noteRendered`), the chat-API formats the messages handed to WebLLM's template; llama.cpp and
+LiteRT render inside the runtime, so for those the structured payload is the record. The file is `reply.trace`
+(`prompts/<session>/<id>.json` in the storage repo, one per reply, never merged), loaded by "What the model saw" with a
+"Copy all as text" button. And each tool call on a
 reply keeps what it returned (`tools[].result`, untrusted wrappers stripped, cut at 12,000 characters), shown
 under "Result" in the tool list and synced with the session file. Web searches say which provider answered
 (the relay's `source`: langsearch, tavily, tavily (past year), duckduckgo, wikipedia) in the label.

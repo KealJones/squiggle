@@ -779,7 +779,24 @@ await check('a full agent turn through the UI (scripted model): tools, untrusted
   await D.page.hover('.msg.assistant');
   await D.page.click('.msg.assistant [aria-label="What the model saw"]');
   await D.page.waitForSelector('.ctx-item');
-  if (shotsDir) await D.page.screenshot({ path: `${shotsDir}/agent-context.png` });
+  // Everything the model was sent, from the reply's own file: the system prompt, the declared tool schemas, the
+  // messages it started with and each round (the fetch_url result in, the remember call out), and a text copy.
+  await D.page.waitForSelector('.trace-conv');
+  const tr = await D.page.evaluate(async () => {
+    const S = await import('/src/sessions.js'); const st = await import('/src/storage.js');
+    const m = S.list().flatMap(s => s.messages).find(x => x.role === 'assistant' && x.trace);
+    const file = JSON.parse(await st.read(m.trace));
+    document.querySelectorAll('.trace details').forEach(d => { d.open = true; });
+    return { path: m.trace, convs: file.convs.length, phase: file.convs[0].phase, system: file.convs[0].system, declared: file.convs[0].declared, rounds: file.convs[0].rounds.length,
+      firstIn: JSON.stringify(file.convs[0].rounds[0].input).slice(0, 200), calls: file.convs[0].rounds.flatMap(r => (r.output.toolCalls || []).map(c => c.function.name)), panel: document.querySelector('.trace').innerText };
+  });
+  assert.match(tr.path, /^prompts\/s[0-9a-z]+\/t[0-9a-z]+\.json$/);
+  assert.equal(tr.phase, 'Chat');
+  assert.match(tr.system, /^You are Squiggle, a personal AI agent/);
+  assert.ok(tr.declared.includes('fetch_url') && tr.declared.includes('remember') && tr.declared.includes('find'), JSON.stringify(tr.declared));
+  assert.ok(tr.rounds >= 2 && tr.calls.includes('fetch_url'), JSON.stringify(tr));
+  for (const want of ['Everything the model was sent', 'Copy all as text', 'System prompt (about', 'Tools declared in full', 'Round 1', 'Sent', 'The model wrote', 'You are Squiggle, a personal AI agent']) assert.ok(tr.panel.includes(want), want + '\n' + tr.panel.slice(0, 600));
+  if (shotsDir) { await D.page.screenshot({ path: `${shotsDir}/agent-context.png` }); await D.page.locator('#drawer .drawer-body').screenshot({ path: `${shotsDir}/agent-context-full.png` }).catch(() => {}); }
   const errs = D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e));
   assert.deepEqual(errs, []);
 });

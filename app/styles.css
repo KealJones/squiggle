@@ -259,6 +259,17 @@ a { color: var(--action); }
 .ctx-item { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 8px 0; border-bottom: 1px solid var(--rule); font-size: 0.9rem; }
 .ctx-item .kind { color: var(--ink-soft); font-size: 0.8rem; }
 .ctx-item .tok { color: var(--ink-soft); font-variant-numeric: tabular-nums; text-align: right; }
+.trace { margin-top: 18px; }
+.trace h3 { font-size: 1rem; margin: 0 0 4px; }
+.trace details { margin: 4px 0; }
+.trace summary { cursor: pointer; padding: 3px 0; }
+.trace .kind { color: var(--ink-soft); font-size: 0.8rem; margin-top: 6px; }
+.trace-conv { border-top: 1px solid var(--rule); padding-top: 6px; }
+.trace-conv > summary { font-weight: 600; }
+.trace-conv > details, .trace-conv > p { margin-left: 12px; }
+.trace-tool { margin-left: 12px; }
+.trace-pre { white-space: pre-wrap; word-break: break-word; font-family: var(--mono); font-size: 0.78rem; background: var(--code-bg); border-radius: 6px; padding: 8px; margin: 4px 0; max-height: 420px; overflow: auto; }
+.trace-named { font-size: 0.85rem; }
 .meter { height: 8px; background: var(--rule); border-radius: 4px; overflow: hidden; margin: 6px 0 14px; }
 .meter > div { height: 100%; background: var(--action); }
 

@@ -45,6 +45,19 @@ build renders.
 **Verdict.** Proof that the pruning and healing pipeline works end to end in the browser; quality is behind
 the stock 0.6–1.2B models. Heal 3 is lab-only now; heal 4 stays as an option.
 
+### Running the phone model somewhere Claude can test it — not yet
+
+**Idea.** Run LFM2.5 1.2B where an agent without WebGPU can drive the real app against it (the eval runner).
+Cloudflare's bring-your-own-model for Workers AI (Cog containers) is for Enterprise accounts, so that's out.
+The CPU build on wllama (`LF12`, now with tools on the native llama.cpp path) works in headless Chromium.
+
+**What happened (2026-11-09).** It downloaded and loaded in 17 s on a 2-core cloud box, and Fresh's lookup named
+`git_clone` for "pull github.com/tester/app" as intended; then 22 minutes at 100% of one core without a first
+token. One WASM thread on that box is far too slow for a ~1,500-token prompt.
+
+**Next.** Native llama.cpp (`llama-server`, OpenAI-compatible, many times faster than WASM) behind a lab runtime
+that talks to a local server; the same runtime would let a Mac point Squiggle at LM Studio or Ollama.
+
 ### Which model fits a phone tab — shipped as the defaults
 
 **Idea.** iOS Safari kills a tab at roughly 2 GB, shared by JS and GPU memory. Which runtime and size survive,
