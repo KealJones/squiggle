@@ -1036,7 +1036,8 @@ await check('Fresh context: nothing replayed; a lookup (earlier exchange, web) g
   assert.equal(r.messages[1].tool_calls[0].function.name, 'find');
   assert.match(JSON.parse(r.messages[1].tool_calls[0].function.arguments).query, /^Patrick Stewart freshtest what about his most recent one\?$/);
   const found = r.input[0].content[0].response.found;
-  assert.match(found, /Earlier in this chat:\n- The user asked "freshtest What is the latest movie Patrick Stewart was in\?"; you answered "/);
+  // "his most recent one" points back, so the question it points at comes along with the reply as written.
+  assert.match(found, /Earlier in this chat:\n- The user asked "freshtest What is the latest movie Patrick Stewart was in\?"; you answered:\nPlain answer to: freshtest What is the latest movie Patrick Stewart was in\?\n/);
   assert.match(found, /Web search for "Patrick Stewart freshtest what about his most recent one\?/);
   assert.match(found, /<untrusted source="web search"/);
   assert.match(found, /Wikipedia and Wikidata:\n<untrusted source="wikipedia and wikidata"/);

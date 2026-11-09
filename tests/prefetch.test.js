@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { namesIn, isFollowUp, standalone, smallTalk, rank, exchangeCandidates, render } from '../app/src/prefetch.js';
+import { namesIn, isFollowUp, standalone, smallTalk, rank, exchangeCandidates, render, doRequest, pointsBack } from '../app/src/prefetch.js';
 
 const PREV = 'What is the latest movie that Patrick Stewart was is?';
 const LINE = [
@@ -62,4 +62,32 @@ test('render labels everything as looked up, never as the user, and is empty whe
   assert.match(text, /Web search for "Patrick Stewart most recent movie 2026":\n<untrusted key="web search">1\. Patrick Stewart\n {3}https:\/\/example\.org\/ps/);
   assert.match(text, /call fetch_url with its link/);
   assert.match(render({ query: 'q', web: { error: 'HTTP 503', items: [] } }), /The web search failed: HTTP 503/);
+});
+
+// Keal's messages from 2026-11-09 (LFM2.5 1.2B, Fresh context): Fresh looked up "Sick, Sick, Sick" and the actress
+// Uhm Ji-won for them, then the model planned around the junk; and "that console.log" lost the script it meant.
+const SICK = 'Sick I only asked if you could run js which you did immediately so idk why you took so long to explain it, but anyway. can you help me write a generator js for loop function that like returns every mod 2 of 1 to 100.';
+const UHM = 'Uhm thank you for that! Can run that console.log of the generator script using run_js and share the output?';
+
+test('namesIn: a capitalised word starting a sentence is a name only when another name follows it', () => {
+  assert.deepEqual(namesIn(SICK), []);
+  assert.deepEqual(namesIn(UHM), []);
+  assert.deepEqual(namesIn('Patrick Stewart was great. Bugonia too'), ['Patrick', 'Stewart']);
+  assert.deepEqual(namesIn('Did you see Bugonia? Emma Stone is in it'), ['Bugonia', 'Emma', 'Stone']);
+});
+
+test('doRequest: asking Squiggle to do or make something is not a question to look up', () => {
+  for (const m of [SICK, UHM, 'write me a for loop that prints the evens', 'Run that script with run_js', 'could u help me fix this function', 'ok cool, now make it a generator']) assert.equal(doRequest(m), true, m);
+  for (const m of [PREV, 'Who directed Jaws?', 'Can you tell me what 5 * 5 / 129 is?', 'what is a generator function in js?', 'Hiii']) assert.equal(doRequest(m), false, m);
+});
+
+test('a message that points back is a follow-up once filler words stop counting as names', () => {
+  assert.equal(pointsBack(UHM), true);
+  assert.equal(isFollowUp(UHM), true);
+});
+
+test('render: the exchange a message points back at keeps its reply as written (code and all)', () => {
+  const code = 'function* odds() {\n  for (let i = 1; i <= 100; i++) if (i % 2) yield i;\n}';
+  const text = render({ query: UHM, exchanges: [{ question: 'write the generator', answer: `Here it is:\n\n\`\`\`js\n${code}\n\`\`\``, full: true }] }, { small: true });
+  assert.ok(text.includes(`you answered:\nHere it is:\n\n\`\`\`js\n${code}\n\`\`\``), text);
 });

@@ -176,3 +176,21 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 - **Fix:** runTool refuses a call missing a required argument, naming what's needed and what was sent; nothing
   runs (tools/registry.js). The tool's schema is declared from the next request on, as before.
 - **Caught by:** tests/tools-registry.test.js case 13.
+
+### 14. Fresh looked up the user's whole request
+
+- **Asked:** "Sick I only asked if you could run js … can you help me write a generator js for loop function that
+  like returns every mod 2 of 1 to 100." and later "Uhm thank you for that! Can run that console.log of the
+  generator script using run_js and share the output?"
+- **Model:** LFM2.5 1.2B Instruct on WebLLM (WLF12), Fresh context. Chat `s0mw98cxnr000metrw`, 2026-11-09.
+- **What happened:** Fresh's lookup took "Sick" and "Uhm" (sentence-initial capitals) for names and ran
+  wiki_lookup on the whole message ("Sick, Sick, Sick"; the actress Uhm Ji-won) plus a web search, handed to the
+  model as its own find call. The model looked Uhm Ji-won up again, planned around the junk, and never ran the
+  script; "that console.log" also lost the script, since Fresh replays only what clears its ranking bar.
+- **Good answer:** no lookup for a request to write or run something; the script from the previous reply in
+  view; run_js with it.
+- **Fix:** (prefetch.js, agent.js `prefetch`) a capitalised word that starts a sentence is a name only when
+  another name follows it; requests to do or make something (`doRequest`) and jobs for non-lookup tools get no
+  web or Wikipedia lookup; a message that points back ("that", "it") brings the exchange it points at, with the
+  reply as written.
+- **Caught by:** tests/prefetch.test.js (the two messages above); e2e "Fresh context" for the pointed-at exchange.

@@ -1066,7 +1066,12 @@ class Turn {
       prefetchLib.exchangeCandidates(x.messages, { textOf: (m) => messageText(m), max: 20 }).map(c => ({ ...c, id: `c:${x.id}:${c.ref}`, kind: 'chat', title: x.title, boost: 0 }))) : [];
     const cands = [...exchanges, ...pages, ...others];
     const vecs = settings.semantic && embedReady() && cands.length ? await embed([query, ...cands.map(c => truncate(c.text, 1500))]).catch(() => null) : null;
-    const found = prefetchLib.rank(query, cands, { vecs, k: small ? 4 : 8 });
+    let found = prefetchLib.rank(query, cands, { vecs, k: small ? 4 : 8 });
+    // "Run that script", "what about it?": the exchange it points at comes along whatever the ranking says, with
+    // the reply in full (Fresh replays nothing else, and "it" was lost, 2026-11-09).
+    // The exchange is the question before this one (prevQ: past "thanks!" and the like), not just the latest.
+    const last = (prevQ && exchanges.find(x => x.ref === prevQ.id)) || null;
+    if (last && prefetchLib.pointsBack(said)) found = [{ ...last, full: true, score: 1 }, ...found.filter(x => x.id !== last.id)];
     // A named question only takes memory that names them too (find's rule: "Emma Stone's real name" ≠ "the user's name").
     const asked = prefetchLib.namesIn(query).map(n => n.toLowerCase());
     const facts = (await memory.recall(query, 6).catch(() => [])).filter(r => r.score >= 0.3)
@@ -1074,10 +1079,14 @@ class Turn {
     // The web, unless the message is about the user's own things or clearly a job for another tool.
     let web = null, check = '', wiki = null;
     const own = PAST_CHAT.test(said.toLowerCase());
-    // Wikipedia and Wikidata when the question names someone or something, alongside the web search.
-    const wikiP = !own && prefetchLib.namesIn(query).length && modelTools().some(t => t.name === 'wiki_lookup') ? this.wikiTop(query) : null;
+    // Only a question about something is looked up: a request to do or make something ("help me write a
+    // generator", "run that with run_js") or a job for another tool goes to the model as is (2026-11-09: Fresh
+    // threw whole requests at Wikipedia and the web and the junk sent LFM2.5 1.2B planning).
     const toolJob = rankTools(said, modelTools()).some(t => !LOOKUP_TOOLS.includes(t.name) && t.score > 4);
-    if (this.webOn() && !own && (!toolJob || pushback)) {
+    const lookup = pushback || (!toolJob && !prefetchLib.doRequest(said));
+    // Wikipedia and Wikidata when the question names someone or something, alongside the web search.
+    const wikiP = lookup && !own && prefetchLib.namesIn(query).length && modelTools().some(t => t.name === 'wiki_lookup') ? this.wikiTop(query) : null;
+    if (this.webOn() && !own && lookup) {
       const answer = pushback ? [...line].reverse().find(m => m.role === 'assistant' && m.content) : null;
       const q = pushback ? checkQuery(said, { question: prevQ && prevQ.content, answer: answer && answer.content }) || query : query;
       web = await this.webTop(q, 'looked up first');
