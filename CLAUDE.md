@@ -167,7 +167,8 @@ The registry drives the Settings dropdown and the sidebar labels; `registerConte
 
 ## Debug: saved tool results
 
-Settings → Debug → "Save tool results" (`settings.debugTools`, per device, off by default): each tool call on a
+Settings → Lab → "Save tool results" (`settings.debugTools`, per device, on by default since 2026-11-09; devices that
+saved the old default move over once, settings.js `debugToolsOn`): each tool call on a
 reply keeps what it returned (`tools[].result`, untrusted wrappers stripped, cut at 12,000 characters), shown
 under "Result" in the tool list and synced with the session file. Web searches say which provider answered
 (the relay's `source`: langsearch, tavily, tavily (past year), duckduckgo, wikipedia) in the label.

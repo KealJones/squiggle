@@ -84,6 +84,13 @@ export function loadSettings() {
     saved = { ...saved, recallChats: false, noChatRecall: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
+  // Saved tool results are on by default now (Keal, 2026-11-09): they're what the casebook and "What the model
+  // saw" are read from. Devices that saved the old default move over once; the switch stays in Settings → Lab.
+  if (!saved.debugToolsOn) {
+    agent.settings.debugTools = true;
+    saved = { ...saved, debugTools: true, debugToolsOn: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
   if (saved.tools) agent.settings.tools = new Set(saved.tools);
   // The saved model is the device default. In memory, settings.model is whatever is
   // loaded right now: a chat with its own model (session.model) changes it while
