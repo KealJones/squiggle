@@ -917,15 +917,18 @@ await check('chat links: #chat=<id> opens that chat (archived too); picking chat
     return out;
   });
   const title = () => D.page.$eval('#chat-title', el => el.textContent);
+  // On load the app shows the usual chat first and switches to the linked one once sessions are in; a slow
+  // runner read the title in between (CI, 2026-11-09: "Wrangler assets question" from an earlier check).
+  const titled = async (t) => { await D.page.waitForFunction(x => document.querySelector('#chat-title')?.textContent === x, t, { timeout: 10000 }).catch(() => {}); return title(); };
   const hash = () => D.page.evaluate(() => location.hash);
   // A fresh load with the link (goto with only a new hash would stay on the same page).
   const open = async (h) => { await D.page.goto(`${appUrl}/${h}`); await D.page.reload(); await D.page.waitForSelector('#app:not([hidden])'); };
 
   await open(`#chat=${ids.a}`);
-  assert.equal(await title(), 'Link chat A');
+  assert.equal(await titled('Link chat A'), 'Link chat A');
   assert.equal(await hash(), `#chat=${ids.a}`);
   await open(`#chat=${ids.old}`);
-  assert.equal(await title(), 'Link chat archived', 'archived chats open from a link');
+  assert.equal(await titled('Link chat archived'), 'Link chat archived', 'archived chats open from a link');
 
   // Picking another chat puts it in the URL; back returns to the one before.
   await open(`#chat=${ids.a}`);
