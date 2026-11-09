@@ -73,7 +73,7 @@ jobs:
           npx wrangler deploy --config wrangler.relay.toml "${args[@]}"
       - name: Skipped
         if: env.HAS_TOKEN != 'true'
-        run: echo "No CLOUDFLARE_API_TOKEN secret; deploy the relay yourself (see README)."
+        run: echo "No CLOUDFLARE_API_TOKEN secret; deploy the relay yourself (see docs/setup.md)."
 
   pages:
     needs: test

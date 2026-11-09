@@ -791,7 +791,7 @@ await check('AI-managed context: budget line, steps attach earlier results, chec
   await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
-  await D.page.evaluate(async () => { (await import('/src/agent.js')).settings.contextMode = 'managed'; });
+  await D.page.evaluate(async () => { (await import('/src/ui/settings.js')).setDefaultContextMode('managed'); });
   await D.page.click('#new-chat');
   await D.page.fill('#input', 'MANAGEDTEST who is older, Ada or Ben?');
   await D.page.press('#input', 'Enter');
@@ -836,7 +836,7 @@ await check('AI-managed context: budget line, steps attach earlier results, chec
   });
   assert.deepEqual(c.steps, [['done', 'It is 42.']]);
   assert.equal(c.sys, 2, 'step 2 of the first chat and this one carried on from a checkpoint');
-  await D.page.evaluate(async () => { (await import('/src/agent.js')).settings.contextMode = 'smart'; });
+  await D.page.evaluate(async () => { (await import('/src/ui/settings.js')).setDefaultContextMode('smart'); });
 });
 
 await check('chat details sidebar: model, context window breakdown (live and saved), progress, tools used; collapsible and remembered', async () => {
@@ -985,7 +985,7 @@ await check('Fresh context: nothing replayed; a lookup (earlier exchange, web) g
   await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
-  await D.page.evaluate(async () => { const a = await import('/src/agent.js'); a.settings.contextMode = 'fresh'; a.settings.semantic = false; });
+  await D.page.evaluate(async () => { const a = await import('/src/agent.js'); (await import('/src/ui/settings.js')).setDefaultContextMode('fresh'); a.settings.semantic = false; });
   // Wikipedia and Wikidata, as their APIs answer (formatversion=2 search; SPARQL JSON).
   const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' };
   const wikiAsked = [];
@@ -1339,6 +1339,7 @@ await check('demo mode: try it without signing in (local storage, sample data, n
   assert.ok(!conv.tools.some(t => /^git_|^github_/.test(t)), 'no git or GitHub tools: ' + JSON.stringify(conv.tools));
   assert.match(conv.system, /demo mode: no GitHub account is connected/);
   await page.waitForFunction(() => !document.querySelector('#send[disabled]'));
+  if (shotsDir) await page.screenshot({ path: `${shotsDir}/demo.png` });
   // Memory has the samples; the person adds a fact of their own.
   await page.evaluate(async () => { const m = await import('/src/memory.js'); m.add({ s: 'the user', p: 'likes', o: 'demo-made facts' }); });
   await page.click('.side-nav [data-panel="memory"]');
@@ -1467,7 +1468,8 @@ await check('small-model mode is a per-model switch: off gives E2B the full prom
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
   await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
   await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
-  await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'E2B'; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
+  // Lab mode: the No prompt switch is listed only there.
+  await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'E2B'; s.lab = true; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
   const send = async (text) => {

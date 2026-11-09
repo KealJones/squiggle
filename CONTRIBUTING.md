@@ -22,7 +22,11 @@ requests from this repo also get a live preview on GitHub Pages
 read the invariants before touching tools, pushes, paths or anything the model
 sees. [docs/extending.md](docs/extending.md) covers adding tools and context
 modes. [docs/harness.md](docs/harness.md) is the contract for the agent loop
-and the small-model fine-tune: change prompts and the doc together.
+and the small-model fine-tune: change prompts and the doc together. A fix
+that comes from something a model did gets a [docs/failures.md](docs/failures.md)
+entry and, where it fits, a case in `tests/eval/cases.json`; an experiment
+gets a line in [docs/lab.md](docs/lab.md) with what happened, whether it
+shipped, went to lab mode or was removed.
 
 ## Style
 

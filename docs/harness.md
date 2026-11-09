@@ -269,6 +269,14 @@ Fresh replays nothing just for being recent. Before the model sees a message, th
 5. **`wikidata_query(sparql)`** runs the model's own SPARQL, errors returned as the service wrote them. Big models
    only (`agent.js BIG_ONLY`): Qwen3 0.6B's SPARQL didn't run (docs/measurements-2026-11-04.md).
 
+6. **Standing instructions.** Nothing is replayed, so a rule the user set for the whole chat ("answer in Spanish
+   from now on", "call me Kay", "always show your sources") was gone on the next message (2026-11-09). Short
+   user turns that read as such a rule (`prefetch.js standingInstructions`: "from now on", "always", "call me",
+   "reply in …", and the like; not "just this once"; never the current message, which is in the prompt) go in
+   every lookup for that chat, labelled as the user's own earlier instructions, still in force.
+7. **The user's own things stay off the web.** A question about the user ("what's my name?", "my dog") that memory
+   or this chat has something for gets no web or Wikipedia search ("What's my name?" went to both, 2026-11-09).
+
 The result goes in as a `find` call the model already made, with the result as its first input: the question is
 the only user turn. Engines that can't start that way (Gemma 4 on LiteRT, the fenced format) get it as a system
 section headed "Looked up before this message (search results, not the user's words)". Small talk gets nothing.
@@ -659,3 +667,31 @@ A harness tool, available in the chat phase and inside steps:
   need measuring on the phone.
 - Big models have room to spare; they get the same tools, but the budget line matters
   mostly for small ones.
+
+
+## Looking back (Nov 2026)
+
+What two weeks of running small models through this harness changed about how it's built, for whoever picks it
+up next:
+
+- **Start from the failure, not the prompt.** Every rule in find, Fresh and recall that holds up came from a real
+  bad answer with the chat id attached (docs/failures.md). Prompt edits made without one chased ghosts: "No
+  prompt" showed LFM2.5 1.2B's tool over-use was training, not wording, after several rounds of wording. The
+  casebook is now runnable (docs/evals.md), which is where this should have started.
+- **Small models read everything in the user turn as the user.** Recalled messages, memory, search results,
+  harness notes: all of it. The fix that generalised was not a label but a different message shape (Fresh's
+  seeded tool call), and the right order would have been to design the message shape first and the retrieval
+  second. Dialect v3's "(Squiggle: …)" marker is the patch for the modes that still put text in the user turn.
+- **Word overlap is not relevance, but an absolute bar beats a relative one.** Normalized BM25 always has a
+  winner; the overlap bar and the named-only rule removed most of the "a fact about the user answers a question
+  about Emma Stone" class (docs/evals.md). The remaining misses are semantic ("phone" vs "iPhone") and the
+  embedding blend is there for them; what's missing is a set that measures it.
+- **Measure the prompt before adding to it.** Every tool schema declared up front was 99% of a 4K window
+  (docs/measurements-2026-11-04.md), found only when a phone took two minutes to the first token. Gating schemas
+  behind names was worth more than any sentence of instruction.
+- **Fewer models in the picker, more in the lab.** Fifteen models with "Test:" labels was a lab notebook leaking
+  into the product; the defaults are now one per device class, the rest behind lab mode with this notebook
+  (docs/lab.md) saying what each one was for.
+- **Not done:** Fresh against Smart on a real model, measured; Gemma 4 on LiteRT taking the seeded find call;
+  a follow-up resolver that isn't a regex; a recall set with "what's going on with X?" questions, where the
+  one-hop expansion should earn back the precision it costs.

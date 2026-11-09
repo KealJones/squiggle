@@ -1,11 +1,13 @@
 # Squiggle — notes for engineers and coding agents
 
-A browser-only agent: Gemma 4 on WebGPU (LiteRT-LM) on computers, Gemma 3 270M on the CPU (wllama) or Gemma 4 26B on the relay's Workers AI on phones, state synced through a
-private GitHub "storage repo", and a Cloudflare Worker that relays GitHub
-requests browsers can't make (device-flow login, git smart-HTTP). The app is
-static: either the Worker serves it (wrangler.toml, relay same-origin at /api)
-or GitHub Pages does (deploy.yml writes config.json with the relay URL;
-wrangler.relay.toml deploys a relay-only Worker that allows the Pages origin).
+A browser-only agent: Gemma 4 E4B on WebGPU (LiteRT-LM) on computers; LFM2.5 1.2B on WebLLM (WebGPU) or
+Squiggle Small on the CPU (wllama) on phones; optionally Gemma 4 26B on the relay's Workers AI. State is
+synced through a private GitHub "storage repo", via a Cloudflare Worker that relays GitHub requests browsers
+can't make (device-flow login, git smart-HTTP). The app is static: either the Worker serves it (wrangler.toml,
+relay same-origin at /api) or GitHub Pages does (deploy.yml writes config.json with the relay URL;
+wrangler.relay.toml deploys a relay-only Worker that allows the Pages origin). Demo mode runs the same app
+with storage in the browser only and no sign-in (demo.js). Lab mode (Settings → Lab, `?lab=1`) lists the
+research models and experimental switches; docs/lab.md is the notebook for them.
 
 ## Layout
 
@@ -14,7 +16,8 @@ app/                    static app, plain ES modules, no build step
   index.html styles.css sandbox.html sw.js manifest.webmanifest
   vendor/               bundled libs (isomorphic-git, lightning-fs, marked, DOMPurify) — `npm run vendor`
   src/
-    main.js             entry: settings, config, sign-in state → setup wizard or the app
+    main.js             entry: settings, config, sign-in state → setup wizard or the app (or the demo)
+    demo.js             demo mode: local-only storage (storage.js useLocalStorage), seeded sample chat/facts/file, the "Try" prompts, clearSamples
     ui/                 the UI, one module per area (plain DOM, no framework)
       dom.js            h(), icon(), md(), toast(), number formatting
       state.js          the shared UI state object (current session, busy, model state, call, …)
@@ -39,7 +42,7 @@ app/                    static app, plain ES modules, no build step
     context.js          context assembly: CONTEXT_MODES registry (smart default / compact / managed / full); report
     prefetch.js         Fresh context (experimental): the lookup before the model answers (question made standalone, saved exchanges/pages/memory, web), handed over as a seeded find call (docs/harness.md "Fresh context")
     recall.js           smart mode's recalled block: earlier messages (this chat + other chats) and memory, quoted after the request; time phrases, size caps
-    search.js           BM25 + blend with optional embeddings (embed.js, MiniLM on CPU in embed-worker.js, terminated after 15 s idle on phones / 3 min on computers so its memory is freed)
+    search.js           BM25 (light stemmer: -ing/-ies/-ed/-s and a trailing e) + blend with optional embeddings (embed.js, MiniLM on CPU in embed-worker.js, terminated after 15 s idle on phones / 3 min on computers so its memory is freed)
     engine-webllm.js    WebLLM (MLC on WebGPU) under engine-wllama.js's conversations; per-model WebLLM version (`webllm`); streams any tool format
     toolformats/        how each model family's template writes tools, calls and results, for WebLLM (docs/extending.md "Tool formats")
       index.js          the registry and the format interface; text.js: shared <think> split and marker hold-back
@@ -70,6 +73,8 @@ app/                    static app, plain ES modules, no build step
 worker/index.js         relay + static assets (wrangler.toml); cloud model route + AiBudget Durable Object
 tests/*.test.js         unit tests (node --test)
 tests/e2e/              Chromium end-to-end: real git server, real Worker code, scripted model
+tests/eval/             retrieval.mjs: memory-recall benchmark (no model); run.mjs + cases.json: the failure casebook against a real model (docs/evals.md)
+docs/                   harness.md (the agent loop contract), failures.md (casebook), evals.md, lab.md (experiments notebook), setup.md, extending.md, measurements-*.md
 ```
 
 ## Invariants (keep these true)
@@ -95,6 +100,13 @@ tests/e2e/              Chromium end-to-end: real git server, real Worker code, 
   `<file>.remote-<date>-<device>`.
 - Session objects are mutated in place on sync (`sessions.reload` merges into
   the cached object) so views holding a reference stay valid.
+- Writes reach IndexedDB promptly. LightningFS keeps the file tree in memory and saves it only after 500 ms
+  idle; storage.js persists after every sync and at most every 300 ms while writes keep coming (git.js
+  `persist` = `pfs.flush`), and app.js `settle()` flushes chats and memory and persists on hide/pagehide. In
+  demo mode the browser is the only copy.
+- Demo mode (`storage.isLocal()`): the git and GitHub tools are left out of the model's list (agent.js
+  `modelTools`), the cloud model isn't offered, the system prompt says so. Signing in later carries the local
+  files into the chosen repo (`useStorage` snapshot/restore, merging sessions and .jsonl the repo has).
 
 ## Chat details sidebar
 
@@ -116,8 +128,11 @@ threads{id: {parent, title, summary?}}, observations[], summaries{main|threadId}
 `deleted`/`archived` on the session and `deleted` on a message are tombstones (content emptied) so the change
 syncs; `sessions.list()` leaves archived chats out (`listArchived`), `lineMessages` leaves deleted messages out.
 `model` on the session is the chat's own model: `ui/model-ui.js sessionModel()` picks it over `settings.defaultModel` (the
-device default from Settings) and `settings.model` is whatever is loaded right now. `model` on a reply is which
-model wrote it (`agent.js replyModel`: `{ id, label, how, smallMode?, contextSize, contextMode }`).
+device default from Settings) and `settings.model` is whatever is loaded right now. `contextMode` on the session
+works the same way (`sessionContextMode` / `useSessionContext`, applied with the model when a chat opens and before
+each turn; `settings.defaultContextMode` is the saved default, `settings.contextMode` the mode in effect). `model` on a reply is which
+model wrote it (`agent.js replyModel`: `{ id, label, how, smallMode?, contextSize, contextMode }`). A session seeded by the
+demo carries `demo: true` (demo.js `clearSamples` removes those).
 Attachments: storage only holds text, so text files are saved as-is and PDFs as
 their extract (`<name>.txt`) under `home/attachments/<session>/`; images as the text
 Tesseract.js reads from them (`ocr.js`, two passes: full size and half-size grayscale), also
@@ -183,10 +198,12 @@ stubs the Web Speech API; real-model behaviour needs a WebGPU device and is chec
 ## Phones
 
 iOS Safari kills tabs that load Gemma 4 E2B/E4B, and smaller ONNX models (tried and removed:
-Gemma 3, SmolLM, a QAT E2B build on onnxruntime-web) failed on WebGPU readback. Phones with WebGPU default to
-Qwen3 0.6B on WebLLM (`WQ06`, `engine.deviceModel`; the only tool model that stays alive in iPhone 16 Safari,
-2026-11-04; phones on SQ/G3 move over once). Phones without it default to Squiggle Small (`SQ`): LFM2.5-350M fine-tuned on the harness format (lm-experiments experiments/squiggle-ft,
-public at kealjones/squiggle-small, Q4_0 GGUF 219 MB, experimental v1). Phones on `G3` move to it once.
+Gemma 3, SmolLM, a QAT E2B build on onnxruntime-web) failed on WebGPU readback. The defaults are `engine.DEFAULTS`
+(one place to change): phones with WebGPU run LFM2.5 1.2B on WebLLM (`WLF12`, 2026-11-09; phones on Qwen3 0.6B/SQ/G3
+move over once, settings.js `phoneLFM`), phones without it Squiggle Small (`SQ`): LFM2.5-350M fine-tuned on the harness
+format (lm-experiments experiments/squiggle-ft, public at kealjones/squiggle-small, Q4_0 GGUF 219 MB, experimental v1).
+Models with `lab: true` in MODELS (the size tests, the stock small models, tiny Gemma 4 heal 3, LFM3, Gemma 3 270M, E2B)
+are listed only in lab mode (`engine.listedModels`; a device that already picked one keeps it).
 Gemma 3 270M (`G3`, unsloth's Q4_0 GGUF, 242 MB) stays as an option. Both run on wllama 3.13.0, CPU only
 (`n_gpu_layers: 0`), in `engine-wllama.js`; wllama caches the file itself. llama.cpp may split LFM2.5's
 `<think>` into `reasoning_content` (shown as thinking; a stray closing tag is dropped). Also the fallback on computers without WebGPU.
@@ -200,12 +217,12 @@ the fine-tune in lm-experiments trains on that exact text). No tool names go in 
 tools up with `find` (answered by the agent) and sees details only for tools it found. The cloud model stays
 available on phones. `cleanupStorage` frees downloads of models that aren't offered or don't fit.
 Loads and replies write a crash marker with the current step, shown on the next open.
-Two experimental settings for wllama models (off by default): "Use the GPU" (`smallGpu`: wllama 3.8's WebGPU,
+Two experimental settings for wllama models (off by default, lab mode only): "Use the GPU" (`smallGpu`: wllama 3.8's WebGPU,
 `n_gpu_layers: 999`) and "Use all CPU cores" (`smallThreads`: `n_threads` up to 4; needs a cross-origin isolated
 page, which sw.js does by adding COOP/COEP/CORP to the app's own responses while the `squiggle-flags` cache holds
 `/__flags/isolate`; takes a reload). A crash with either on offers to turn them off. The composer note shows what's in
 use (GPU / N cores / Safari's slower compatibility build, which wllama picks when JSPI or Memory64 is missing) and the last
-reply's speed. Size-test models (LF12, LL1) are plain chat; Q06 (stock Qwen3 0.6B) uses the native tool path like Q35 and is the smallest tool-using model that stays under 1 GB on the CPU (docs/measurements-2026-11-04.md). CPU loads use an 8-bit KV cache with flash attention and n_batch 512 / n_ubatch 256 (`engine-wllama.js createEngine`, plain retry on failure): worth 300 MB on Qwen3 0.6B, 50 on Qwen3.5. TG4A is tiny Gemma 4 heal 4 pilot A (same runtime and size as TG4; trained on Toucan tool conversations, answers from tool results). It was trained without thinking, so it sets `thinking: false` in MODELS and `conversation()` never turns thinking on for it (with thinking on it re-calls the tool instead of answering from the result). TG4 (tiny Gemma 4, lm-experiments experiments/tiny-gemma4, distilled from E2B) sets `native: true`: wllama loads it with `jinja: true` and `NativeConversation` sends real `tools` through the GGUF's own Gemma 4 chat template, reading back llama.cpp's parsed `tool_calls`; the agent gives it E2B's system prompt, but small-model budgets and no background jobs. Its tools are gated (`agent.js gated()`, docs/harness.md "Tool names up front"): a few declared up front, the rest listed by name and declared when `tool_info(names)` or `find` asks for them, since every schema filled ~83% of a 4K window. Settings → Small-model mode (per model, `settings.smallMode`, true/false; unset = the default, on for small models and off for big ones) switches any model with tools except the fenced-format ones (always on) to the short `LITE_SYSTEM_NATIVE` prompt (docs/harness.md). docs/measurements-2026-11-04.md has the numbers behind the prompt sizes, `GATE`, the repeat guard and the chat-phase call cap; `node tests/e2e/model-drive.mjs --model Q35` reproduces them. Q35 (stock Qwen3.5 0.8B, unsloth's Q4_0 GGUF) uses the same native path with Qwen's own template, with thinking off (its card's default for this size). LF3 (stock LFM3-1.7B, Liquid's QAD Q4_0 GGUF, 1 GB; needs wllama ≥ 3.13) is the same native path with LFM3's template, thinking on; it's the first Liquid model trained for agent harnesses and, in llama.cpp replays of Keal's chats (2026-11-09), greets without tools, writes code itself and calls tool_info for a gated tool where LFM2.5 1.2B did not. `toolformats/lfm3.js` is its WebLLM-side format (no MLC build yet). Settings → "No prompt (experimental)" (`settings.noPrompt`, per model, `agent.noPrompt`) sends a switchable model no system prompt at all, memory notes included: LFM2.5 1.2B behaved the same with and without Squiggle's prompt, so its over-use of tools is its training, not the prompt. Small models get a thinking budget (400 reasoning tokens, `engine.generationFor`); the Qwens get their cards' sampling (no repeat penalty, a presence penalty), Gemma 4 its card's temperature 1.0 (docs/harness.md "Per-model generation settings"). `node tests/e2e/wllama-bench.mjs [--model SQ]` loads a
+reply's speed. Size-test models (LF12, LL1) are plain chat; Q06 (stock Qwen3 0.6B) uses the native tool path like Q35 and is the smallest tool-using model that stays under 1 GB on the CPU (docs/measurements-2026-11-04.md). CPU loads use an 8-bit KV cache with flash attention and n_batch 512 / n_ubatch 256 (`engine-wllama.js createEngine`, plain retry on failure): worth 300 MB on Qwen3 0.6B, 50 on Qwen3.5. TG4A is tiny Gemma 4 heal 4 pilot A (same runtime and size as TG4; trained on Toucan tool conversations, answers from tool results). It was trained without thinking, so it sets `thinking: false` in MODELS and `conversation()` never turns thinking on for it (with thinking on it re-calls the tool instead of answering from the result). TG4 (tiny Gemma 4, lm-experiments experiments/tiny-gemma4, distilled from E2B) sets `native: true`: wllama loads it with `jinja: true` and `NativeConversation` sends real `tools` through the GGUF's own Gemma 4 chat template, reading back llama.cpp's parsed `tool_calls`; the agent gives it E2B's system prompt, but small-model budgets and no background jobs. Its tools are gated (`agent.js gated()`, docs/harness.md "Tool names up front"): a few declared up front, the rest listed by name and declared when `tool_info(names)` or `find` asks for them, since every schema filled ~83% of a 4K window. Settings → Small-model mode (per model, `settings.smallMode`, true/false; unset = the default, on for small models and off for big ones) switches any model with tools except the fenced-format ones (always on) to the short `LITE_SYSTEM_NATIVE` prompt (docs/harness.md). docs/measurements-2026-11-04.md has the numbers behind the prompt sizes, `GATE`, the repeat guard and the chat-phase call cap; `node tests/e2e/model-drive.mjs --model Q35` reproduces them. Q35 (stock Qwen3.5 0.8B, unsloth's Q4_0 GGUF) uses the same native path with Qwen's own template, with thinking off (its card's default for this size). LF3 (stock LFM3-1.7B, Liquid's QAD Q4_0 GGUF, 1 GB; needs wllama ≥ 3.13) is the same native path with LFM3's template, thinking on; it's the first Liquid model trained for agent harnesses and, in llama.cpp replays of Keal's chats (2026-11-09), greets without tools, writes code itself and calls tool_info for a gated tool where LFM2.5 1.2B did not. `toolformats/lfm3.js` is its WebLLM-side format (no MLC build yet). Settings → "No prompt (experimental)" (lab mode only; `settings.noPrompt`, per model, `agent.noPrompt`) sends a switchable model no system prompt at all, memory notes included: LFM2.5 1.2B behaved the same with and without Squiggle's prompt, so its over-use of tools is its training, not the prompt. Small models get a thinking budget (400 reasoning tokens, `engine.generationFor`); the Qwens get their cards' sampling (no repeat penalty, a presence penalty), Gemma 4 its card's temperature 1.0 (docs/harness.md "Per-model generation settings"). `node tests/e2e/wllama-bench.mjs [--model SQ]` loads a
 real model in headless Chromium: one thread vs all cores vs WebGPU.
 
 WebLLM (`engine-webllm.js`, @mlc-ai/web-llm 0.2.87 from jsDelivr by default; a model can name another with `webllm`, loaded
