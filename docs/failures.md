@@ -163,3 +163,16 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   as `{"name": …}` entries; the schema follows once the model calls or looks one up (toolformats/lfm2.js,
   NativeConversation `tool_names`). Searching for something it could write itself: not fixed; watching.
 - **Caught by:** tests/toolformats.test.js "gated LFM2 on WebLLM: every tool is in the model's own tool list".
+
+### 13. Made-up run_js output
+
+- **Asked:** "Awesome can you now run that script using `run_js` and tell me the output?", then "Show me the results?"
+- **Model:** LFM2.5 1.2B Instruct on WebLLM (WLF12), Compress context. Chat `s0mw991ww8000kggq7`, 2026-11-09.
+- **What it did:** called `run_js({"expression": …})` (run_js was in its tool list by name only, case 12, so it
+  borrowed calculate's argument name); run_js ran no code and returned `{"stdout": ""}` as a success; the model
+  then printed 1, 3, … 99, 101 as "the output".
+- **Why it's bad:** the harness reported a run that never happened as fine, and the model filled the gap.
+- **Good answer:** an error saying run_js needs `code`; the model calls it again with `code`.
+- **Fix:** runTool refuses a call missing a required argument, naming what's needed and what was sent; nothing
+  runs (tools/registry.js). The tool's schema is declared from the next request on, as before.
+- **Caught by:** tests/tools-registry.test.js case 13.

@@ -53,3 +53,16 @@ test('runTool never throws: unknown tools, thrown errors and error results all c
   registerTool(defineTool({ name: 'err_test', description: 'x', run: async () => ({ model: { error: 'no' } }) }));
   assert.equal((await runTool({ function: { name: 'err_test' } }, {})).ok, false);
 });
+
+test('case 13 (run_js with {expression}): a call missing a required argument is an error naming it, and nothing runs', async () => {
+  let ran = 0;
+  const t = registerTool(defineTool({ name: 'needs_code_test', description: 'x', parameters: params({ code: str('JavaScript code') }, ['code']), run: async () => { ran++; return { model: { stdout: '' } }; } }));
+  const r = await runTool({ function: { name: 'needs_code_test', arguments: { expression: '1+1' } } });
+  assert.equal(ran, 0);
+  assert.equal(r.ok, false);
+  assert.equal(r.model.error, 'needs_code_test needs "code" (JavaScript code). You sent: expression. Call it again with code.');
+  const ok = await runTool({ function: { name: 'needs_code_test', arguments: JSON.stringify({ code: '' }) } });
+  assert.equal(ok.ok, true, 'an empty string is still an argument');
+  assert.equal(ran, 1);
+  unregisterTool(t.spec.name);
+});
