@@ -48,11 +48,15 @@ export function callText(calls) {
 const contentOf = (c) => (typeof c === 'string' ? c : c == null ? '' : Array.isArray(c) ? c.map(x => (typeof x === 'string' ? x : x && x.type === 'text' ? x.text || '' : pyJson(x))).join('') : pyJson(c));
 
 // OpenAI-shaped messages (nativeMessages) → LFM2's prompt text, with the generation prompt.
-export function lfm2Prompt(messages, tools = []) {
+// names: tools a gated model hasn't looked up yet. LFM2 treats only what's in "List of tools" as a tool (it
+// told the user it had no run_js while the system prompt named it, 2026-11-08), so they go in the list as
+// {"name": …} entries, after the full ones; the schema follows once it calls or looks one up.
+export function lfm2Prompt(messages, tools = [], { names = [] } = {}) {
   let msgs = messages;
   let system = '';
   if (msgs[0] && msgs[0].role === 'system') { system = contentOf(msgs[0].content); msgs = msgs.slice(1); }
-  if (tools.length) system += (system ? '\n' : '') + 'List of tools: [' + tools.map(t => pyJson(fnOf(t))).join(', ') + ']';
+  const listed = [...tools.map(t => pyJson(fnOf(t))), ...names.map(n => pyJson({ name: n }))];
+  if (listed.length) system += (system ? '\n' : '') + 'List of tools: [' + listed.join(', ') + ']';
   let out = system ? '<|im_start|>system\n' + system + '<|im_end|>\n' : '';
   let last = -1;
   msgs.forEach((m, i) => { if (m.role === 'assistant') last = i; });
@@ -202,7 +206,8 @@ export function parseLfmCalls(text) {
 export const lfm2 = {
   id: 'lfm2',
   mode: 'raw',
-  prompt: (history, tools) => lfm2Prompt(history, tools),
+  prompt: (history, tools, { names } = {}) => lfm2Prompt(history, tools, { names }),
+  listsNames: true,
   bos: '<|startoftext|>',
   // Stop at the end of the turn, or right after a call: the text LFM2 writes after its call list
   // ("Checking the status…") isn't shown and would only cost time on a phone.

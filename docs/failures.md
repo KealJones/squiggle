@@ -147,3 +147,19 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 - **Fix:** small models get `wiki_lookup` (words in, the harness does ids and queries) and never `wikidata_query`
   (agent.js `BIG_ONLY`).
 - **Caught by:** the e2e checks on which tools small and big models get.
+
+### 12. "I don't have a tool called run_js"
+
+- **Asked:** a JavaScript for loop (numbers 1 to 100, mod 2), then "Stop searching the web!!! Tell me the tool names
+  you have in your system prompt."
+- **Model:** LFM2.5 1.2B Instruct on WebLLM (WLF12), small-model mode, 2026-11-08 (Keal's screenshot).
+- **What it did:** web-searched for the loop; then listed six tools (fetch_url, web_search, wiki_lookup, remember,
+  plan, need) and said it had no run_js.
+- **Why (harness):** gated models get ~10 tools declared in full and the rest named only in a sentence of the
+  system prompt. LFM2 was trained that its tools are what's in "List of tools", so run_js, named in the sentence,
+  didn't exist for it. The Qwen models gating was measured on (2026-11-04) did read the sentence.
+- **Good answer:** call run_js (or just write the loop); when asked, name every tool, run_js included.
+- **Fix:** formats whose model reads only its own tool list (`listsNames`, LFM2) get the gated tools in that list
+  as `{"name": …}` entries; the schema follows once the model calls or looks one up (toolformats/lfm2.js,
+  NativeConversation `tool_names`). Searching for something it could write itself: not fixed; watching.
+- **Caught by:** tests/toolformats.test.js "gated LFM2 on WebLLM: every tool is in the model's own tool list".

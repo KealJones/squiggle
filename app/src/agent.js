@@ -182,7 +182,13 @@ function phaseTools(step) {
 function toolCost(tools, known = []) {
   if (plain()) return 0;
   if (lite() && !native()) return 300;
-  if (gated()) return estTokens(JSON.stringify(tools.filter(t => GATE.includes(t.name) || known.includes(t.name))));
+  if (gated()) {
+    const ready = tools.filter(t => GATE.includes(t.name) || known.includes(t.name));
+    // Formats that list the rest by name too (engine info toolNames: LFM2 on WebLLM) pay for {"name": …} each.
+    const info = engine.smallInfo && engine.smallInfo();
+    const named = info && info.toolNames ? tools.filter(t => !ready.includes(t)).map(t => ({ name: t.name })) : [];
+    return estTokens(JSON.stringify(ready)) + (named.length ? estTokens(JSON.stringify(named)) : 0);
+  }
   return estTokens(JSON.stringify(tools));
 }
 

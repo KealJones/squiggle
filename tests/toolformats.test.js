@@ -116,3 +116,50 @@ test('a model can name its own WebLLM version; the rest use the default', () => 
   assert.equal(versionFor('LFM2.5-1.2B-Instruct-q4f32_1-MLC'), '0.2.86');
   assert.equal(versionFor('Qwen3-0.6B-q4f16_1-MLC'), DEFAULT_VERSION);
 });
+
+test('lfm2Prompt lists tools not looked up yet by name, after the full ones', () => {
+  const p = lfm2Prompt([{ role: 'user', content: 'hi' }], TOOLS, { names: ['run_js', 'grep'] });
+  assert.ok(p.includes('List of tools: [{"name": "web_search", "description": "Search the web.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}, {"name": "run_js"}, {"name": "grep"}]<|im_end|>'), p);
+});
+
+// The case from 2026-11-08: Squiggle's gate declared ~10 tools in full and named the rest only in a sentence of
+// the system prompt; LFM2.5 1.2B treated "List of tools" as everything it had and said it had no run_js.
+test('gated LFM2 on WebLLM: every tool is in the model\'s own tool list; a called one gets its full schema next', async () => {
+  const RUN_JS = { type: 'function', function: { name: 'run_js', description: 'Run JavaScript in an isolated sandbox.', parameters: { type: 'object', properties: { code: { type: 'string' } }, required: ['code'] } } };
+  const replies = ['<|tool_call_start|>[run_js(code=\'for (let i = 1; i <= 100; i++) if (i % 2 === 0) console.log(i)\')]', 'Done: the even numbers from 2 to 100.'];
+  const seen = { requests: [] };
+  const fake = {
+    completions: { async create(req) {
+      seen.requests.push(req);
+      const text = replies[seen.requests.length - 1] || '';
+      return (async function* () { for (let i = 0; i < text.length; i += 5) yield { choices: [{ text: text.slice(i, i + 5) }] }; })();
+    } },
+    async resetChat() {}, interruptGenerate() {}, async unload() {},
+  };
+  const w = await createShim('LFM2.5-1.2B-Instruct-q4f16_1-MLC', 4096, () => {}, { format: 'lfm2', engine: fake });
+  assert.equal(w.info.toolNames, true);
+  const conv = new NativeConversation(w, { preface: { messages: [{ role: 'system', content: 'You are Squiggle.' }], tools: [...TOOLS, RUN_JS], gate: ['web_search'], extra_context: { enable_thinking: false } }, sessionConfig: { maxOutputTokens: 256 } });
+  const calls = [];
+  for await (const x of conv.sendMessageStreaming('print the even numbers 1-100 in JS')) if (x.tool_calls) calls.push(...x.tool_calls);
+  const first = seen.requests[0].prompt;
+  assert.ok(first.includes('List of tools: [{"name": "web_search", "description": "Search the web."') && first.includes(', {"name": "run_js"}]<|im_end|>'), first);
+  assert.ok(!first.includes('Run JavaScript'), 'run_js is listed by name only until it is used');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].function.name, 'run_js');
+  for await (const x of conv.sendMessageStreaming([{ role: 'model', content: '', tool_calls: calls }, { role: 'tool', content: [{ name: 'run_js', response: { stdout: '2\n4\n…\n100' } }] }])) void x;
+  const second = seen.requests[1].prompt;
+  assert.ok(second.includes('{"name": "run_js", "description": "Run JavaScript in an isolated sandbox."'), 'called tool is declared in full');
+  assert.ok(second.includes('<|im_start|>tool\n'), 'the result comes back in a tool turn');
+});
+
+test('runtimes whose format doesn\'t list names get no tool_names (Qwen on WebLLM keeps the system-prompt line only)', async () => {
+  const seen = [];
+  const fake = { chat: { completions: { async create(req) { seen.push(req); return (async function* () { yield { choices: [{ delta: { content: 'ok' } }] }; })(); } } }, interruptGenerate() {}, async unload() {} };
+  const w = await createShim('Qwen3-0.6B-q4f16_1-MLC', 4096, () => {}, { format: 'qwen3', engine: fake });
+  assert.equal(w.info.toolNames, false);
+  const RUN_JS = { type: 'function', function: { name: 'run_js', description: 'x', parameters: { type: 'object', properties: {} } } };
+  const conv = new NativeConversation(w, { preface: { messages: [{ role: 'system', content: 's' }], tools: [...TOOLS, RUN_JS], gate: ['web_search'] }, sessionConfig: { maxOutputTokens: 64 } });
+  for await (const x of conv.sendMessageStreaming('hi')) void x;
+  const sys = seen[0].messages[0].content;
+  assert.ok(sys.includes('"name":"web_search"') && !sys.includes('run_js'));
+});

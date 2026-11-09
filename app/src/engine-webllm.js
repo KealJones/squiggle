@@ -137,7 +137,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
       if (f.mode === 'raw') {
         // WebLLM puts the conversation's prefix tokens (BOS) in front of a raw completion only on its manifest
         // path; a build without a manifest gets the prompt as is (web-llm 0.2.86/0.2.87 getInputData).
-        prompt = (f.bos && !manifest ? f.bos : '') + f.prompt(history, tools, { thinking: Boolean(thinking) });
+        prompt = (f.bos && !manifest ? f.bos : '') + f.prompt(history, tools, { thinking: Boolean(thinking), names: opts.tool_names || [] });
         try { await engine.resetChat(); } catch {}         // raw completions need an empty KV cache
         chunks = await engine.completions.create({ prompt, stream: true, max_tokens: opts.max_tokens, ...sampling(opts), stop: f.stop });
       } else {
@@ -191,7 +191,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
   return {
     async createChatCompletion(opts) { return stream(opts, opts.abortSignal); },
     async exit() { try { await engine.unload(); } catch {} },
-    info: { gpu: true, threads: 1, compat: false, webllm: true, webllmVersion: versionFor(id), toolFormat: fmt.id, id },
+    info: { gpu: true, threads: 1, compat: false, webllm: true, webllmVersion: versionFor(id), toolFormat: fmt.id, toolNames: Boolean(fmt.listsNames), id },
   };
 }
 
