@@ -9,6 +9,13 @@ export function loadSettings() {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch {}
   const mobile = engine.isMobile();
+  // Lab mode (research models and experimental switches): ?lab=1 / ?lab=0 in the address sets it for this
+  // device; otherwise the saved setting. Decided before the model, since it changes which ones are listed.
+  try {
+    const q = new URLSearchParams(location.search).get('lab');
+    if (q !== null) saved = { ...saved, lab: q !== '0' && q !== 'false' };
+  } catch {}
+  engine.setLab(saved.lab);
   Object.assign(agent.settings, { model: engine.deviceModel() }, mobile ? { contextSize: 4096, fastDecode: false } : {}, saved);
   // Phones only run models that fit a phone; anything else moves to the default.
   if (!engine.MODELS[agent.settings.model] || !engine.modelFitsDevice(agent.settings.model)) {
@@ -36,6 +43,12 @@ export function loadSettings() {
   if (mobile && !saved.phoneWQ06) {
     if (engine.MODELS.WQ06 && engine.hasWebGpu && engine.hasWebGpu() && ['SQ', 'G3'].includes(agent.settings.model)) agent.settings.model = 'WQ06';
     saved = { ...saved, model: agent.settings.model, phoneWQ06: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
+  // LFM2.5 1.2B on WebLLM is the phone default now (Keal, 2026-11-09): phones on Qwen3 0.6B move over once.
+  if (mobile && !saved.phoneLFM) {
+    if (engine.hasWebGpu && engine.hasWebGpu() && ['WQ06', 'SQ', 'G3'].includes(agent.settings.model)) agent.settings.model = engine.DEFAULTS.phoneGpu;
+    saved = { ...saved, model: agent.settings.model, phoneLFM: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
   // Search by meaning on phones too: its worker sleeps (and frees its memory) 15 s after a search (embed.js).

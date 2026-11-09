@@ -23,6 +23,12 @@ export const deviceModel = () => (/iPhone|Android/.test(navigator.userAgent) ? '
 export const needsGpu = (id) => Boolean(MODELS[id] && MODELS[id].runtime === 'litert');
 export const cleanupStorage = async ({ keep } = {}) => { window.__cleanup = Object.keys(MODELS).filter(id => !keep || keep(id)); return 0; };
 export const modelFitsDevice = (id) => !isMobile() || Boolean(MODELS[id] && MODELS[id].phone);
+export const DEFAULTS = { computer: 'E4B', phoneGpu: 'G3', phoneCpu: 'SQ' };
+let lab = false;
+export const labOn = () => lab;
+export const setLab = (v) => { lab = Boolean(v); };
+export const listed = (id, { cloudOffered = false, current = null } = {}) => Boolean(MODELS[id]) && modelFitsDevice(id) && (!MODELS[id].needsRelay || cloudOffered) && (!MODELS[id].lab || lab || id === current);
+export const listedModels = (opts) => Object.keys(MODELS).filter(id => listed(id, opts));
 export const deleteModel = async (id) => { (window.__deleted = window.__deleted || []).push(id); };
 // The fake phone has no WebGPU, so it keeps the CPU default (Squiggle Small).
 export const hasWebGpu = () => false;

@@ -1,6 +1,7 @@
 // The chat model in the UI: picking what to load, downloading with progress,
 // loading with a crash-loop guard, and the banners that explain each state.
 import * as github from '../github.js';
+import * as storage from '../storage.js';
 import * as engine from '../engine.js';
 import * as agent from '../agent.js';
 import * as recipes from '../recipes.js';
@@ -26,8 +27,8 @@ export async function initModel() {
   if (engine.needsGpu(agent.settings.model)) {
     const gpu = await engine.webgpuStatus();
     if (!gpu.ok) {
-      // No WebGPU: Squiggle Small runs on the CPU instead.
-      setDefaultModel('SQ');
+      // No WebGPU: the CPU model runs instead.
+      setDefaultModel(engine.DEFAULTS.phoneCpu);
       return initModel();
     }
   }
@@ -43,7 +44,8 @@ export async function initModel() {
 
 // Whether the relay offers the cloud model (checked once at startup).
 export async function checkCloud() {
-  try { state.cloudOffered = Boolean((await github.relayConfig()).aiEnabled); } catch { state.cloudOffered = false; }
+  // The cloud model checks who you are with your GitHub token, so the demo (no sign-in) never offers it.
+  try { state.cloudOffered = !storage.isLocal() && Boolean((await github.relayConfig()).aiEnabled); } catch { state.cloudOffered = false; }
   return state.cloudOffered;
 }
 
@@ -114,9 +116,11 @@ function showCrashBanner(c) {
 
 export function banner(...content) {
   const b = $('#model-banner');
-  if (!content.length) { b.hidden = true; b.replaceChildren(); return; }
-  b.hidden = false;
-  b.replaceChildren(...content);
+  if (!content.length) { b.hidden = true; b.replaceChildren(); }
+  else { b.hidden = false; b.replaceChildren(...content); }
+  // The sidebar names the model and its state; a banner is always a state change (a different model picked
+  // for this device, a download needed, a crash), so redraw it or the two contradict each other.
+  renderSide();
 }
 
 function showDownloadBanner(info) {

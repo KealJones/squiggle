@@ -1296,6 +1296,77 @@ await check('a crash while loading the model is caught on the next open; phones 
   }
 });
 
+await check('demo mode: try it without signing in (local storage, sample data, no git tools, no cloud), then sign in and keep what was made', async () => {
+  const demoRepo = makeRepo(root, 'tester', 'demo-state', { 'README.md': '# state\n' });
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 820 } });
+  await ctx.route('https://api.github.com/**', r => r.fulfill({ status: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' }, contentType: 'application/json', body: JSON.stringify({ login: 'tester', id: 42, name: 'Test Er' }) }));
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', e => errors.push(String(e)));
+  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  // The relay offers the cloud model, but the demo can't use it (it checks the GitHub login).
+  const hadAi = workerEnv.AI_USERS; workerEnv.AI_USERS = 'tester';
+  await page.goto(appUrl + '/');
+  await page.waitForSelector('#setup:not([hidden]) button');
+  await page.click('button:has-text("Try it without signing in")');
+  await page.waitForSelector('#setup-body button:has-text("Download and start")');
+  assert.equal(await page.locator('#setup-steps').isVisible(), false, 'the demo has one step');
+  assert.deepEqual(await page.$$eval('#setup-body .model-option', els => els.map(e => e.dataset.model)), ['E4B', 'E2B', 'G3', 'SQ'], 'no cloud model in the demo');
+  await page.click('button:has-text("Download and start")');
+  await page.waitForSelector('#app:not([hidden])');
+  assert.match(await page.textContent('#sync-line'), /Demo: saved in this browser only/);
+  assert.match(await page.textContent('#demo-banner'), /^Demo mode\./);
+  assert.equal(await page.textContent('#chat-title'), 'New chat', 'opens on a fresh chat, with the sample chat in the list');
+  assert.deepEqual(await page.$$eval('#session-list li', els => els.map(e => e.textContent.includes('Naming the log parser'))), [true]);
+  // A "Try" chip asks a question; the model gets no git or GitHub tools and a demo workspace line.
+  await page.click('#demo-banner .try button >> nth=0');
+  await page.waitForFunction(() => (window.__engineLog || []).some(e => e.type === 'conversation'));
+  const conv = await page.evaluate(() => window.__engineLog.filter(e => e.type === 'conversation').at(-1));
+  assert.ok(conv.tools.includes('web_search') && conv.tools.includes('recall') && conv.tools.includes('find'), JSON.stringify(conv.tools));
+  assert.ok(!conv.tools.some(t => /^git_|^github_/.test(t)), 'no git or GitHub tools: ' + JSON.stringify(conv.tools));
+  assert.match(conv.system, /demo mode: no GitHub account is connected/);
+  await page.waitForFunction(() => !document.querySelector('#send[disabled]'));
+  // Memory has the samples; the person adds a fact of their own.
+  await page.evaluate(async () => { const m = await import('/src/memory.js'); m.add({ s: 'the user', p: 'likes', o: 'demo-made facts' }); });
+  await page.click('.side-nav [data-panel="memory"]');
+  assert.match(await page.textContent('#drawer'), /Pip/);
+  await page.click('#close-drawer');
+  // Settings: the account section offers sign-in and removing the samples; no repo link.
+  await page.click('.side-nav [data-panel="settings"]');
+  assert.equal(await page.locator('#drawer button:has-text("Sign in with GitHub")').count(), 1);
+  assert.equal(await page.locator('#drawer button:has-text("Leave the demo")').count(), 1);
+  await page.click('#close-drawer');
+  // Reload (after what the tab does when it's hidden or closed: pending saves, then the file tree to IndexedDB;
+  // LightningFS otherwise writes it only after half a second idle): still the demo, everything still there.
+  await page.evaluate(async () => (await import('/src/ui/app.js')).settle());
+  await page.reload();
+  await page.waitForSelector('#app:not([hidden])');
+  assert.match(await page.textContent('#sync-line'), /Demo/);
+  assert.equal(await page.$$eval('#session-list li', els => els.length), 2, 'the sample chat and the one the chip started');
+  // Sign in (the device flow is GitHub's; here the token is set directly) and pick a storage repo: the demo's
+  // chats, facts and file go into it.
+  await page.evaluate(async (cfg) => {
+    const util = await import('/src/util.js'); await util.kv.set('auth', { access_token: 'ghu_test' });
+    const gh = await import('/src/github.js'); await gh.loadAuth();
+    await (await import('/src/storage.js')).useStorage(cfg);
+  }, { owner: 'tester', name: 'demo-state', branch: 'main', root: '' });
+  const files = git(demoRepo, 'ls-tree', '-r', '--name-only', 'main');
+  assert.match(files, /memory\/facts\.jsonl/);
+  assert.match(files, /home\/pip\/README\.md/);
+  assert.equal((files.match(/sessions\/.*\.json/g) || []).length, 2, files);
+  assert.match(git(demoRepo, 'show', 'main:memory/facts.jsonl'), /demo-made facts/);
+  await page.reload();
+  await page.waitForSelector('#app:not([hidden])');
+  assert.doesNotMatch(await page.textContent('#sync-line'), /Demo/);
+  assert.equal(await page.locator('#demo-banner').isVisible(), false);
+  assert.equal(await page.$$eval('#session-list li', els => els.length), 2);
+  workerEnv.AI_USERS = hadAi;
+  assert.deepEqual(errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+  await ctx.close();
+});
+
 // UI screenshots: reload into the app with seeded data.
 if (shotsDir) {
   await check('UI renders (screenshots)', async () => {

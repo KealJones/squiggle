@@ -140,7 +140,9 @@ function systemPrompt(threadId, session, phase = 'chat', known = []) {
   // a phone CPU reads it at ~13 tokens/s before the first reply token.
   return [
     `You are Squiggle, a personal AI agent running privately on the user's own device. Today is ${new Date().toDateString()}.`,
-    `Workspace: /home is your own folder (synced to the user's devices); /repos/<name> holds clones of their GitHub repos. For code: git_clone, git_branch (an agent/ branch; those push freely, any other branch asks the user first, and a refused push is final), edit, git_commit, git_push, then github_open_pr if they want a review.`,
+    storage.isLocal()
+      ? `Workspace: /home is your own folder, kept in this browser (demo mode: no GitHub account is connected, so there are no repo tools; if asked to clone, push or open a pull request, say that signing in with GitHub turns those on).`
+      : `Workspace: /home is your own folder (synced to the user's devices); /repos/<name> holds clones of their GitHub repos. For code: git_clone, git_branch (an agent/ branch; those push freely, any other branch asks the user first, and a refused push is final), edit, git_commit, git_push, then github_open_pr if they want a review.`,
     `Don't guess. For current information or anything you're unsure of: web_search, then fetch_url the best results, and say which sites you used. Maths goes through calculate. find(query) searches your tools, recipes from past tasks, memory and past chats; need(what) asks the user for something only they know. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`,
     `Save lasting facts about the user or their projects (preferences, decisions, names) with remember; search_history finds past conversations. Your context window is ${settings.contextSize} tokens and every tool result says how much is left: prefer grep and read_file line ranges, and keep notes with note on longer work without a plan.`,
     managed() ? UPFRONT : '',
@@ -172,7 +174,9 @@ const GATE = ['plan', 'done', 'need', 'find', 'checkpoint', 'tool_info', ...PREL
 // The tools this model may have: every enabled one, minus the ones only big models can use (wikidata_query: a
 // 0.6B model's SPARQL didn't run or asked about the wrong item; docs/measurements-2026-11-04.md).
 const BIG_ONLY = ['wikidata_query'];
-const modelTools = () => toolSpecs(settings.tools).filter(t => !(lite() && BIG_ONLY.includes(t.name)));
+// Demo mode (storage.isLocal: no GitHub sign-in) leaves out the tools that need one: git and GitHub.
+const NEEDS_GITHUB = new Set(listTools().filter(t => t.group === 'git and GitHub').map(t => t.spec.name));
+const modelTools = () => toolSpecs(settings.tools).filter(t => !(lite() && BIG_ONLY.includes(t.name)) && !(storage.isLocal() && NEEDS_GITHUB.has(t.name)));
 
 function phaseTools(step) {
   if (plain()) return [];

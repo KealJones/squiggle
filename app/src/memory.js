@@ -63,12 +63,17 @@ export function remove(id) {
 function save() {
   events.emit('change');
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    const cutoff = Date.now() - TOMBSTONE_TTL;
-    facts = facts.filter(f => !(f.deleted && (f.mts || 0) < cutoff));
-    await storage.write(FILE, toJsonl(facts));
-    storage.sync();
-  }, 1200);
+  saveTimer = setTimeout(flush, 1200);
+}
+
+// Writes the facts now (saves are otherwise debounced). A `load` before a pending save would read the old
+// file and the save would then write the reloaded list: callers that load right after adding (demo.js) flush.
+export async function flush() {
+  clearTimeout(saveTimer);
+  const cutoff = Date.now() - TOMBSTONE_TTL;
+  facts = facts.filter(f => !(f.deleted && (f.mts || 0) < cutoff));
+  await storage.write(FILE, toJsonl(facts));
+  storage.sync();
 }
 
 // Called after a sync brought a new facts file in.

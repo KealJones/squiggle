@@ -91,7 +91,7 @@ function sideModel(lastReply) {
   const kv = h('dl', { class: 'kv' }, items.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]));
   // Which model this chat uses: the device default, or its own.
   const session = state.current;
-  const ids = Object.keys(engine.MODELS).filter(id => engine.modelFitsDevice(id) && (!engine.MODELS[id].needsRelay || state.cloudOffered));
+  const ids = engine.listedModels({ cloudOffered: state.cloudOffered, current: session.model || agent.settings.defaultModel });
   const def = engine.MODELS[agent.settings.defaultModel] ? agent.settings.defaultModel : agent.settings.model;
   const pick = h('select', { class: 'side-select', 'aria-label': 'Model for this chat', disabled: state.busy ? true : null, onchange: async (e) => {
     const v = e.target.value;

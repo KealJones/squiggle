@@ -11,7 +11,8 @@ import { CONTEXT_MODES } from '../context.js';
 import { h, icon, toast } from './dom.js';
 import { state } from './state.js';
 import { saveSettings, applyTheme } from './settings.js';
-import { modelPicker } from './setup.js';
+import { modelPicker, showSetup } from './setup.js';
+import * as demo from '../demo.js';
 import { openDrawer } from './panels.js';
 import { switchModel, loadModel, setIsolation, updateComposerNote, loadSemantic, sessionModel } from './model-ui.js';
 
@@ -115,7 +116,7 @@ function modelField(S) {
   let more = '';
   if (extra.length) {
     const list = h('div', { class: 'model-list' }, ...extra);
-    more = h('details', { class: 'model-more' }, h('summary', {}, `Experimental and test models (${extra.length})`), list);
+    more = h('details', { class: 'model-more' }, h('summary', {}, `${engine.labOn() ? 'Experimental and lab models' : 'Experimental models'} (${extra.length})`), list);
     more.open = extra.some(o => o.dataset.model === def);
   }
   const own = state.current && state.current.model && state.current.model !== def ? `This chat uses ${engine.MODELS[state.current.model] ? engine.MODELS[state.current.model].label : state.current.model} (set in the chat details); the default applies to other chats.` : '';
@@ -148,12 +149,12 @@ export function renderSettingsPanel() {
     section('Model',
       modelField(S),
       smallModeField(S),
-      noPromptField(S),
+      engine.labOn() ? noPromptField(S) : '',
       field('Context window', seg([[4096, '4K'], [8192, '8K'], [16384, '16K']].filter(([v]) => !M.maxContext || v <= M.maxContext), S.contextSize, async (v) => { S.contextSize = v; await reloadIfReady(); }),
         M.maxContext ? `This build was compiled for ${M.maxContext / 1024}K at most.` : 'Bigger remembers more per turn but uses more memory and is slower to start. Phones are safest at 4K.'),
       M.runtime === 'litert' ? switchRow('Speed boost', 'Replies come noticeably faster, but it loads an extra helper model and needs more memory. Off by default on phones.', S.fastDecode, async (e) => { S.fastDecode = e.target.checked; saveSettings(); await reloadIfReady(); }) : '',
-      plainWllama ? switchRow('Use the GPU (experimental)', 'Runs this model on WebGPU instead of the CPU: could be much faster, or could crash the tab. If it crashes, Squiggle offers to turn it off.', S.smallGpu, async (e) => { S.smallGpu = e.target.checked; saveSettings(); await reloadIfReady(); }) : '',
-      plainWllama ? switchRow('Use all CPU cores (experimental)', 'Splits the work across several cores, mostly speeding up the wait before a reply starts. Reloads the page.', S.smallThreads, async (e) => {
+      plainWllama && engine.labOn() ? switchRow('Use the GPU (experimental)', 'Runs this model on WebGPU instead of the CPU: could be much faster, or could crash the tab. If it crashes, Squiggle offers to turn it off.', S.smallGpu, async (e) => { S.smallGpu = e.target.checked; saveSettings(); await reloadIfReady(); }) : '',
+      plainWllama && engine.labOn() ? switchRow('Use all CPU cores (experimental)', 'Splits the work across several cores, mostly speeding up the wait before a reply starts. Reloads the page.', S.smallThreads, async (e) => {
         S.smallThreads = e.target.checked; saveSettings();
         const ok = await setIsolation(S.smallThreads);
         if (!ok && S.smallThreads) { toast('Not available here: it needs the app\'s offline helper (service worker), which only runs over https.'); return; }
@@ -178,7 +179,13 @@ export function renderSettingsPanel() {
 
     voice.support(window).synthesis ? section('Voice', voiceSettingsField(S, seg)) : '',
 
-    section('Account',
+    storage.isLocal() ? section('Account',
+      field('Demo mode', h('span', { class: 'value' }, 'Chats, memory and files stay in this browser. Nothing syncs; the git and GitHub tools are off.'),
+        'Sign in with GitHub to sync through a private repo of yours and work on your repos. What you made in the demo comes along.'),
+      actions('',
+        h('button', { class: 'btn primary', onclick: () => showSetup('signin') }, 'Sign in with GitHub'),
+        h('button', { class: 'btn', onclick: async () => { await demo.clearSamples(); toast('Sample chat, facts and file removed.'); renderSettingsPanel(); } }, 'Remove the sample data')),
+    ) : section('Account',
       field('Storage repo',
         h('span', { class: 'value' }, cfg ? h('a', { href: `https://github.com/${cfg.owner}/${cfg.name}${cfg.root ? '/tree/' + cfg.branch + '/' + cfg.root : ''}`, target: '_blank', rel: 'noopener' }, `${cfg.owner}/${cfg.name}${cfg.root ? '/' + cfg.root.replace(/\/$/, '') : ''}`) : 'None'),
         'Your chats, memory and files live here and sync to every device you sign in on.'),
@@ -198,14 +205,17 @@ export function renderSettingsPanel() {
         'The agent pushes its own agent/ branches freely. Pushing any other branch asks first, unless you chose "Always allow" for it.'),
     ),
 
-    section('Debug',
+    section('Lab',
+      switchRow('Lab mode', 'Shows the research models (size tests, stock small models, older builds) and the experimental switches: no prompt, GPU and all-cores for CPU models, AI-managed context. Also ?lab=1 in the address. Applies on the next open of Settings.', Boolean(S.lab), (e) => { S.lab = e.target.checked; engine.setLab(S.lab); saveSettings(); renderSettingsPanel(); }),
       switchRow('Save tool results', 'Keeps what each tool returned (search results, pages, find) with the reply, under "Result" in its tool list. Saved in your storage repo with the chat; long results are cut at 12,000 characters. Applies from the next message.', S.debugTools, (e) => { S.debugTools = e.target.checked; saveSettings(); }),
     ),
 
     section('This device',
       actions('Downloaded models and your sign-in live only in this browser.',
         h('button', { class: 'btn', onclick: async () => { await engine.unload(); await engine.deleteModel(S.model); location.reload(); } }, icon('i-trash'), 'Delete downloaded model'),
-        h('button', { class: 'btn danger', onclick: async () => { await sessions.flush(); await github.signOut(); location.reload(); } }, 'Sign out')),
+        storage.isLocal()
+          ? h('button', { class: 'btn danger', onclick: async () => { if (!confirm('Leave the demo? The chats, memory and files made here are deleted from this browser.')) return; await sessions.flush({ sync: false }); await storage.forgetStorage(); location.reload(); } }, 'Leave the demo')
+          : h('button', { class: 'btn danger', onclick: async () => { await sessions.flush(); await github.signOut(); location.reload(); } }, 'Sign out')),
     ),
   );
   c.append(body);

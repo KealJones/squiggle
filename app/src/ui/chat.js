@@ -25,8 +25,9 @@ export function setSync() {
   if (!line) return;
   const cfg = storage.storageConfig();
   const dot = h('span', { class: 'sync-dot' + (st.syncing ? ' busy' : st.lastError ? ' err' : '') });
-  const text = st.syncing ? 'Syncing…' : st.lastError ? `Sync failed: ${st.lastError}` : st.lastSync ? `Synced ${ago(st.lastSync)}` : 'Not synced yet';
-  line.replaceChildren(dot, h('span', { title: cfg ? `${cfg.owner}/${cfg.name}` : '' }, text));
+  const text = storage.isLocal() ? 'Demo: saved in this browser only'
+    : st.syncing ? 'Syncing…' : st.lastError ? `Sync failed: ${st.lastError}` : st.lastSync ? `Synced ${ago(st.lastSync)}` : 'Not synced yet';
+  line.replaceChildren(dot, h('span', { title: cfg && !cfg.local ? `${cfg.owner}/${cfg.name}` : '' }, text));
 }
 
 // ── Sessions sidebar (with search) ─────────────────────────────────────────

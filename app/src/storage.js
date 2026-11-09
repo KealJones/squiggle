@@ -11,7 +11,7 @@
 //   4. commit and push; if another device pushed in the meantime, repeat.
 //
 // No merge conflicts ever reach the person, and no device's work is dropped.
-import { git, fs, pfs, net, remoteUrl, exists, writeFile, rmrf, walk, stageAll, author } from './git.js';
+import { git, fs, pfs, net, remoteUrl, exists, writeFile, rmrf, walk, stageAll, author, persist } from './git.js';
 import { gh, accessibleRepos } from './github.js';
 import { kv, mutex, emitter, uid } from './util.js';
 import { mergeFor } from './merge.js';
@@ -27,8 +27,15 @@ let syncing = false;
 let lastSync = 0;
 let lastError = null;
 
+export const persistNow = () => persist();
 export const storageConfig = () => cfg;
 export const syncStatus = () => ({ syncing, lastSync, lastError, pending: Object.keys(dirty).length });
+
+// Demo mode: storage that lives in this browser only (demo.js). The same files, the same local git repo at
+// /state, no remote: `sync` commits locally and never pushes. `isLocal` is what the rest of the app checks
+// to leave out what needs GitHub (the git and GitHub tools, the sync line's repo link).
+const LOCAL = { owner: 'local', name: 'this browser', branch: 'main', root: '', local: true };
+export const isLocal = () => Boolean(cfg && cfg.local);
 
 export async function loadStorageConfig() {
   cfg = (await kv.get('storage')) || null;
@@ -107,17 +114,52 @@ export async function inspectRepo(owner, name) {
 }
 
 export async function useStorage(info) {
+  // Leaving demo mode: what was made in this browser (chats, memory, files) comes along into the repo.
+  const carry = isLocal() ? await snapshot() : null;
   cfg = { owner: info.owner, name: info.name, branch: info.branch || 'main', root: info.root || '' };
   await kv.set('storage', cfg);
   dirty = {};
   await kv.set('storage-dirty', dirty);
-  await rmrf(DIR); // fresh clone for the newly chosen repo
-  await open();
+  // Under the lock: a sync or save landing mid-rmrf left the old tree half-deleted (ENOTEMPTY, 2026-11-09).
+  await lock(async () => { await rmrf(DIR); await open(); });   // fresh clone for the newly chosen repo
   if (!await exists(`${DIR}/${cfg.root}${MARKER}`)) {
     await write(MARKER, JSON.stringify({ app: 'squiggle', v: 1, created: new Date().toISOString() }, null, 2) + '\n');
     await write('README.md', storageReadme());
   }
+  if (carry) await restore(carry);
   await sync();
+}
+
+export async function useLocalStorage() {
+  cfg = { ...LOCAL };
+  await kv.set('storage', cfg);
+  dirty = {};
+  await kv.set('storage-dirty', dirty);
+  await lock(async () => { await rmrf(DIR); await open(); });
+  await write(MARKER, JSON.stringify({ app: 'squiggle', v: 1, created: new Date().toISOString(), local: true }, null, 2) + '\n');
+  await sync();
+}
+
+// Every file under the storage root (not .git), for carrying demo data into a repo.
+async function snapshot() {
+  const out = {};
+  for (const f of await walk(DIR)) {
+    if (f.path === MARKER || f.path === 'README.md') continue;
+    out[f.path] = await readOrNull(`${DIR}/${f.path}`);
+  }
+  return out;
+}
+
+// Writes carried files into the new storage: new files as they are, files the repo already has merged where a
+// merge exists (sessions by message id, .jsonl by line id), otherwise the repo's copy wins.
+async function restore(files) {
+  for (const [rel, text] of Object.entries(files)) {
+    if (text == null) continue;
+    const there = await read(rel);
+    if (there == null) { await write(rel, text); continue; }
+    const merge = mergeFor(repoPath(rel));
+    if (merge) await write(rel, merge(text, there));
+  }
 }
 
 export async function forgetStorage() {
@@ -130,6 +172,10 @@ export async function forgetStorage() {
 
 export async function open() {
   if (!cfg) throw new Error('No storage repo chosen.');
+  if (cfg.local) {
+    if (!await exists(DIR + '/.git')) await git.init({ fs, dir: DIR, defaultBranch: cfg.branch });
+    return;
+  }
   const url = remoteUrl(cfg.owner, cfg.name);
   if (await exists(DIR + '/.git')) {
     const remotes = await git.listRemotes({ fs, dir: DIR }).catch(() => []);
@@ -173,6 +219,7 @@ export function write(rel, content) {
   return lock(async () => {
     await markDirty(rel);
     await writeFile(full(rel), content);
+    schedulePersist();
     events.emit('changed', rel);
   });
 }
@@ -181,8 +228,19 @@ export function remove(rel) {
   return lock(async () => {
     await markDirty(rel);
     await rmrf(full(rel));
+    schedulePersist();
     events.emit('changed', rel);
   });
+}
+
+// Every write lands in IndexedDB soon after (git.js persist), not only once the filesystem goes idle: at most
+// one save every 300 ms while writes keep coming (a turn's saves, a sync's commit), plus one after the last.
+let persistTimer = null;
+let lastPersist = 0;
+function schedulePersist() {
+  const due = Math.max(0, lastPersist + 300 - Date.now());
+  if (persistTimer) return;
+  persistTimer = setTimeout(async () => { persistTimer = null; lastPersist = Date.now(); await persist(); }, due);
 }
 
 async function readOrNull(path) {
@@ -203,11 +261,12 @@ export function sync() {
     try {
       let changedPaths = [];
       for (let attempt = 0; attempt < 4; attempt++) {
-        const res = await syncOnce();
+        const res = cfg.local ? await commitLocal() : await syncOnce();
         changedPaths = changedPaths.concat(res.changed);
         if (res.pushed !== false) break;
       }
       lastSync = Date.now(); lastError = null;
+      await persist();
       events.emit('synced', { changed: changedPaths });
     } catch (e) {
       lastError = String((e && e.message) || e);
@@ -216,6 +275,15 @@ export function sync() {
       syncing = false; events.emit('status', syncStatus());
     }
   });
+}
+
+// Demo mode's sync: a local commit, nothing fetched or pushed.
+async function commitLocal() {
+  const changed = await stageAll(DIR);
+  if (changed) await git.commit({ fs, dir: DIR, message: 'local save', author: { name: 'Squiggle', email: 'squiggle@localhost' } });
+  dirty = {};
+  await kv.set('storage-dirty', dirty);
+  return { pushed: true, changed: [] };
 }
 
 async function syncOnce() {
