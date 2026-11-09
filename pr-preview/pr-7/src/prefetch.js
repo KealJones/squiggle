@@ -187,7 +187,7 @@ const when = (ts) => (ts ? new Date(ts).toLocaleString(undefined, { month: 'shor
 /** The lookup's result, as the model reads it. `wrap(source, text)` marks outside content (untrusted.js).
  *  sizes: characters per kind, smaller for small models. Returns '' when nothing was found anywhere. */
 export function render({ query, exchanges = [], chats = [], facts = [], pages = [], wiki = '', web = null, check = '', standing = [], tools = [] },
-  { wrap = (s, t) => t, small = false } = {}) {
+  { wrap = (s, t) => t, small = false, bash = false } = {}) {
   const n = small ? { q: 160, a: 280, page: 500, snip: 220 } : { q: 240, a: 500, page: 900, snip: 400 };
   const parts = [];
   if (check) parts.push(check);
@@ -219,7 +219,9 @@ export function render({ query, exchanges = [], chats = [], facts = [], pages = 
     parts.push(`The web search failed: ${web.error}`);
   }
   if (!parts.length) return '';
-  const tail = (web && web.items && web.items.length) || wiki
+  const tail = bash
+    ? ((web && web.items && web.items.length) || wiki ? 'To read a result, curl its link in bash (pipe into grep for the part you need). If none of this answers it, search with other words.' : tools.length ? `Call ${tools[0].name} for this.` : 'If this doesn\'t answer it, search in bash.')
+    : (web && web.items && web.items.length) || wiki
     ? 'To read a result in full, call fetch_url with its link. If none of this answers it, call web_search with other words.'
     : tools.length ? `Call ${tools[0].name} for this; don't search the web for it.`
     : 'If this doesn\'t answer it, call web_search.';
