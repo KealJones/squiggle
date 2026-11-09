@@ -54,6 +54,7 @@ app/                    static app, plain ES modules, no build step
       index.js          registers the built-ins in a fixed order (the order is prompt text for small models)
       workspace.js      /home, /repos and /web path mapping shared by the tools
       files.js notes.js git.js web.js memory.js compute.js   the tools by area (compute.js hosts the run_js sandbox)
+      bash.js           `bash` (lab, settings.toolSurface 'bash'): just-bash (app/vendor/just-bash.js) on the workspace through WorkspaceFs (/home via storage.js so it syncs, /repos and /web via LightningFS, everything else in memory); custom commands git, gh, curl, search, wiki, node, bc call the tools above (approvals and URL rules kept); `man` / `--help` document them
       wiki.js           wiki_lookup: Wikipedia search → article + Wikidata item → every fact (ranked by the question via property aliases) and newest links, straight from the browser (CORS); wikidata_query: raw SPARQL, big models only (agent.js BIG_ONLY)
     calc.js             `calculate` tool: safe math expression parser (no eval), % and money-friendly
     guard.js            hard limits: push policy, workflow-file check, workspace path resolution
@@ -105,6 +106,10 @@ docs/                   harness.md (the agent loop contract), failures.md (caseb
   idle; storage.js persists after every sync and at most every 300 ms while writes keep coming (git.js
   `persist` = `pfs.flush`), and app.js `settle()` flushes chats and memory and persists on hide/pagehide. In
   demo mode the browser is the only copy.
+- The bash surface (`agent.bashSurface()`): the model gets `bash` and `remember` plus the harness tools instead of the
+  file, web, git and maths tools. Commands that reach the network, GitHub or the sandbox go through `runTool` with the
+  agent's context, so a push still needs the approval card and curl still refuses made-up URLs; the whole output is
+  wrapped as untrusted; `.git` stays unreachable (`guard.resolveAgentPath`).
 - Demo mode (`storage.isLocal()`): the git and GitHub tools are left out of the model's list (agent.js
   `modelTools`), the cloud model isn't offered, the system prompt says so. Signing in later carries the local
   files into the chosen repo (`useStorage` snapshot/restore, merging sessions and .jsonl the repo has).

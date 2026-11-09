@@ -1331,6 +1331,53 @@ await check('a crash while loading the model is caught on the next open; phones 
   }
 });
 
+await check('bash tool (lab): just-bash on the workspace; /home writes sync; git, curl, bc, help; .git out of reach', async () => {
+  const D = await device('bash');
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  const run = (command) => D.page.evaluate(async (command) => {
+    const { runTool } = await import('/src/tools.js');
+    const r = await runTool({ function: { name: 'bash', arguments: { command } } }, { session: { messages: [] }, room: 20000, approve: async () => 'deny' });
+    const strip = (s) => String(s || '').replace(/<\/?untrusted[^>]*>\n?/g, '');
+    return { code: r.model.exit_code, out: strip(r.model.stdout), err: strip(r.model.stderr), error: r.model.error, label: r.label };
+  }, command);
+  let r = await run('ls /');
+  assert.match(r.out, /home[\s\S]*repos[\s\S]*tmp/, JSON.stringify(r));
+  r = await run('mkdir -p /home/notes && echo "buy milk" > /home/notes/todo.md && echo "call Dana" >> /home/notes/todo.md && cat /home/notes/todo.md | wc -l');
+  assert.equal(r.out.trim(), '2', JSON.stringify(r));
+  // Through storage.js, so it syncs.
+  await D.page.evaluate(() => T.storage.sync());
+  assert.equal(git(stateRepo, 'show', 'main:home/notes/todo.md'), 'buy milk\ncall Dana');
+  r = await run('git clone tester/app && cd /repos/app && ls && grep -rn console src | head -3 && git status');
+  assert.equal(r.code, 0, JSON.stringify(r));
+  assert.match(r.out, /README\.md[\s\S]*src[\s\S]*src\/index\.js:1:console\.log/);
+  r = await run('cat /repos/app/.git/config');
+  assert.notEqual(r.code, 0, '.git stays out of reach: ' + JSON.stringify(r));
+  r = await run('cd /repos/app && echo "# changed" >> README.md && git checkout -b fix-readme && git add . && git commit -m "Update README" && git push');
+  assert.equal(r.code, 0, JSON.stringify(r));
+  assert.match(r.out, /agent\/fix-readme/);
+  assert.match(git(appRepo, 'show', 'agent/fix-readme:README.md'), /# changed/, 'the agent branch was pushed to the real git server');
+  r = await run('cd /repos/app && git checkout main && echo x >> README.md && git commit -m "on main" && git push');
+  assert.notEqual(r.code, 0, 'a push to main needs the user; the test says no: ' + JSON.stringify(r));
+  r = await run(`curl ${appUrl}/test-pages/injection.html | grep -i assets`);
+  assert.match(r.out, /assets directory serves static files/i, JSON.stringify(r));
+  r = await run('echo "5*5/129" | bc -l');
+  assert.match(r.out, /^0\.19/, JSON.stringify(r));
+  r = await run('echo $((17*23))');
+  assert.equal(r.out.trim(), '391');
+  r = await run('man');
+  assert.match(r.out, /gh repo list/);
+  r = await run('man gh');
+  assert.match(r.out, /gh pr create/);
+  r = await run('git --help | head -3');
+  assert.match(r.out, /git clone/);
+  r = await run('cat /etc/passwd');
+  assert.notEqual(r.code, 0);
+  r = await run('echo scratch > /tmp/a && cat /tmp/a');
+  assert.equal(r.out.trim(), 'scratch');
+  assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+  await D.ctx.close();
+});
+
 await check('demo mode: try it without signing in (local storage, sample data, no git tools, no cloud), then sign in and keep what was made', async () => {
   const demoRepo = makeRepo(root, 'tester', 'demo-state', { 'README.md': '# state\n' });
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 820 } });

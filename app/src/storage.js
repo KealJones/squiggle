@@ -28,6 +28,9 @@ let lastSync = 0;
 let lastError = null;
 
 export const persistNow = () => persist();
+/** Where a storage path (relative to the storage root, e.g. "home/notes.md") lives in LightningFS, for readers
+ *  that need the file tree itself (tools/bash.js). Writes still go through write/remove so they sync. */
+export const realPath = (rel) => (cfg ? `${DIR}/${cfg.root}${String(rel).replace(/^\/+/, '')}` : `${DIR}/${String(rel).replace(/^\/+/, '')}`);
 export const storageConfig = () => cfg;
 export const syncStatus = () => ({ syncing, lastSync, lastError, pending: Object.keys(dirty).length });
 

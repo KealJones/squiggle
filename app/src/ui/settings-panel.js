@@ -207,6 +207,7 @@ export function renderSettingsPanel() {
 
     section('Lab',
       switchRow('Lab mode', 'Shows the research models (size tests, stock small models, older builds) and the experimental switches: the bare-prompt test, GPU and all cores for CPU models, AI-managed context. Also ?lab=1 in the address. See docs/lab.md for what each one was for.', Boolean(S.lab), (e) => { S.lab = e.target.checked; engine.setLab(S.lab); saveSettings(); renderSettingsPanel(); }),
+      engine.labOn() ? switchRow('One bash tool (experimental)', 'Instead of separate tools for files, the web, git and maths, the model gets a shell on the same files: cat, grep, sed, pipes, plus git, gh, curl, search, wiki, node and bc (`man` lists them). Far fewer tool definitions in the context. Applies from the next message.', S.toolSurface === 'bash', (e) => { S.toolSurface = e.target.checked ? 'bash' : 'tools'; saveSettings(); updateComposerNote(); }) : '',
       switchRow('Save tool results and prompts', 'Keeps what each tool returned (under "Result" in a reply\'s tool list) and everything the model was sent: system prompt, tool schemas, messages and each round, in "What the model saw". On by default: it\'s the evidence the failure casebook is written from. Saved in your storage repo (the full context in its own file per reply, prompts/); long results are cut. Applies from the next message.', S.debugTools, (e) => { S.debugTools = e.target.checked; saveSettings(); }),
     ),
 

@@ -1,0 +1,16 @@
+{
+  "_about": "Everyday agent jobs for comparing tool surfaces (separate tools vs one bash tool, settings.toolSurface): run with tests/eval/run.mjs --set tasks-tools.json [--surface bash]. One fresh chat each, in order (task 3 reads the clone task 2 made). `file`: a file that must exist afterwards and match.",
+  "seed": { "facts": [], "chats": [] },
+  "cases": [
+    { "id": 1, "name": "List my GitHub repos", "messages": ["List my GitHub repos"], "tools": ["github_list_repos"], "expect": "tester/app" },
+    { "id": 2, "name": "Clone a repo and read its README", "messages": ["Clone github.com/tester/app and tell me what its README says"], "tools": ["git_clone"], "expect": "test app" },
+    { "id": 3, "name": "Read a file in a clone", "messages": ["What does src/index.js in /repos/app print when it runs?"], "expect": "\\bhi\\b" },
+    { "id": 4, "name": "Search a repo", "messages": ["Which files in /repos/app mention console?"], "expect": "index\\.js" },
+    { "id": 5, "name": "Count lines", "messages": ["How many lines are in /repos/app/README.md?"], "expect": "\\b2\\b|\\btwo\\b" },
+    { "id": 6, "name": "Write a file", "messages": ["Save a note in my home folder called todo.md that says: buy milk"], "file": ["/home/todo.md", "buy milk"] },
+    { "id": 7, "name": "Percent", "messages": ["What is 15% of 240?"], "expect": "\\b36\\b" },
+    { "id": 8, "name": "Division", "messages": ["What is 5 * 5 / 129?"], "expect": "0\\.19" },
+    { "id": 9, "name": "Read a page the user gave", "messages": ["Read https://example.com and tell me what it says"], "tools": ["fetch_url"], "expect": "example|illustrative|domain|documentation" },
+    { "id": 10, "name": "Look something up", "messages": ["Who directed Jaws?"], "expect": "Spielberg" }
+  ]
+}

@@ -29,13 +29,15 @@ try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require(
 const arg = (n, d) => process.argv.includes(n) ? process.argv[process.argv.indexOf(n) + 1] : d;
 const has = (n) => process.argv.includes(n);
 const MODEL = arg('--model', 'WQ06'), MODE = arg('--mode', 'smart'), SMALL = arg('--small', ''), CTX = Number(arg('--ctx', 4096));
+const SURFACE = arg('--surface', 'tools');   // 'bash': one bash tool in place of the file, web, git and maths tools (lab)
 const TURN_TIMEOUT = Number(arg('--timeout', 300)) * 1000;
 const LIVE = !has('--no-live');
-const OUT = arg('--out', `docs/evals/${MODEL}-${MODE}.json`);
+const OUT = arg('--out', `docs/evals/${MODEL}-${MODE}${SURFACE === 'bash' ? '-bash' : ''}${arg('--set', '') ? '-' + arg('--set', '').replace(/\.json$/, '') : ''}.json`);
 const ONLY = arg('--cases', '') ? new Set(arg('--cases', '').split(',').map(Number)) : null;
 const VERBOSE = has('--verbose');
 
-const spec = JSON.parse(readFileSync(new URL('./cases.json', import.meta.url), 'utf8'));
+// --set: another file of cases next to this one (tasks-tools.json: everyday jobs for comparing tool surfaces).
+const spec = JSON.parse(readFileSync(new URL('./' + arg('--set', 'cases.json'), import.meta.url), 'utf8'));
 const cases = spec.cases.filter(c => !ONLY || ONLY.has(c.id));
 
 const profile = join(tmpdir(), `squiggle-drive-${has('--fake') ? 'fake' : MODEL}`); mkdirSync(profile, { recursive: true });
@@ -68,16 +70,16 @@ page.on('pageerror', e => errors.push('pageerror: ' + String(e).slice(0, 300)));
 page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text().slice(0, 300)); if (VERBOSE) console.log('  [' + m.type() + '] ' + m.text().slice(0, 200)); });
 await page.goto(appUrl + '/');
 await page.waitForSelector('#setup:not([hidden]) button, #app:not([hidden])');
-await page.evaluate(async ({ MODEL, MODE, SMALL, CTX }) => {
+await page.evaluate(async ({ MODEL, MODE, SMALL, CTX, SURFACE }) => {
   const util = await import('/src/util.js'); await util.kv.set('auth', { access_token: 'ghu_test', refresh_token: null, expires_at: null });
   const gh = await import('/src/github.js'); await gh.loadAuth();
-  const s = { model: MODEL, contextMode: MODE, contextSize: CTX, semantic: false, learn: false, fastDecode: false, recallChats: true, debugTools: true, phoneG3: true, phoneSQ: true, phoneWQ06: true, phoneLFM: true, phoneSemantic: true, mobileTuned: true, harnessV2: true, voiceEngine: 'system' };
+  const s = { model: MODEL, toolSurface: SURFACE, lab: SURFACE === 'bash', contextMode: MODE, contextSize: CTX, semantic: false, learn: false, fastDecode: false, recallChats: true, debugTools: true, phoneG3: true, phoneSQ: true, phoneWQ06: true, phoneLFM: true, phoneSemantic: true, mobileTuned: true, harnessV2: true, voiceEngine: 'system' };
   if (SMALL !== '') s.smallMode = SMALL === '1' ? { [MODEL]: true } : {};
   localStorage.setItem('squiggle-settings', JSON.stringify(s));
   localStorage.removeItem('squiggle-model-loading');
   const storage = await import('/src/storage.js');
   if (!storage.storageConfig()) await storage.useStorage({ owner: 'tester', name: 'state', branch: 'main', root: '' });
-}, { MODEL, MODE, SMALL, CTX });
+}, { MODEL, MODE, SMALL, CTX, SURFACE });
 await page.reload();
 await page.waitForSelector('#app:not([hidden])');
 await page.evaluate(async () => { const st = (await import('/src/ui/state.js')).state; window.__sqState = st; });
@@ -99,12 +101,12 @@ const t0 = Date.now();
 await page.evaluate(async () => { const m = await import('/src/ui/model-ui.js'); await m.ensureModel(); });
 await page.waitForFunction(() => window.__sqState.modelState === 'ready', null, { timeout: 1200000 }).catch(() => {});
 const state = await page.evaluate(() => window.__sqState.modelState);
-console.log(`model ${MODEL} ${state} in ${((Date.now() - t0) / 1000).toFixed(0)}s; mode ${MODE}; ${cases.length} cases${LIVE ? ', live web' : ''}`);
+console.log(`model ${MODEL} ${state} in ${((Date.now() - t0) / 1000).toFixed(0)}s; mode ${MODE}; ${SURFACE === 'bash' ? 'one bash tool; ' : ''}${cases.length} cases${LIVE ? ', live web' : ''}`);
 if (state !== 'ready') { console.log('model not ready; stopping'); await ctx.close(); await close(); process.exit(2); }
 
 const lastReply = () => page.evaluate(() => {
   const s = window.__sqState.current; const m = s && [...s.messages].reverse().find(x => x.role === 'assistant');
-  return m && { content: m.content || '', thinking: (m.thinking || '').slice(0, 600), tools: (m.tools || []).map(t => ({ name: t.name, args: t.args, ok: t.ok, result: t.result })), window: m.context && m.context.window };
+  return m && { content: m.content || '', thinking: (m.thinking || '').slice(0, 600), tools: (m.tools || []).map(t => ({ name: t.name, args: t.args, ok: t.ok, result: t.result })), window: m.context && m.context.window, llm: (window.__llmLog || []).slice() };
 });
 
 async function send(text) {
@@ -118,10 +120,16 @@ async function send(text) {
 }
 
 const re = (p) => new RegExp(p, 'i');
+// On the bash surface every call is `bash`: what a command did counts as the tool it stands for, so the same
+// cases grade both surfaces (gh repo list → github_list_repos, curl → fetch_url, …).
+const COMMANDS = [[/\bgh\s+repo\s+list\b/, 'github_list_repos'], [/\b(git\s+clone|gh\s+repo\s+clone)\b/, 'git_clone'], [/\bcurl\b/, 'fetch_url'],
+  [/(^|[|;&]\s*|\$\(\s*)search\b/, 'web_search'], [/(^|[|;&]\s*)wiki\b/, 'wiki_lookup'], [/(^|[|;&]\s*)node\b/, 'run_js'], [/\bbc\b|\$\(\(/, 'calculate'],
+  [/(^|[|;&]\s*)(grep|rg)\b/, 'grep'], [/(^|[|;&]\s*)(cat|head|tail|sed\s+-n)\b/, 'read_file'], [/(^|[|;&]\s*)(ls|find|tree)\b/, 'list_files'], [/>\s*\S/, 'write_file']];
+const commandTools = (t) => (t.name === 'bash' ? COMMANDS.filter(([r]) => r.test(String((t.args && t.args.command) || ''))).map(([, n]) => n) : []);
 function grade(c, reply) {
   const problems = [];
   const text = (reply && reply.content) || '';
-  const names = ((reply && reply.tools) || []).map(t => t.name);
+  const names = ((reply && reply.tools) || []).flatMap(t => [t.name, ...commandTools(t)]);
   if (c.expect && !re(c.expect).test(text)) problems.push(`reply lacks /${c.expect}/`);
   if (c.reject && re(c.reject).test(text)) problems.push(`reply matches /${c.reject}/`);
   for (const want of c.tools || []) if (!names.some(n => re('^(' + want + ')$').test(n))) problems.push(`no ${want} call`);
@@ -134,10 +142,10 @@ function grade(c, reply) {
   return problems;
 }
 
-const results = { model: MODEL, mode: MODE, small: SMALL, ctx: CTX, live: LIVE, date: new Date().toISOString(), cases: [], errors };
+const results = { model: MODEL, surface: SURFACE, mode: MODE, small: SMALL, ctx: CTX, live: LIVE, date: new Date().toISOString(), cases: [], errors };
 let passed = 0;
 for (const c of cases) {
-  await page.evaluate(async () => { const s = await import('/src/sessions.js'); const ch = await import('/src/ui/chat.js'); ch.openSession(s.newSession()); });
+  await page.evaluate(async () => { const s = await import('/src/sessions.js'); const ch = await import('/src/ui/chat.js'); ch.openSession(s.newSession()); window.__llmLog = []; });
   const turns = [];
   let last = null;
   const t = Date.now();
@@ -147,12 +155,19 @@ for (const c of cases) {
     last = r;
   }
   const problems = last && last.timedOut ? ['timed out'] : grade(c, last && last.reply);
+  if (c.file && !(last && last.timedOut)) {
+    const got = await page.evaluate(async (p) => (await import('/src/tools/workspace.js')).readAgentFile(p), c.file[0]).catch(() => null);
+    if (got == null) problems.push(`${c.file[0]} wasn't written`); else if (!re(c.file[1]).test(got)) problems.push(`${c.file[0]} lacks /${c.file[1]}/`);
+  }
   const ok = problems.length === 0;
   if (ok) passed++;
-  results.cases.push({ id: c.id, name: c.name, ok, problems, ms: Date.now() - t, turns });
+  const lr = last && last.reply;
+  const calls = lr && lr.llm ? lr.llm.length : null;
+  const toolTokens = lr && lr.window && lr.window.parts ? lr.window.parts.tools : null;
+  results.cases.push({ id: c.id, name: c.name, ok, problems, ms: Date.now() - t, calls, toolTokens, turns });
   const reply = String((last && last.reply && last.reply.content) || '').replace(/\s+/g, ' ').slice(0, 160);
-  const tools = ((last && last.reply && last.reply.tools) || []).map(x => x.name).join(', ');
-  console.log(`${ok ? 'ok  ' : 'FAIL'} ${String(c.id).padStart(2)} ${c.name}${ok ? '' : '\n       ' + problems.join('; ')}\n       tools: ${tools || '(none)'}\n       reply: ${reply}`);
+  const tools = ((last && last.reply && last.reply.tools) || []).map(x => (x.name === 'bash' ? `$ ${String((x.args && x.args.command) || '').slice(0, 70)}` : x.name)).join(' · ');
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${String(c.id).padStart(2)} ${c.name}  (${((Date.now() - t) / 1000).toFixed(0)} s${calls != null ? `, ${calls} model calls` : ''}${toolTokens != null ? `, tool definitions ${toolTokens} tokens` : ''})${ok ? '' : '\n       ' + problems.join('; ')}\n       tools: ${tools || '(none)'}\n       reply: ${reply}`);
 }
 results.passed = passed; results.total = cases.length;
 console.log(`\n${passed}/${cases.length} passed (${MODEL}, ${MODE})`);

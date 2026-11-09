@@ -37,6 +37,7 @@ export const settings = {
   debugTools: true,         // save each tool's full result on the reply (Settings → Lab), synced with the chat; on by default since 2026-11-09
   smallMode: {},            // model id → true/false: small-model mode for a model that can switch (smallModeSwitchable); unset = the model's default (smallMode)
   noPrompt: {},             // model id → true: no system prompt from Squiggle, just the tools in the model's own format (experimental)
+  toolSurface: 'tools',     // 'tools' | 'bash' (lab): one bash tool in place of the file, web, git and maths tools (tools/bash.js)
 };
 
 const MAX_OUTPUT = 1536;
@@ -66,6 +67,14 @@ export const LITE_SYSTEM_NATIVE = [
   ...LITE_SYSTEM.split('\n').slice(0, 3),
   'Look things up with web_search and fetch_url. find(query) searches your other tools, recipes, memory and',
   'past chats when you need one of them; need(what) asks the user for something only they know.',
+  'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
+].join('\n');
+
+// The same for the bash surface (tools/bash.js): the lookups are commands in the shell.
+export const LITE_SYSTEM_BASH = [
+  ...LITE_SYSTEM.split('\n').slice(0, 3),
+  'Use bash for files, the web, GitHub and maths: search WORDS, curl URL | grep -i WORD, git, gh, bc; `man` lists',
+  'the custom commands. find(query) searches recipes, memory and past chats; need(what) asks the user for something only they know.',
   'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
 ].join('\n');
 
@@ -135,7 +144,7 @@ function toolNamesLine(phase, known = []) {
 function systemPrompt(threadId, session, phase = 'chat', known = []) {
   if (plain() || noPrompt()) return '';
   const names = toolNamesLine(phase, known);
-  if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : LITE_SYSTEM_NATIVE}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
+  if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : bashSurface() ? LITE_SYSTEM_BASH : LITE_SYSTEM_NATIVE}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
   const thread = threadId && session.threads[threadId];
   // Kept short on purpose: with every tool schema this prompt was 99% of a 4K window (2026-11-04), and
   // a phone CPU reads it at ~13 tokens/s before the first reply token.
@@ -143,9 +152,15 @@ function systemPrompt(threadId, session, phase = 'chat', known = []) {
     `You are Squiggle, a personal AI agent running privately on the user's own device. Today is ${new Date().toDateString()}.`,
     storage.isLocal()
       ? `Workspace: /home is your own folder, kept in this browser (demo mode: no GitHub account is connected, so there are no repo tools; if asked to clone, push or open a pull request, say that signing in with GitHub turns those on).`
-      : `Workspace: /home is your own folder (synced to the user's devices); /repos/<name> holds clones of their GitHub repos. For code: git_clone, git_branch (an agent/ branch; those push freely, any other branch asks the user first, and a refused push is final), edit, git_commit, git_push, then github_open_pr if they want a review.`,
-    `Don't guess. For current information or anything you're unsure of: web_search, then fetch_url the best results, and say which sites you used. Maths goes through calculate. find(query) searches your tools, recipes from past tasks, memory and past chats; need(what) asks the user for something only they know. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`,
-    `Save lasting facts about the user or their projects (preferences, decisions, names) with remember; search_history finds past conversations. Your context window is ${settings.contextSize} tokens and every tool result says how much is left: prefer grep and read_file line ranges, and keep notes with note on longer work without a plan.`,
+      : bashSurface()
+        ? `Workspace, through bash: /home is your own folder (synced to the user's devices); /repos/<name> holds clones of their GitHub repos. For code: git clone, git checkout -b (an agent/ branch; those push freely, any other branch asks the user first, and a refused push is final), edit the files, git commit -m, git push, then gh pr create if they want a review.`
+        : `Workspace: /home is your own folder (synced to the user's devices); /repos/<name> holds clones of their GitHub repos. For code: git_clone, git_branch (an agent/ branch; those push freely, any other branch asks the user first, and a refused push is final), edit, git_commit, git_push, then github_open_pr if they want a review.`,
+    bashSurface()
+      ? `Don't guess. For current information or anything you're unsure of: search WORDS, then curl the best links (pipe into grep for the part you need), and say which sites you used. Maths: echo "…" | bc -l. find(query) searches recipes from past tasks, memory and past chats; need(what) asks the user for something only they know. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`
+      : `Don't guess. For current information or anything you're unsure of: web_search, then fetch_url the best results, and say which sites you used. Maths goes through calculate. find(query) searches your tools, recipes from past tasks, memory and past chats; need(what) asks the user for something only they know. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`,
+    bashSurface()
+      ? `Save lasting facts about the user or their projects (preferences, decisions, names) with remember. Your context window is ${settings.contextSize} tokens and every result says how much is left: prefer grep, head and sed -n ranges to reading whole files or pages.`
+      : `Save lasting facts about the user or their projects (preferences, decisions, names) with remember; search_history finds past conversations. Your context window is ${settings.contextSize} tokens and every tool result says how much is left: prefer grep and read_file line ranges, and keep notes with note on longer work without a plan.`,
     managed() ? UPFRONT : '',
     names,
     `Use tools when they help; answer directly when they don't. Be concise. Never invent file contents or tool results, and never say you saved, remembered, changed or pushed something unless you called the tool for it in this reply.`,
@@ -180,14 +195,19 @@ function preloaded(tools) {
 // remember and calculate are in: a 0.8B model told "save it with remember" called need instead of looking
 // remember up first (2026-11-04), and nearly every phone chat wants one of the two.
 // wiki_lookup is in too: names, dates and filmographies are most of what phone questions ask (2026-11-04).
-const GATE = ['plan', 'done', 'need', 'find', 'checkpoint', 'tool_info', ...PRELOADED, 'wiki_lookup', 'remember', 'calculate'];
+const GATE = ['plan', 'done', 'need', 'find', 'checkpoint', 'tool_info', ...PRELOADED, 'wiki_lookup', 'remember', 'calculate', 'bash'];
 
 // The tools this model may have: every enabled one, minus the ones only big models can use (wikidata_query: a
 // 0.6B model's SPARQL didn't run or asked about the wrong item; docs/measurements-2026-11-04.md).
 const BIG_ONLY = ['wikidata_query'];
+// The bash surface (settings.toolSurface 'bash', lab): the shell does files, the web, git and maths through commands
+// it already knows (tools/bash.js); memory keeps its own tool. Otherwise the shell isn't offered.
+export const bashSurface = () => settings.toolSurface === 'bash';
+const BASH_SURFACE = new Set(['bash', 'remember']);
+const onSurface = (name) => (bashSurface() ? BASH_SURFACE.has(name) : name !== 'bash');
 // Demo mode (storage.isLocal: no GitHub sign-in) leaves out the tools that need one: git and GitHub.
 const NEEDS_GITHUB = new Set(listTools().filter(t => t.group === 'git and GitHub').map(t => t.spec.name));
-const modelTools = () => toolSpecs(settings.tools).filter(t => !(lite() && BIG_ONLY.includes(t.name)) && !(storage.isLocal() && NEEDS_GITHUB.has(t.name)));
+const modelTools = () => toolSpecs(settings.tools).filter(t => onSurface(t.name) && !(lite() && BIG_ONLY.includes(t.name)) && !(storage.isLocal() && NEEDS_GITHUB.has(t.name)));
 
 function phaseTools(step) {
   if (plain()) return [];
@@ -1170,7 +1190,7 @@ class Turn {
     const text = prefetchLib.render({
       query, exchanges: pick('exchange'), chats: pick('chat'), pages: pick('page'),
       facts: facts.map(r => memory.factText(r.fact)), web, check, wiki, standing, tools: fit,
-    }, { wrap: wrapUntrusted, small });
+    }, { wrap: wrapUntrusted, small, bash: bashSurface() });
     const counts = [fit.length && `tools: ${fit.map(t => t.name).join(', ')}`, found.length && `${found.length} saved`, facts.length && `${facts.length} from memory`, standing.length && `${standing.length} standing`, wiki && 'Wikipedia', web && web.items.length && `${web.items.length} from the web`].filter(Boolean);
     this.toolEvent({ name: 'find', label: `looked up before answering: "${truncate(query, 60)}"${counts.length ? ` (${counts.join(', ')})` : ' (nothing)'}`, ok: true, args: { query } }, text || '(nothing found)');
     if (!text) return null;
@@ -1194,7 +1214,7 @@ class Turn {
       ...top.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${truncate(x.snippet || '', lite() ? 220 : 400)}`),
     ].filter(Boolean).join('\n');
     if (!body) return `Nothing in your memory, recipes or past chats, and the web had no results for "${truncate(query, 80)}". Try web_search with other words, or need to ask the user.`;
-    return `Nothing in your memory, recipes or past chats, so this searched the web for "${truncate(w.query, 80)}":\n${wrapUntrusted('web search', body)}\nTo read one in full, call fetch_url with its link.`;
+    return `Nothing in your memory, recipes or past chats, so this searched the web for "${truncate(w.query, 80)}":\n${wrapUntrusted('web search', body)}\n${bashSurface() ? 'To read one, curl its link in bash (pipe into grep for the part you need).' : 'To read one in full, call fetch_url with its link.'}`;
   }
 }
 

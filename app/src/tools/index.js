@@ -12,6 +12,7 @@ import { fetchUrl, webSearch } from './web.js';
 import { wikiTool, wikidataQuery } from './wiki.js';
 import { remember, recall, forget, searchHistory } from './memory.js';
 import { calculate, runJs } from './compute.js';
+import { bash } from './bash.js';
 
 export const BUILTIN = [
   // Files
@@ -24,6 +25,8 @@ export const BUILTIN = [
   remember, recall, forget, searchHistory,
   // Maths and code
   calculate, runJs,
+  // The shell: in place of the file, web and git tools when settings.toolSurface is 'bash' (lab; agent.js)
+  bash,
 ];
 for (const t of BUILTIN) registerTool(t);
 
