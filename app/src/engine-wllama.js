@@ -8,7 +8,7 @@
 // replayed), calls a tool with a ```tool_call fenced JSON block (hidden from
 // the reply and parsed into a call), and gets results back as a user turn
 // "Result of <tool>:\n<json>". Bad calls come back to it as tool errors.
-const VERSION = '3.8.1';
+const VERSION = '3.13.0';   // 2026-11-08; adds LFM3, audio/realtime (unused); the API Squiggle uses is unchanged from 3.8.1
 const LIB = `https://cdn.jsdelivr.net/npm/@wllama/wllama@${VERSION}/esm/index.min.js`;
 const WASM = `https://cdn.jsdelivr.net/npm/@wllama/wllama@${VERSION}/esm/wasm/wllama.wasm`;
 const MAX_OUTPUT = 1024;

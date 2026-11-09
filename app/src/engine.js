@@ -44,6 +44,13 @@ export const MODELS = {
   // Stock Qwen3.5 0.8B (Keal, 2026-10-31): tools through Qwen's own chat template, like TG4 (native), no fine-tune.
   Q35: { label: 'Test: Qwen3.5 0.8B', size: '507 MB', experimental: true, note: 'stock Qwen3.5 0.8B with tools in its own tool format (no Squiggle training). Runs without thinking, as its model card recommends for this size, and needs about 1.1 GB of memory while answering. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, family: 'qwen35', thinking: false,
     url: HF + 'unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_0.gguf', bytes: 507154688 },
+  // LFM3-1.7B (Liquid, 2026-11-03; Keal 2026-11-09): post-trained for agent harnesses. On Squiggle's prompt and tools it
+  // greets without calling a tool, writes code itself, looks up Jaws and 17*23 with the right tools and calls
+  // tool_info(["run_js"]) for a gated tool, where LFM2.5 1.2B did none of those (llama.cpp replays, Nov 9). Thinking on
+  // by default (its card). wllama 3.13's llama.cpp runs it through the GGUF's own template; on a phone CPU it's slow
+  // (1 GB, thinks first), so this entry is for computers and for seeing it work; no MLC build exists.
+  LF3: { label: 'Test: LFM3 1.7B', size: '1.0 GB', experimental: true, note: 'stock LFM3 1.7B with tools in its own format, thinking first. The first Liquid model trained for agent harnesses: it chats, writes code and picks tools sensibly where LFM2.5 did not, but it is 1 GB on the CPU and thinks before every reply. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, family: 'lfm3',
+    url: HF + 'LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-QAD-Q4_0.gguf', bytes: 1049615680 },
   // Not on this device: runs on the relay (only listed when the relay offers it).
   // WebLLM (MLC) on WebGPU (engine-webllm.js, Keal 2026-11-02): the same small-model path as the
   // wllama models (runtime 'wllama', so isLite and the small-model harness apply), compiled for the
@@ -427,6 +434,7 @@ const SAMPLING = {
   qwen3: { temperature: 0.6, top_k: 20, top_p: 0.95, min_p: 0, repeat: 1.0, presence: 1.5 },     // Qwen3 card, thinking mode; presence penalty against repetition, not repeat penalty
   qwen35: { temperature: 1.0, top_k: 20, top_p: 1.0, min_p: 0, repeat: 1.0, presence: 2.0 },     // Qwen3.5-0.8B card, non-thinking text (how it runs here)
   lfm2: { temperature: 0.1, top_k: 50, top_p: 1.0, min_p: 0, repeat: 1.05, presence: 0 },       // LFM2.5-1.2B-Instruct card (no top_p given)
+  lfm3: { temperature: 0.1, top_k: 50, top_p: 1.0, min_p: 0, repeat: 1.1, presence: 0 },        // LFM3-1.7B card, "general" (chat, tools, agents)
   default: { temperature: 0.7, top_k: 64, top_p: 0.95, min_p: 0, repeat: 1.15, presence: 0 },    // stock models with no card guidance here (Llama 3.2)
 };
 // A model's generation profile: its sampling, whether it thinks, and how much (docs/harness.md).
