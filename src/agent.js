@@ -420,7 +420,8 @@ class Turn {
       // after the request (recall.js); only on a real question and above a bar.
       others: settings.recallChats === true ? sessions.list() : [],
       small: lite(),
-      recall: (q, k) => memory.recall(q, k), factText: memory.factText, factsTitle: dialect().memoryTitle,
+      // No prompt means nothing from Squiggle in the system turn, memory notes included.
+      recall: noPrompt() ? null : (q, k) => memory.recall(q, k), factText: memory.factText, factsTitle: dialect().memoryTitle,
       actions: !lite(),   // "Tool calls you made" read to small models as things the user said
       embed: settings.contextMode === 'smart' && settings.semantic ? embed : null,
     });
