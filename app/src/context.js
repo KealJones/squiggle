@@ -32,10 +32,11 @@ export const CONTEXT_MODES = {
     hint: 'A summary of the chat so far plus the recent messages.' },
   smart: { label: 'Smart', short: 'Smart', recentShare: 0.45, summary: true, retrieve: true, offered: true,
     hint: 'Also brings back a few earlier messages that fit the question ("that", "yesterday", "what I said about…"), quoted after your message, plus relevant web pages and files from this chat. Plain chat like "hi" gets nothing extra.' },
-  managed: { label: 'AI-managed (experimental)', short: 'AI-managed', recentShare: 0.55, summary: true, retrieve: false, offered: true,
+  // Lab only (offered when lab mode is on; settings-panel.js): no model has been trained for it yet.
+  managed: { label: 'AI-managed (lab)', short: 'AI-managed', recentShare: 0.55, summary: true, retrieve: false, offered: false, lab: true,
     hint: 'The model runs its own context: it sees how much room is left, plan steps say which earlier results, files or notes they need attached, big pages get a summarize step, and when room runs low it checkpoints and carries on fresh. Experimental: models haven\'t been trained for it yet.' },
-  fresh: { label: 'Fresh (experimental)', short: 'Fresh', recentShare: 0, summary: false, retrieve: false, fresh: true, offered: true,
-    hint: 'Every message starts new: nothing is replayed just for being recent. Before the model answers, Squiggle looks things up for it (earlier messages and pages that match, memory, and the web) and hands that over as a lookup it already did, so none of it reads as you talking. A follow-up like "what about his newest one?" borrows the names from your last question. Experimental.' },
+  fresh: { label: 'Fresh (look up first)', short: 'Fresh', recentShare: 0, summary: false, retrieve: false, fresh: true, offered: true,
+    hint: 'Every message starts new: nothing is replayed just for being recent. Before the model answers, Squiggle looks things up for it (earlier messages and pages that match, memory, Wikipedia and the web) and hands that over as a lookup it already did, so none of it reads as you talking. A follow-up like "what about his newest one?" borrows the names from your last question; instructions you gave for the whole chat ("from now on…", "always…") stay in. Best for small models and short windows.' },
   full: { label: 'Full history', short: 'Full', recentShare: 1, summary: false, retrieve: false, offered: false,
     hint: 'As many recent turns as fit, nothing retrieved.' },
 };

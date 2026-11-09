@@ -6,7 +6,7 @@ import * as engine from '../engine.js';
 import * as agent from '../agent.js';
 import * as recipes from '../recipes.js';
 import { loadEmbedder, embed } from '../embed.js';
-import { contextMode } from '../context.js';
+import { contextMode, CONTEXT_MODES } from '../context.js';
 import { $, h, squiggleWait, gb, eta } from './dom.js';
 import { state } from './state.js';
 import { saveSettings, setDefaultModel } from './settings.js';
@@ -205,8 +205,23 @@ export function sessionModel(session) {
 }
 export async function useSessionModel(session) {
   if (state.busy) return;
+  useSessionContext(session);
   const want = sessionModel(session);
   if (want !== agent.settings.model) await switchModel(want);
+}
+
+// A chat can have its own context mode (session.contextMode); otherwise the device default applies. Applied
+// with the chat's model: when a chat opens and before each turn. Never mid-reply.
+export function sessionContextMode(session) {
+  const own = session && session.contextMode;
+  return own && CONTEXT_MODES[own] ? own : (agent.settings.defaultContextMode || agent.settings.contextMode);
+}
+export function useSessionContext(session) {
+  const want = sessionContextMode(session);
+  if (want === agent.settings.contextMode) return;
+  agent.settings.contextMode = want;
+  if (['smart', 'fresh'].includes(want) && agent.settings.semantic) loadSemantic();
+  updateComposerNote();
 }
 
 export function updateComposerNote() {

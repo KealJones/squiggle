@@ -1089,7 +1089,9 @@ class Turn {
       .filter(r => !asked.length || asked.some(n => memory.factText(r.fact).toLowerCase().includes(n))).slice(0, small ? 3 : 6);
     // The web, unless the message is about the user's own things or clearly a job for another tool.
     let web = null, check = '', wiki = null;
-    const own = PAST_CHAT.test(said.toLowerCase());
+    // About the user's own things (past chats, or "my …" / "about me" when memory or this chat has something): no
+    // web or Wikipedia ("What's my name?" went to the web and Wikipedia, 2026-11-09).
+    const own = PAST_CHAT.test(said.toLowerCase()) || (/\b(my|me|mine|our|i|i'm|i am|i've|i was)\b/i.test(said) && (facts.length > 0 || found.length > 0));
     // Only a question about something is looked up: a request to do or make something ("help me write a
     // generator", "run that with run_js") or a job for another tool goes to the model as is (2026-11-09: Fresh
     // threw whole requests at Wikipedia and the web and the junk sent LFM2.5 1.2B planning).
@@ -1106,16 +1108,19 @@ class Turn {
     }
     if (wikiP) wiki = await wikiP;
     const pick = (k) => found.filter(x => x.kind === k);
+    // Rules the user set for the whole chat come along every time (nothing else is replayed).
+    const standing = prefetchLib.standingInstructions(line, { textOf: (m) => messageText(m) });   // line leaves out the current message
     const text = prefetchLib.render({
       query, exchanges: pick('exchange'), chats: pick('chat'), pages: pick('page'),
-      facts: facts.map(r => memory.factText(r.fact)), web, check, wiki,
+      facts: facts.map(r => memory.factText(r.fact)), web, check, wiki, standing,
     }, { wrap: wrapUntrusted, small });
-    const counts = [found.length && `${found.length} saved`, facts.length && `${facts.length} from memory`, wiki && 'Wikipedia', web && web.items.length && `${web.items.length} from the web`].filter(Boolean);
+    const counts = [found.length && `${found.length} saved`, facts.length && `${facts.length} from memory`, standing.length && `${standing.length} standing`, wiki && 'Wikipedia', web && web.items.length && `${web.items.length} from the web`].filter(Boolean);
     this.toolEvent({ name: 'find', label: `looked up before answering: "${truncate(query, 60)}"${counts.length ? ` (${counts.join(', ')})` : ' (nothing)'}`, ok: true, args: { query } }, text || '(nothing found)');
     if (!text) return null;
     const items = [
       ...found.map(x => ({ kind: x.kind === 'page' ? 'observation' : x.kind === 'chat' ? 'chat' : 'message', id: x.id, ref: x.ref, label: truncate(x.kind === 'page' ? x.label : x.question, 90), score: x.score, tokens: estTokens(x.text) })),
       ...facts.map(r => ({ kind: 'fact', id: r.fact.id, label: truncate(memory.factText(r.fact), 90), score: Math.round(r.score * 100) / 100 })),
+      ...standing.map(s => ({ kind: 'message', label: `standing: ${truncate(s, 80)}`, score: 1 })),
       ...(wiki ? [{ kind: 'web', label: 'Wikipedia and Wikidata' }] : []),
       ...(web && web.items.length ? [{ kind: 'web', label: `web search: ${truncate(web.query, 60)} (${web.items.length})` }] : []),
     ];

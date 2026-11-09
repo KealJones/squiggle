@@ -7,12 +7,12 @@ import * as tasks from '../tasks.js';
 import * as engine from '../engine.js';
 import * as agent from '../agent.js';
 import { fmtSize } from '../attachments.js';
-import { contextMode } from '../context.js';
+import { contextMode, CONTEXT_MODES } from '../context.js';
 import { $, h, icon, fmtTok, fmtPct, toast } from './dom.js';
 import { state } from './state.js';
 import { planEl } from './chat.js';
 import { openPanel } from './panels.js';
-import { smallHow, sessionModel, switchModel } from './model-ui.js';
+import { smallHow, sessionModel, switchModel, useSessionContext } from './model-ui.js';
 import { openSession, renderSessions } from './chat.js';
 import { chatLink } from './links.js';
 
@@ -104,11 +104,25 @@ function sideModel(lastReply) {
     ...ids.map(id => h('option', { value: id, selected: session.model === id ? true : null }, engine.MODELS[id].label)));
   const chooser = h('div', { class: 'side-field' }, h('label', {}, 'Model for this chat'), pick,
     h('span', { class: 'side-hint' }, session.model ? 'This chat always uses this model; other chats keep the default.' : 'Change the default in Settings.'));
+  // The chat's own context mode, same mechanics as its model (model-ui.js useSessionContext).
+  const defMode = agent.settings.defaultContextMode || agent.settings.contextMode;
+  const modeIds = Object.entries(CONTEXT_MODES).filter(([k, d]) => d.offered || (d.lab && engine.labOn()) || k === session.contextMode || k === defMode).map(([k]) => k);
+  const modePick = h('select', { class: 'side-select', 'aria-label': 'Context for this chat', disabled: state.busy ? true : null, onchange: (e) => {
+    const v = e.target.value;
+    if (v) session.contextMode = v; else delete session.contextMode;
+    sessions.touch(session);
+    useSessionContext(session);
+    renderSide();
+  } },
+    h('option', { value: '', selected: !session.contextMode ? true : null }, `Default (${contextMode(defMode).short})`),
+    ...modeIds.map(k => h('option', { value: k, selected: session.contextMode === k ? true : null }, CONTEXT_MODES[k].label)));
+  const modeChooser = h('div', { class: 'side-field' }, h('label', {}, 'Context for this chat'), modePick,
+    h('span', { class: 'side-hint' }, session.contextMode ? `${CONTEXT_MODES[session.contextMode].hint.split('. ')[0]}. Other chats keep the default.` : 'How the model\'s context is managed. Change the default in Settings.'));
   if (M && M.runtime !== 'cloud' && engine.isLite() && state.modelState === 'ready') engine.smallSpeed().then((sp) => {
     if (!sp || !kv.isConnected) return;
     kv.append(h('dt', {}, 'Last reply'), h('dd', {}, `first token ${(sp.waitMs / 1000).toFixed(1)} s${sp.perSec ? `, ${sp.perSec} tok/s` : ''}`));
   }).catch(() => {});
-  return sideSection('model', 'Model', '', kv, chooser);
+  return sideSection('model', 'Model', '', kv, chooser, modeChooser);
 }
 
 function sideContext(ctx, msg) {

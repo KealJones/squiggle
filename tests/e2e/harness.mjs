@@ -72,7 +72,9 @@ function gitBackend(root) {
 // Starts the servers; returns { appUrl, relayUrl, close }.
 // split: true serves the app and the relay on different origins with a
 // config.json pointing at the relay — the GitHub Pages setup.
-export async function start(gitRoot, env = {}, { split = false, isolate = false } = {}) {
+// liveWeb: true leaves web search and page reads alone (the eval runner wants the real web); otherwise search
+// goes to a fixed results page so checks are repeatable.
+export async function start(gitRoot, env = {}, { split = false, isolate = false, liveWeb = false } = {}) {
   const backend = gitBackend(gitRoot);
   await new Promise(r => backend.listen(0, '127.0.0.1', r));
   const gitPort = backend.address().port;
@@ -83,8 +85,8 @@ export async function start(gitRoot, env = {}, { split = false, isolate = false 
     const url = typeof input === 'string' ? input : input.url;
     if (url.startsWith('https://github.com/')) return realFetch(url.replace('https://github.com', `http://127.0.0.1:${gitPort}`), init);
     // Web search goes to a fixed results page instead of the live site.
-    if (url.startsWith('https://lite.duckduckgo.com/')) return Promise.resolve(new Response(readFileSync(new URL('../fixtures/ddg-lite.html', import.meta.url), 'utf8')));
-    if (url.startsWith('https://api.duckduckgo.com/')) return Promise.resolve(Response.json({ Heading: 'Squiggle', AbstractText: 'Squiggle is a <b>test</b> topic.', AbstractSource: 'Wikipedia', AbstractURL: 'https://en.wikipedia.org/wiki/Squiggle' }));
+    if (!liveWeb && url.startsWith('https://lite.duckduckgo.com/')) return Promise.resolve(new Response(readFileSync(new URL('../fixtures/ddg-lite.html', import.meta.url), 'utf8')));
+    if (!liveWeb && url.startsWith('https://api.duckduckgo.com/')) return Promise.resolve(Response.json({ Heading: 'Squiggle', AbstractText: 'Squiggle is a <b>test</b> topic.', AbstractSource: 'Wikipedia', AbstractURL: 'https://en.wikipedia.org/wiki/Squiggle' }));
     // The relay asks GitHub who a token belongs to (cloud model access).
     if (url === 'https://api.github.com/user') return Promise.resolve(Response.json({ login: 'tester' }));
     return realFetch(input, init);

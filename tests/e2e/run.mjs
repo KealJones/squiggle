@@ -888,6 +888,17 @@ await check('chat details sidebar: model, context window breakdown (live and sav
   assert.ok(w && w.size > 0 && w.parts.instructions > 0 && w.used > 0, JSON.stringify(w));
   const total = Object.values(w.parts).reduce((a, b) => a + b, 0);
   assert.equal(w.used, total);
+  // The chat's own context mode: picked in the sidebar, in effect for this chat only (the device default stays),
+  // saved with the chat, back to the default when cleared.
+  await D.page.selectOption('#ctx-side select[aria-label="Context for this chat"]', 'fresh');
+  assert.deepEqual(await D.page.evaluate(async () => { const a = await import('/src/agent.js'); return [a.settings.contextMode, a.settings.defaultContextMode, JSON.parse(localStorage.getItem('squiggle-settings')).contextMode, (await import('/src/ui/state.js')).state.current.contextMode]; }), ['fresh', 'smart', 'smart', 'fresh']);
+  assert.match(await D.page.textContent('#ctx-side'), /Context\s*Fresh/);
+  await D.page.click('#new-chat');
+  assert.equal(await D.page.evaluate(async () => (await import('/src/agent.js')).settings.contextMode), 'smart', 'a new chat gets the default back');
+  await D.page.evaluate(async () => { const S = await import('/src/sessions.js'); const c = await import('/src/ui/chat.js'); c.openSession(S.list().find(x => x.contextMode === 'fresh')); });
+  assert.equal(await D.page.evaluate(async () => (await import('/src/agent.js')).settings.contextMode), 'fresh', 'reopening the chat brings its mode back');
+  await D.page.selectOption('#ctx-side select[aria-label="Context for this chat"]', '');
+  assert.equal(await D.page.evaluate(async () => (await import('/src/agent.js')).settings.contextMode), 'smart');
   // Collapse a section and hide the sidebar: both are remembered.
   await D.page.click('#ctx-side [data-sec="used"] summary');
   await D.page.click('#close-side');

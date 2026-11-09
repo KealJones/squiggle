@@ -138,6 +138,30 @@ export function exchangeCandidates(line, { textOf = (m) => m.content, max = 40 }
   return out;
 }
 
+// ── Standing instructions ──────────────────────────────────────────────────
+
+// Fresh replays nothing, so an instruction meant for the whole chat ("answer in Spanish from now on", "always
+// show your sources", "call me Kay") was gone on the next message unless it happened to match the question
+// (2026-11-09). These are the user's own messages that read as a rule for what follows, kept short, and they
+// go in every lookup for this chat. Only the user's turns count; a rule inside a long request is left alone
+// (the whole message would be replayed), and the current message is never one (it's in the prompt already).
+const STANDING = /\b(from now on|for the rest of (this|the) (chat|conversation|session)|going forward|in (this|our) (chat|conversation)|always|never|don'?t ever|every time|each time|whenever you|call me|my name is|address me as|(answer|reply|respond|write|talk|speak) (only )?in [a-z]+|(use|stick to) (metric|imperial|celsius|fahrenheit|british|american|uk|us) (units|spelling|english)?|keep (it|them|your (answers|replies))|be (brief|concise|short|terse|detailed)|no (bullet points|lists|emoji|markdown)|without (bullet points|lists|emoji|markdown))\b/i;
+const ONE_OFF = /\b(this (time|once)|just (this|for) (once|now)|for now)\b/i;
+
+/** The user's standing instructions in this chat: short user messages before `current` that read as a rule for
+ *  what follows, oldest first, without repeats. `textOf` reads a message's text. */
+export function standingInstructions(line, { current = null, textOf = (m) => m.content, max = 5, maxChars = 200 } = {}) {
+  const out = [];
+  for (const m of line || []) {
+    if (!m || m.deleted || m.role !== 'user' || (current && m.id === current)) continue;
+    const text = String(textOf(m) || '').replace(/\s+/g, ' ').trim();
+    if (!text || text.length > maxChars || !STANDING.test(text) || ONE_OFF.test(text)) continue;
+    if (out.some(x => x.toLowerCase() === text.toLowerCase())) continue;
+    out.push(text);
+  }
+  return out.slice(-max);
+}
+
 // ── What the model gets ────────────────────────────────────────────────────
 
 const oneLine = (s, n) => {
@@ -148,11 +172,12 @@ const when = (ts) => (ts ? new Date(ts).toLocaleString(undefined, { month: 'shor
 
 /** The lookup's result, as the model reads it. `wrap(source, text)` marks outside content (untrusted.js).
  *  sizes: characters per kind, smaller for small models. Returns '' when nothing was found anywhere. */
-export function render({ query, exchanges = [], chats = [], facts = [], pages = [], wiki = '', web = null, check = '' },
+export function render({ query, exchanges = [], chats = [], facts = [], pages = [], wiki = '', web = null, check = '', standing = [] },
   { wrap = (s, t) => t, small = false } = {}) {
   const n = small ? { q: 160, a: 280, page: 500, snip: 220 } : { q: 240, a: 500, page: 900, snip: 400 };
   const parts = [];
   if (check) parts.push(check);
+  if (standing.length) parts.push('Instructions the user gave earlier in this chat, still in force:\n' + standing.map(s => `- "${s}"`).join('\n'));
   if (exchanges.length) {
     // `full`: the exchange a pointing-back message is about ("run that script"), with the reply as written
     // (code keeps its lines), not squeezed to one line.

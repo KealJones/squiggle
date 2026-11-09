@@ -89,13 +89,23 @@ export function loadSettings() {
   // loaded right now: a chat with its own model (session.model) changes it while
   // that chat is open, and saveSettings writes the default back, never that.
   agent.settings.defaultModel = agent.settings.model;
+  // The context mode works the same way: settings.contextMode is the mode in effect (a chat can have its own,
+  // session.contextMode; ui/model-ui.js useSessionContext), defaultContextMode the saved device default.
+  agent.settings.defaultContextMode = agent.settings.contextMode;
   applyTheme();
 }
 
 export function saveSettings() {
-  const { defaultModel, ...rest } = agent.settings;
-  const s = { ...rest, model: defaultModel || agent.settings.model, tools: agent.settings.tools ? [...agent.settings.tools] : null };
+  const { defaultModel, defaultContextMode, ...rest } = agent.settings;
+  const s = { ...rest, model: defaultModel || agent.settings.model, contextMode: defaultContextMode || agent.settings.contextMode, tools: agent.settings.tools ? [...agent.settings.tools] : null };
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+}
+
+/** Changes the device's default context mode (and the mode in effect, unless the open chat has its own). */
+export function setDefaultContextMode(mode, session = null) {
+  agent.settings.defaultContextMode = mode;
+  if (!(session && session.contextMode)) agent.settings.contextMode = mode;
+  saveSettings();
 }
 
 /** Changes the device default (and the loaded model, since the default is what loads next). */

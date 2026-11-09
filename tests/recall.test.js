@@ -23,7 +23,7 @@ test('timeWindow reads common phrases', () => {
 
 test('topic words drop the time phrase and asking words', () => {
   const t = 'what i said last week about headphones';
-  assert.deepEqual(topicWords(t, timeWindow(t, NOW)), ['headphone']);
+  assert.deepEqual(topicWords(t, timeWindow(t, NOW)), ['headphon'], 'stemmed (search.js stem)');
 });
 
 test('plain chat wants no recall; real questions do', () => {

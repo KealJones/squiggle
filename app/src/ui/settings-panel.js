@@ -7,10 +7,10 @@ import * as grants from '../grants.js';
 import * as engine from '../engine.js';
 import * as agent from '../agent.js';
 import * as voice from '../voice.js';
-import { CONTEXT_MODES } from '../context.js';
+import { CONTEXT_MODES, contextMode } from '../context.js';
 import { h, icon, toast } from './dom.js';
 import { state } from './state.js';
-import { saveSettings, applyTheme } from './settings.js';
+import { saveSettings, applyTheme, setDefaultContextMode } from './settings.js';
 import { modelPicker, showSetup } from './setup.js';
 import * as demo from '../demo.js';
 import { openDrawer } from './panels.js';
@@ -134,8 +134,8 @@ export function renderSettingsPanel() {
   const cfg = storage.storageConfig();
   const M = engine.MODELS[S.model];
   const plainWllama = M.runtime === 'wllama' && !M.backend;
-  const mode = S.contextMode || 'smart';
-  const modes = Object.entries(CONTEXT_MODES).filter(([k, d]) => d.offered || k === mode);
+  const mode = S.defaultContextMode || S.contextMode || 'smart';
+  const modes = Object.entries(CONTEXT_MODES).filter(([k, d]) => d.offered || (d.lab && engine.labOn()) || k === mode);
   const reloadIfReady = async () => { if (engine.engineReady()) await loadModel(); };
 
   // Relay: an inline editor instead of a prompt().
@@ -165,9 +165,9 @@ export function renderSettingsPanel() {
     section('Context',
       h('div', { class: 'field' },
         h('label', { for: 'context-mode', class: 'label' }, 'How context is managed'),
-        h('select', { id: 'context-mode', onchange: (e) => { S.contextMode = e.target.value; saveSettings(); if (['smart', 'fresh'].includes(S.contextMode) && S.semantic) loadSemantic(); updateComposerNote(); renderSettingsPanel(); } },
+        h('select', { id: 'context-mode', onchange: (e) => { setDefaultContextMode(e.target.value, state.current); if (['smart', 'fresh'].includes(S.contextMode) && S.semantic) loadSemantic(); updateComposerNote(); renderSettingsPanel(); } },
           ...modes.map(([v, d]) => h('option', { value: v, selected: mode === v ? true : null }, d.label))),
-        h('span', { class: 'hint' }, `${CONTEXT_MODES[mode] ? CONTEXT_MODES[mode].hint : ''} Check "What the model saw" on any reply.`)),
+        h('span', { class: 'hint' }, `${CONTEXT_MODES[mode] ? CONTEXT_MODES[mode].hint : ''} Check "What the model saw" on any reply.${state.current && state.current.contextMode ? ` This chat uses ${contextMode(state.current.contextMode).short} (set in the chat details); the default applies to other chats.` : ''}`)),
       ['smart', 'fresh'].includes(S.contextMode) ? switchRow('Bring in other chats', S.contextMode === 'fresh' ? 'The lookup before each message also searches your other chats.' : 'Smart context may also quote a message from another chat when it clearly fits.', S.recallChats === true, (e) => { S.recallChats = e.target.checked; saveSettings(); }) : '',
       ['smart', 'fresh'].includes(S.contextMode) ? switchRow('Search by meaning', 'Also matches by meaning, not just words. Downloads a small 23 MB search model that runs on the CPU. With its runtime it takes roughly 100 MB of tab memory while a search runs, and on phones it\'s freed 15 seconds after.', S.semantic, (e) => { S.semantic = e.target.checked; saveSettings(); if (S.semantic) loadSemantic(); }) : '',
       switchRow('Learn from conversations', 'After each reply, Squiggle saves lasting facts to Memory. Review them in the Memory panel.', S.learn, (e) => { S.learn = e.target.checked; saveSettings(); }),
