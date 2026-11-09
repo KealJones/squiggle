@@ -33,7 +33,7 @@ export const settings = {
   recallChats: false,       // smart mode may recall messages from other chats too (off: old answers, right or wrong, leaked into unrelated chats)
   learn: true,              // extract memory facts after turns
   tools: null,              // Set of enabled tool names, or null for all
-  debugTools: false,        // save each tool's full result on the reply (Settings → Debug), synced with the chat
+  debugTools: true,         // save each tool's full result on the reply (Settings → Lab), synced with the chat; on by default since 2026-11-09
   smallMode: {},            // model id → true/false: small-model mode for a model that can switch (smallModeSwitchable); unset = the model's default (smallMode)
   noPrompt: {},             // model id → true: no system prompt from Squiggle, just the tools in the model's own format (experimental)
 };
