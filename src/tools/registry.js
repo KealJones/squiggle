@@ -47,6 +47,17 @@ export async function runTool(call, ctx) {
   let args = fn.arguments || {};
   if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = {}; } }
   if (!tool) return { name: fn.name, args, model: { error: `Unknown tool "${fn.name}".` }, label: `unknown tool ${fn.name}`, ok: false };
+  // A call missing a required argument is an error, not an empty run: run_js called with {expression} (a model
+  // that had only seen run_js's name) ran no code, reported success with empty output, and the model made the
+  // output up (docs/failures.md case 13). The error names what's missing and what was sent instead.
+  const p = (tool.spec || tool).parameters || {};
+  const missing = (p.required || []).filter(k => args[k] === undefined || args[k] === null);
+  if (missing.length) {
+    const want = missing.map(k => `"${k}"${p.properties && p.properties[k] && p.properties[k].description ? ` (${p.properties[k].description})` : ''}`).join(', ');
+    const sent = Object.keys(args);
+    return { name: fn.name, args, ok: false, label: `${fn.name} needs ${missing.join(', ')}`,
+      model: { error: `${fn.name} needs ${want}.${sent.length ? ` You sent: ${sent.join(', ')}.` : ''} Call it again with ${missing.join(', ')}.` } };
+  }
   try {
     const r = await tool.run(args, ctx);
     return { name: fn.name, args, ...r, ok: !(r.model && r.model.error) };
