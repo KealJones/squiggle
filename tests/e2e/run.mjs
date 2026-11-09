@@ -1407,6 +1407,22 @@ await check('small-model mode is a per-model switch: off gives E2B the full prom
   assert.match(on.system, /need\(what\) asks the user for something only they know/);
   assert.doesNotMatch(on.system, /```tool_call/, 'native tool formats don\'t get the fenced-block line');
   assert.ok(on.tools.includes('find') && on.tools.includes('plan'), JSON.stringify(on.tools));
+  // No prompt (experimental): no system prompt at all, tools unchanged; saved per model; off again restores it.
+  await D.page.click('button[data-panel="settings"]');
+  const none = D.page.locator('#drawer label.toggle:has-text("No prompt") input');
+  assert.equal(await none.isChecked(), false);
+  await none.check();
+  assert.deepEqual(await D.page.evaluate(() => JSON.parse(localStorage.getItem('squiggle-settings')).noPrompt), { E2B: true });
+  await D.page.click('#close-drawer');
+  await D.page.waitForTimeout(500);
+  const bare = await send('hello with no prompt');
+  assert.equal(bare.system, '', 'no system prompt');
+  assert.deepEqual(bare.tools, on.tools, 'the same tools');
+  await D.page.click('button[data-panel="settings"]');
+  await none.uncheck();
+  await D.page.click('#close-drawer');
+  await D.page.waitForTimeout(500);
+  assert.match((await send('and back')).system, /^You are Squiggle, an assistant that figures things out\./);
   // Squiggle Small: shown as always on, no switch.
   await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'SQ'; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
   await D.page.reload();
