@@ -17,12 +17,23 @@ const NOT_NAMES = new Set(('I I\'m I\'d I\'ll I\'ve Im A An The This That These 
   'Search Get Make Let Hey Hi Hello Yo Ok Okay So And But Or Also Then Now Awesome Cool Nice Great Thanks Thank Yes Yeah Yep No Nope ' +
   'Sure Well Oh Hmm Wait Actually Really Just Maybe About My Your Our Their His Her Its It It\'s He She They We You Me Us Them').split(' '));
 
-/** Capitalised words that look like names ("Patrick Stewart", "Bugonia"), in order, without repeats. */
+const clean = (w) => w.replace(/['’]s$/, '').replace(/[.'’-]+$/, '');
+
+/** Capitalised words that look like names ("Patrick Stewart", "Bugonia"), in order, without repeats. A word
+ *  that starts a sentence is capitalised anyway, so it counts only when the next word is a capitalised name
+ *  too ("Patrick Stewart was…"): "Sick I only asked…" and "Uhm thank you…" name nothing (Fresh looked up
+ *  "Sick, Sick, Sick" and the actress Uhm Ji-won for them, 2026-11-09). */
 export function namesIn(text) {
+  const s = String(text || '');
   const out = [];
-  for (const m of String(text || '').matchAll(/\b[A-Z][\p{L}\p{N}'’.-]*/gu)) {
-    const w = m[0].replace(/['’]s$/, '').replace(/[.'’-]+$/, '');
+  for (const m of s.matchAll(/\b[A-Z][\p{L}\p{N}'’.-]*/gu)) {
+    const w = clean(m[0]);
     if (w.length < 2 || NOT_NAMES.has(w) || out.includes(w)) continue;
+    const before = s.slice(0, m.index);
+    if (/^\s*$|[.!?]["'”’)]?\s+$|\n\s*$/.test(before)) {
+      const next = /^\s+([A-Z][\p{L}\p{N}'’.-]*)/u.exec(s.slice(m.index + m[0].length));
+      if (!next || NOT_NAMES.has(clean(next[1]))) continue;
+    }
     out.push(w);
   }
   return out;
@@ -31,12 +42,24 @@ export function namesIn(text) {
 const PRONOUN = /\b(he|him|his|she|her|hers|they|them|their|theirs|it|its|that|this|those|these|one|ones|same)\b/i;
 const FOLLOW_ON = /^\s*(and|also|but|so|ok(ay)?|awesome|cool|nice|great|thanks|what about|how about|and what about|what else|why|how come|really)\b/i;
 
+/** The message points back at something earlier ("run that script", "what about it?"). */
+export function pointsBack(message) {
+  const m = String(message || '');
+  return PRONOUN.test(m) || FOLLOW_ON.test(m);
+}
+
 /** A follow-up needs the question before it: it points back ("his", "that one") or carries on ("what about…")
  *  and names nothing of its own. */
 export function isFollowUp(message) {
-  const m = String(message || '');
-  return !namesIn(m).length && (PRONOUN.test(m) || FOLLOW_ON.test(m));
+  return !namesIn(message).length && pointsBack(message);
 }
+
+// Asking Squiggle to do or make something, not asking about something: no web or Wikipedia lookup first.
+const DO_VERB = '(write|make|create|build|run|execute|fix|debug|refactor|generate|draft|code|implement|edit|change|rename|delete|remove|add|test|convert|translate|rewrite|format|sort|plot|save|commit|push|clone|print)';
+const DO_REQUEST = new RegExp(`(^|[.!?,]\\s*)((ok(ay)?|cool|so|now|then|just|anyway|anyways|but|and|alright|great|nice|awesome)[,!.]?\\s+)*(please\\s+)?((can|could|would|will)\\s+(you\\s+|u\\s+)?(please\\s+)?(help\\s+(me\\s+)?)?|help\\s+me\\s+|i\\s+(want|need|would like)\\s+(you\\s+)?to\\s+|let'?s\\s+|go\\s+(ahead\\s+and\\s+)?)?${DO_VERB}\\b`, 'i');
+
+/** "Can you help me write a generator…", "Run that script with run_js", "write me a for loop". */
+export const doRequest = (message) => DO_REQUEST.test(String(message || '').replace(/[‘’]/g, "'"));
 
 /** The message as a search query that stands on its own. A follow-up gets the names (or, failing that, the
  *  topic words) of the previous question. Returns { query, borrowed } (borrowed: the words added). */
@@ -131,8 +154,12 @@ export function render({ query, exchanges = [], chats = [], facts = [], pages = 
   const parts = [];
   if (check) parts.push(check);
   if (exchanges.length) {
-    parts.push('Earlier in this chat:\n' + exchanges.map(x =>
-      `- The user asked "${oneLine(x.question, n.q)}"${x.answer ? `; you answered "${oneLine(x.answer, n.a)}"` : ''}`).join('\n'));
+    // `full`: the exchange a pointing-back message is about ("run that script"), with the reply as written
+    // (code keeps its lines), not squeezed to one line.
+    const full = small ? 1500 : 3000;
+    parts.push('Earlier in this chat:\n' + exchanges.map(x => (x.full && x.answer
+      ? `- The user asked "${oneLine(x.question, n.q)}"; you answered:\n${x.answer.length > full ? x.answer.slice(0, full) + '\n…' : x.answer}`
+      : `- The user asked "${oneLine(x.question, n.q)}"${x.answer ? `; you answered "${oneLine(x.answer, n.a)}"` : ''}`)).join('\n'));
   }
   if (chats.length) {
     parts.push('Other chats:\n' + chats.map(x =>
