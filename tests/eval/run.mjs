@@ -59,6 +59,10 @@ await ctx.route('https://api.github.com/**', async (route) => {
 // --llm: WebLLM's completions go to native llama.cpp (see the top of this file).
 const LLM = arg('--llm', '');
 if (LLM) {
+  // A server that isn't up must stop the run, not score every case as a model failure (2026-11-10: a queued
+  // LFM3 run whose server failed to load wrote 10 "fails" in 0 model calls).
+  const probe = await fetch(LLM, { method: 'POST', body: JSON.stringify({ prompt: 'Hi', max_tokens: 1 }) }).then(r => r.ok, () => false);
+  if (!probe) { console.error(`No model server answering at ${LLM}: start tests/eval/llm_server.py first.`); process.exit(2); }
   await ctx.route(/cdn\.jsdelivr\.net\/npm\/@mlc-ai\/web-llm@/, r => r.fulfill({ contentType: 'text/javascript', headers: { 'Access-Control-Allow-Origin': '*' }, body: readFileSync(new URL('./native-webllm.js', import.meta.url), 'utf8') }));
 }
 // --fake swaps in the e2e suite's scripted engine: for checking the runner itself, not a model.
