@@ -162,6 +162,11 @@ const MODELS = {
   // LFM3 (2026-11-03): 24 layers, 13 gated short convolutions + 5 sliding-window + 6 global attention; thinking on by
   // default. llama.cpp runs it (wllama 3.13.0); transformers.js from 4.4.0-next.0 (Lfm3ForCausalLM); no MLC build.
   lf3: { label: 'LFM3 1.7B', family: 'lfm', gguf: HF + 'LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-QAD-Q4_0.gguf', ggufMB: 1001,
+    mlc: 'LFM3-1.7B-q4f16_1-MLC', mlcF16Only: true,
+    mlcRecord: {   // our own build (lm-experiments experiments/lfm3-mlc), q4f16_1, 4K window
+      model: HF + 'kealjones/LFM3-1.7B-q4f16_1-MLC/resolve/main/',
+      model_lib: HF + 'kealjones/LFM3-1.7B-q4f16_1-MLC/resolve/main/LFM3-1.7B-q4f16_1-webgpu.wasm',
+      maxCtx: 4096 },
     onnx: 'LiquidAI/LFM3-1.7B-ONNX', onnxMB: 1319, transformers: '4.4.0-next.0' },
 };
 // Which engines can run a model: wllama needs a GGUF, WebLLM an MLC build, transformers.js an ONNX repo.
