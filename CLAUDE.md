@@ -210,7 +210,7 @@ real model in headless Chromium: one thread vs all cores vs WebGPU.
 
 WebLLM (`engine-webllm.js`, @mlc-ai/web-llm 0.2.87 from jsDelivr by default; a model can name another with `webllm`, loaded
 side by side as its own module, since a build's .wasm carries its TVM runtime and WebLLM's JS must match it): WL1 (Llama 3.2 1B,
-chat only), WQ06 (Qwen3 0.6B), WQ35 (Qwen3.5 0.8B) and WLF12 (LFM2.5 1.2B Instruct, naklitechie's community build on WebLLM
+chat only), WQ06 (Qwen3 0.6B), WQ35 (Qwen3.5 0.8B), WLF3 (LFM3 1.7B, our own MLC build from lm-experiments experiments/lfm3-mlc: q4f16_1 at kealjones/LFM3-1.7B-q4f16_1-MLC, WebLLM 0.2.87, `toolformats/lfm3.js`; compiled and uploaded 2026-11-09 but never yet run on a real GPU — headless Chromium's SwiftShader runs out of memory in the sandbox) and WLF12 (LFM2.5 1.2B Instruct, naklitechie's community build on WebLLM
 0.2.86, `maxContext: 4096`, tools in LFM2's own format via `toolformats/lfm2.js`: Pythonic calls in `<|tool_call_start|>[…]`,
 results in a `tool` turn, raw prompts with `<|startoftext|>` added since WebLLM only adds BOS on its manifest path; card sampling
 temperature 0.1, repeat 1.05) are MLC builds on WebGPU. They keep `runtime: 'wllama'` (so isLite, chatOnly, nativeTools and the

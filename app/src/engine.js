@@ -74,6 +74,16 @@ export const MODELS = {
       model_lib: HF + 'naklitechie/LFM2.5-1.2B-Instruct-q4f16_1-MLC/resolve/main/LFM2.5-1.2B-Instruct-q4f16_1-webgpu.wasm',
       overrides: { context_window_size: 4096 },
     } },
+  // LFM3 1.7B on WebLLM (Keal, 2026-11-09): our own MLC build (lm-experiments experiments/lfm3-mlc: model definition for
+  // mlc-llm, TVM built from source at WebLLM 0.2.87's commit, q4f16_1, 4K window, prefill chunks of 256 because five of its
+  // layers attend over a 256-token window). Tools in LFM3's own format (toolformats/lfm3.js). Not yet run on a real GPU.
+  WLF3: { label: 'Test: LFM3 1.7B (GPU)', size: '~990 MB', experimental: true, note: 'LFM3 1.7B on WebLLM (WebGPU) with tools in its own format, thinking first. Built for Squiggle from Liquid\'s weights (4-bit), so it is untested: if it answers in gibberish the port is wrong, not the model. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
+    mlc: 'LFM3-1.7B-q4f16_1-MLC', bytes: 990000000,
+    mlcRecord: {
+      model: HF + 'kealjones/LFM3-1.7B-q4f16_1-MLC/resolve/main/',
+      model_lib: HF + 'kealjones/LFM3-1.7B-q4f16_1-MLC/resolve/main/LFM3-1.7B-q4f16_1-webgpu.wasm',
+      overrides: { context_window_size: 4096 },
+    } },
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true, family: 'gemma4' },
 };
 
