@@ -6,9 +6,10 @@
 #   python3 tests/eval/llm_server.py LFM2.5-1.2B-Instruct-Q4_0.gguf 8711 [n_ctx]
 #
 # POST {prompt, max_tokens, temperature, top_p, repetition_penalty, stop} → {text, prompt_tokens, completion_tokens, seconds}.
-import json, sys, time
+import json, os, sys, time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from llama_cpp import Llama
+LOG = os.environ.get('LLM_LOG')
 m = Llama(sys.argv[1], n_ctx=int(sys.argv[3]) if len(sys.argv) > 3 else 4096, n_threads=2, verbose=False)
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -28,6 +29,8 @@ class H(BaseHTTPRequestHandler):
             hit = next((s for s in stops if s in text), None)
             if hit: text = text[:text.index(hit)]; break
         r = {'text': text, 'prompt_tokens': len(toks), 'completion_tokens': len(gen), 'seconds': round(time.time() - t, 1)}
+        if LOG:  # LLM_LOG=path: one line per completion (the prompt's tail and the raw text, special tokens kept)
+            with open(LOG, 'a') as f: f.write(json.dumps({'prompt_tail': b['prompt'][-600:], **r}) + '\n')
         body = json.dumps(r).encode()
         self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
 HTTPServer(('127.0.0.1', int(sys.argv[2])), H).serve_forever()
