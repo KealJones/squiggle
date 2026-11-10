@@ -84,6 +84,14 @@ export const MODELS = {
       model_lib: HF + 'kealjones/LFM3-1.7B-q4f16_1-MLC/resolve/main/LFM3-1.7B-q4f16_1-webgpu.wasm',
       overrides: { context_window_size: 4096 },
     } },
+  // The same model in MLC's 3-bit group quantization (q3f16_1, 769 MB): Keal's call, in case 4-bit is too big on a phone.
+  WLF3Q3: { label: 'Test: LFM3 1.7B 3-bit (GPU)', size: '~770 MB', experimental: true, note: 'LFM3 1.7B in 3-bit on WebLLM (WebGPU), a fifth smaller than the 4-bit build and likely a little worse. Built for Squiggle from Liquid\'s weights, so it is untested. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
+    mlc: 'LFM3-1.7B-q3f16_1-MLC', bytes: 806000000,
+    mlcRecord: {
+      model: HF + 'kealjones/LFM3-1.7B-q3f16_1-MLC/resolve/main/',
+      model_lib: HF + 'kealjones/LFM3-1.7B-q3f16_1-MLC/resolve/main/LFM3-1.7B-q3f16_1-webgpu.wasm',
+      overrides: { context_window_size: 4096 },
+    } },
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true, family: 'gemma4' },
 };
 
