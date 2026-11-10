@@ -76,8 +76,10 @@ export const MODELS = {
     } },
   // LFM3 1.7B on WebLLM (Keal, 2026-11-09): our own MLC build (lm-experiments experiments/lfm3-mlc: model definition for
   // mlc-llm, TVM built from source at WebLLM 0.2.87's commit, q4f16_1, 4K window, prefill chunks of 256 because five of its
-  // layers attend over a 256-token window). Tools in LFM3's own format (toolformats/lfm3.js). Not yet run on a real GPU.
-  WLF3: { label: 'Test: LFM3 1.7B (GPU)', size: '~990 MB', experimental: true, note: 'LFM3 1.7B on WebLLM (WebGPU) with tools in its own format, thinking first. Built for Squiggle from Liquid\'s weights (4-bit), so it is untested: if it answers in gibberish the port is wrong, not the model. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
+  // layers attend over a 256-token window). Tools in LFM3's own format (toolformats/lfm3.js). On an iPhone in Squiggle
+  // (2026-11-10, small-model prompt and tools): "Hii" → a plain greeting, first word in 15 s, 13.7 tok/s. memtest's
+  // 3K-token prompt killed the tab while answering, so long chats are at the phone's memory edge.
+  WLF3: { label: 'Test: LFM3 1.7B (GPU)', size: '~990 MB', experimental: true, note: 'LFM3 1.7B on WebLLM (WebGPU) with tools in its own format, thinking first: about 14 words a second on an iPhone, 8x the CPU build. Our own 4-bit build of Liquid\'s weights; long chats may run a phone out of memory. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
     mlc: 'LFM3-1.7B-q4f16_1-MLC', bytes: 990000000,
     mlcRecord: {
       model: HF + 'kealjones/LFM3-1.7B-q4f16_1-MLC/resolve/main/',
@@ -85,7 +87,10 @@ export const MODELS = {
       overrides: { context_window_size: 4096 },
     } },
   // The same model in MLC's 3-bit group quantization (q3f16_1, 769 MB): Keal's call, in case 4-bit is too big on a phone.
-  WLF3Q3: { label: 'Test: LFM3 1.7B 3-bit (GPU)', size: '~770 MB', experimental: true, note: 'LFM3 1.7B in 3-bit on WebLLM (WebGPU), a fifth smaller than the 4-bit build and likely a little worse. Built for Squiggle from Liquid\'s weights, so it is untested. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
+  // It isn't (the 4-bit runs), and 3-bit loses the model's judgement: on an iPhone (2026-11-10) "Hii" became 400 tokens of
+  // "likely a placeholder… I'll proceed to use the tool calls?", with or without Squiggle's prompt, where the 4-bit build and
+  // Liquid's own 4-bit (llama.cpp) both just greet. Kept for comparison.
+  WLF3Q3: { label: 'Test: LFM3 1.7B 3-bit (GPU)', size: '~770 MB', experimental: true, note: 'LFM3 1.7B in 3-bit on WebLLM (WebGPU), a fifth smaller than the 4-bit build but noticeably worse: it overthinks even a greeting. For comparison only. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
     mlc: 'LFM3-1.7B-q3f16_1-MLC', bytes: 806000000,
     mlcRecord: {
       model: HF + 'kealjones/LFM3-1.7B-q3f16_1-MLC/resolve/main/',
