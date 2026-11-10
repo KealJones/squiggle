@@ -7,14 +7,13 @@ import * as grants from '../grants.js';
 import * as engine from '../engine.js';
 import * as agent from '../agent.js';
 import * as voice from '../voice.js';
-import { CONTEXT_MODES, contextMode } from '../context.js';
 import { h, icon, toast } from './dom.js';
 import { state } from './state.js';
-import { saveSettings, applyTheme, setDefaultContextMode } from './settings.js';
-import { modelPicker, showSetup } from './setup.js';
+import { saveSettings, applyTheme } from './settings.js';
+import { showSetup } from './setup.js';
 import * as demo from '../demo.js';
 import { openDrawer } from './panels.js';
-import { switchModel, loadModel, updateComposerNote, loadSemantic, sessionModel } from './model-ui.js';
+import { switchModel, loadSemantic } from './model-ui.js';
 
 // ── Building blocks ────────────────────────────────────────────────────────
 const section = (title, ...fields) => h('section', { class: 'settings-sec' }, h('h3', {}, title), ...fields.filter(Boolean));
@@ -73,55 +72,10 @@ function voiceSettingsField(S, seg) {
 }
 
 // ── Model ──────────────────────────────────────────────────────────────────
-// Small-model mode: a per-model switch for models with tools; always on (and shown as such) for Squiggle
-// Small, whose fenced tool format only works with it; not shown for plain-chat models.
-function smallModeField(S) {
-  const id = S.model;
-  if (engine.chatOnly && engine.chatOnly(id)) return '';
-  const what = 'The short "don\'t guess, find it" prompt Squiggle Small is trained on: plan, done, need and find up front, and find to pick other tools.';
-  if (!agent.smallModeSwitchable(id)) {
-    return field('Small-model mode', '', `Always on for ${engine.MODELS[id].label}: it's trained on this format. ${what}`);
-  }
-  // Saved as true or false per model (an explicit false overrides the default); unset means the model's default.
-  return switchRow('Small-model mode', `${what} Off gives ${engine.MODELS[id].label} the full prompt. ${agent.smallModeDefault(id) ? 'On by default for a small model: the full prompt and every tool took half its window.' : 'Off by default for a big model.'} Saved for this model only; applies from the next message.`, agent.smallMode(id), (e) => {
-    S.smallMode = { ...(S.smallMode || {}), [id]: e.target.checked };
-    saveSettings(); updateComposerNote();
-  });
-}
-
-// No prompt (experimental): the same models as the Small-model mode switch, saved per model.
-function noPromptField(S) {
-  const id = S.model;
-  if (!agent.smallModeSwitchable(id)) return '';
-  return switchRow('No prompt (experimental)', `Squiggle sends ${engine.MODELS[id].label} no instructions of its own: no persona, rules or tool-names line, only its tools in its own format and the conversation. For seeing how the model does on its own training. Saved for this model only; applies from the next message.`, agent.noPrompt(id), (e) => {
-    S.noPrompt = { ...(S.noPrompt || {}), [id]: e.target.checked };
-    saveSettings(); updateComposerNote();
-  });
-}
-
-// The device's default model. The main models are listed; test and experimental
-// ones fold away unless one of them is the current choice.
+// The model, as a fact rather than a menu: which one, and how it runs on this device (engine.forDevice picks the
+// build). Each chat picks its model when it starts (the new-chat settings) and can switch in the chat details. A
+// build that crashed here was stepped down from; it can be tried again.
 function modelField(S) {
-  const def = engine.forDevice(engine.MODELS[S.defaultModel] ? S.defaultModel : S.model);
-  const onPick = async (v) => {
-    if (v === def) return;
-    S.defaultModel = v; saveSettings();   // the saved model is the default
-    // The open chat follows the default unless it has its own model.
-    await switchModel(sessionModel(state.current));
-    renderSettingsPanel();
-  };
-  const all = modelPicker(def, onPick);
-  const options = [...all.querySelectorAll('.model-option')];
-  const extra = options.filter(o => engine.MODELS[o.dataset.model] && engine.MODELS[o.dataset.model].experimental);
-  let more = '';
-  if (extra.length) {
-    const list = h('div', { class: 'model-list' }, ...extra);
-    more = h('details', { class: 'model-more' }, h('summary', {}, `${engine.labOn() ? 'Experimental and lab models' : 'Experimental models'} (${extra.length})`), list);
-    more.open = extra.some(o => o.dataset.model === def);
-  }
-  const own = state.current && state.current.model && state.current.model !== def ? `This chat uses ${engine.MODELS[state.current.model] ? engine.MODELS[state.current.model].label : state.current.model} (set in the chat details); the default applies to other chats.` : '';
-  // How it runs is picked for the device (engine.forDevice): said here, not asked. A build that crashed here was
-  // stepped down from; it can be tried again.
   const M = engine.MODELS[S.model];
   const how = M ? `${M.label} runs ${engine.runnerLabel(S.model)} on this device, picked automatically.` : '';
   const avoided = (S.avoidBuilds || []).filter(id => engine.MODELS[id]);
@@ -129,9 +83,9 @@ function modelField(S) {
     S.avoidBuilds = []; engine.setAvoided([]); saveSettings();
     await switchModel(engine.forDevice(S.model)); renderSettingsPanel();
   } }, 'Try the GPU again') : '';
-  return field('Model', h('div', {}, all, more, retry ? h('div', { class: 'row' }, retry) : ''), [how,
-    avoided.length ? 'The GPU build crashed this tab before, so it runs on the CPU.' : '',
-    M && M.runtime !== 'cloud' && state.cloudOffered ? 'The cloud model is there for bigger jobs.' : '', own].filter(Boolean).join(' '));
+  return field('Model', h('div', {}, h('span', { class: 'value' }, how), retry ? h('div', { class: 'row' }, retry) : ''),
+    [avoided.length ? 'The GPU build crashed this tab before, so it runs on the CPU.' : '',
+      'Each chat picks its model when it starts (the settings button in a new chat) and can switch in the chat details.'].filter(Boolean).join(' '));
 }
 
 // ── The panel ──────────────────────────────────────────────────────────────
@@ -141,10 +95,6 @@ export function renderSettingsPanel() {
   const S = agent.settings;
   const seg = (options, value, onPick) => h('div', { class: 'seg' }, options.map(([v, label]) => h('button', { 'aria-pressed': String(v === value), onclick: () => { onPick(v); saveSettings(); renderSettingsPanel(); } }, label)));
   const cfg = storage.storageConfig();
-  const M = engine.MODELS[S.model];
-  const mode = S.defaultContextMode || S.contextMode || 'smart';
-  const modes = Object.entries(CONTEXT_MODES).filter(([k, d]) => d.offered || (d.lab && engine.labOn()) || k === mode);
-  const reloadIfReady = async () => { if (engine.engineReady()) await loadModel(); };
 
   // Relay: an inline editor instead of a prompt().
   const relayInput = h('input', { type: 'text', value: relayUrl(), placeholder: 'Same site as the app', spellcheck: 'false', 'aria-label': 'Relay address' });
@@ -154,24 +104,13 @@ export function renderSettingsPanel() {
   } }, 'Save and reload');
 
   body.append(
-    section('Model',
-      modelField(S),
-      // The tuning knobs are lab-only: the device picks the build, its context and its cores.
-      engine.labOn() ? smallModeField(S) : '',
-      engine.labOn() ? noPromptField(S) : '',
-      !engine.labOn() ? '' : field('Context window', seg([[4096, '4K'], [8192, '8K'], [16384, '16K']].filter(([v]) => !M.maxContext || v <= M.maxContext), S.contextSize, async (v) => { S.contextSize = v; await reloadIfReady(); }),
-        M.maxContext ? `This build was compiled for ${M.maxContext / 1024}K at most.` : 'Bigger remembers more per turn but uses more memory and is slower to start. Phones are safest at 4K.'),
-      M.runtime === 'litert' ? switchRow('Speed boost', 'Replies come noticeably faster, but it loads an extra helper model and needs more memory. Off by default on phones.', S.fastDecode, async (e) => { S.fastDecode = e.target.checked; saveSettings(); await reloadIfReady(); }) : '',
-    ),
+    section('Model', modelField(S)),
 
     section('Context',
-      h('div', { class: 'field' },
-        h('label', { for: 'context-mode', class: 'label' }, 'How context is managed'),
-        h('select', { id: 'context-mode', onchange: (e) => { setDefaultContextMode(e.target.value, state.current); if (['smart', 'fresh'].includes(S.contextMode) && S.semantic) loadSemantic(); updateComposerNote(); renderSettingsPanel(); } },
-          ...modes.map(([v, d]) => h('option', { value: v, selected: mode === v ? true : null }, d.label))),
-        h('span', { class: 'hint' }, `${CONTEXT_MODES[mode] ? CONTEXT_MODES[mode].hint : ''} Check "What the model saw" on any reply.${state.current && state.current.contextMode ? ` This chat uses ${contextMode(state.current.contextMode).short} (set in the chat details); the default applies to other chats.` : ''}`)),
-      ['smart', 'fresh'].includes(S.contextMode) ? switchRow('Bring in other chats', S.contextMode === 'fresh' ? 'The lookup before each message also searches your other chats.' : 'Smart context may also quote a message from another chat when it clearly fits.', S.recallChats === true, (e) => { S.recallChats = e.target.checked; saveSettings(); }) : '',
-      ['smart', 'fresh'].includes(S.contextMode) ? switchRow('Search by meaning', 'Also matches by meaning, not just words. Downloads a small 23 MB search model that runs on the CPU. With its runtime it takes roughly 100 MB of tab memory while a search runs, and on phones it\'s freed 15 seconds after.', S.semantic, (e) => { S.semantic = e.target.checked; saveSettings(); if (S.semantic) loadSemantic(); }) : '',
+      field('How context is managed', h('span', { class: 'value' }, 'Chosen per chat, before its first message: the settings button in a new chat. Compress unless you pick another.'),
+        'Check "What the model saw" on any reply to see exactly what each type sends.'),
+      switchRow('Bring in other chats', 'Smart and Fresh chats may also bring in a message from another chat when it clearly fits.', S.recallChats === true, (e) => { S.recallChats = e.target.checked; saveSettings(); }),
+      switchRow('Search by meaning', 'Also matches by meaning, not just words. Downloads a small 23 MB search model that runs on the CPU. With its runtime it takes roughly 100 MB of tab memory while a search runs, and on phones it\'s freed 15 seconds after.', S.semantic, (e) => { S.semantic = e.target.checked; saveSettings(); if (S.semantic) loadSemantic(); }),
       switchRow('Learn from conversations', 'After each reply, Squiggle saves lasting facts to Memory. Review them in the Memory panel.', S.learn, (e) => { S.learn = e.target.checked; saveSettings(); }),
     ),
 
@@ -207,9 +146,7 @@ export function renderSettingsPanel() {
         'The agent pushes its own agent/ branches freely. Pushing any other branch asks first, unless you chose "Always allow" for it.'),
     ),
 
-    section('Lab',
-      switchRow('Lab mode', 'Shows the research models (size tests, stock small models, older builds) and the experimental switches: the bare-prompt test, GPU and all cores for CPU models, AI-managed context. Also ?lab=1 in the address. See docs/lab.md for what each one was for.', Boolean(S.lab), (e) => { S.lab = e.target.checked; engine.setLab(S.lab); saveSettings(); renderSettingsPanel(); }),
-      engine.labOn() ? switchRow('One bash tool (experimental)', 'Instead of separate tools for files, the web, git and maths, the model gets a shell on the same files: cat, grep, sed, pipes, plus git, gh, curl, search, wiki, node and bc (`man` lists them). Far fewer tool definitions in the context. Applies from the next message.', S.toolSurface === 'bash', (e) => { S.toolSurface = e.target.checked ? 'bash' : 'tools'; saveSettings(); updateComposerNote(); }) : '',
+    section('Debug',
       switchRow('Save tool results and prompts', 'Keeps what each tool returned (under "Result" in a reply\'s tool list) and everything the model was sent: system prompt, tool schemas, messages and each round, in "What the model saw". On by default: it\'s the evidence the failure casebook is written from. Saved in your storage repo (the full context in its own file per reply, prompts/); long results are cut. Applies from the next message.', S.debugTools, (e) => { S.debugTools = e.target.checked; saveSettings(); }),
     ),
 

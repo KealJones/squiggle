@@ -387,12 +387,14 @@ await check('model download: progress from the first moment, one download at a t
   await page.goto(appUrl + '/');
   const r = await page.evaluate(async () => {
     const engine = await import('/src/engine.js');
+    // A single-file model (LiteRT's runtime; no shipped model uses it now, the download code stays for one that does).
+    engine.MODELS.DLTEST = { label: 'Download test', size: '40 MB', phone: false, runtime: 'litert', url: 'https://huggingface.co/test/resolve/main/model.litertlm' };
     const events = { a: [], b: [], waiting: 0 };
     // Two downloads at once, like double taps or a second tab.
-    const first = engine.download('E2B', (got, total) => events.a.push([got, total]));
-    const second = engine.download('E2B', (got, total) => events.b.push([got, total]), undefined, { onWaiting: () => events.waiting++ });
+    const first = engine.download('DLTEST', (got, total) => events.a.push([got, total]));
+    const second = engine.download('DLTEST', (got, total) => events.b.push([got, total]), undefined, { onWaiting: () => events.waiting++ });
     await Promise.all([first, second]);
-    const info = await engine.downloadInfo('E2B');
+    const info = await engine.downloadInfo('DLTEST');
     return { info, waiting: events.waiting, firstProgress: events.a[0], last: events.a[events.a.length - 1], bProgress: events.b.length, aCount: events.a.length };
   });
   assert.deepEqual(r.firstProgress, [0, 0], 'reports immediately, before the network answers');
@@ -905,17 +907,25 @@ await check('chat details sidebar: model, context window breakdown (live and sav
   assert.ok(w && w.size > 0 && w.parts.instructions > 0 && w.used > 0, JSON.stringify(w));
   const total = Object.values(w.parts).reduce((a, b) => a + b, 0);
   assert.equal(w.used, total);
-  // The chat's own context mode: picked in the sidebar, in effect for this chat only (the device default stays),
-  // saved with the chat, back to the default when cleared.
-  await D.page.selectOption('#ctx-side select[aria-label="Context for this chat"]', 'fresh');
-  assert.deepEqual(await D.page.evaluate(async () => { const a = await import('/src/agent.js'); return [a.settings.contextMode, a.settings.defaultContextMode, JSON.parse(localStorage.getItem('squiggle-settings')).contextMode, (await import('/src/ui/state.js')).state.current.contextMode]; }), ['fresh', 'smart', 'smart', 'fresh']);
-  assert.match(await D.page.textContent('#ctx-side'), /Context\s*Fresh/);
+  // A started chat shows its context type in the sidebar, fixed: no picker (it's chosen before the first message).
+  assert.equal(await D.page.$('#ctx-side select[aria-label="Context for this chat"]'), null);
+  assert.match(await D.page.textContent('#ctx-side'), /Context for this chat.*Set when the chat started/s);
+  // A new chat picks its model and context type in the settings above its first message.
   await D.page.click('#new-chat');
-  assert.equal(await D.page.evaluate(async () => (await import('/src/agent.js')).settings.contextMode), 'smart', 'a new chat gets the default back');
-  await D.page.evaluate(async () => { const S = await import('/src/sessions.js'); const c = await import('/src/ui/chat.js'); c.openSession(S.list().find(x => x.contextMode === 'fresh')); });
-  assert.equal(await D.page.evaluate(async () => (await import('/src/agent.js')).settings.contextMode), 'fresh', 'reopening the chat brings its mode back');
-  await D.page.selectOption('#ctx-side select[aria-label="Context for this chat"]', '');
-  assert.equal(await D.page.evaluate(async () => (await import('/src/agent.js')).settings.contextMode), 'smart');
+  await D.page.waitForSelector('.chat-setup');
+  const def = await D.page.evaluate(async () => (await import('/src/agent.js')).settings.defaultContextMode || 'compact');
+  assert.match(await D.page.textContent('.chat-setup > summary'), new RegExp(`This chat: .* · ${def === 'compact' ? 'Compress' : '\\w+'}`));
+  await D.page.click('.chat-setup > summary');
+  assert.ok((await D.page.$$('.chat-setup input[name="chat-model"]')).length >= 2, 'the models to pick from');
+  assert.deepEqual(await D.page.$$eval('.chat-setup input[name="chat-context"]', els => els.map(e => e.value)), ['compact', 'smart', 'fresh', 'managed']);
+  await D.page.check('.chat-setup input[name="chat-context"][value="fresh"]');
+  assert.deepEqual(await D.page.evaluate(async () => { const a = await import('/src/agent.js'); return [a.settings.contextMode, (await import('/src/ui/state.js')).state.current.contextMode]; }), ['fresh', 'fresh']);
+  assert.match(await D.page.textContent('.chat-setup > summary'), /· Fresh/);
+  assert.match(await D.page.textContent('#ctx-side'), /Context for this chat\s*Fresh/);
+  // The next new chat starts on the default again.
+  await D.page.click('#new-chat');
+  await D.page.waitForSelector('.chat-setup');
+  assert.equal(await D.page.evaluate(async () => (await import('/src/agent.js')).settings.contextMode), def, 'a new chat gets the default back');
   // Collapse a section and hide the sidebar: both are remembered.
   await D.page.click('#ctx-side [data-sec="used"] summary');
   await D.page.click('#close-side');
@@ -1304,9 +1314,10 @@ await check('a crash while loading the model is caught on the next open; phones 
       assert.equal(r.saved.model, 'SQ');
       assert.equal(r.marker, null);
       assert.deepEqual(r.cleanup, ['G3', 'SQ', 'cloud'], 'only phone models are kept; old Gemma 4 downloads are freed');
-      await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
-      await page.waitForSelector('#drawer .model-option');
-      assert.deepEqual(await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model)), ['G3', 'SQ', 'cloud']);
+      // The models a new chat offers (its settings, above the first message).
+      await page.evaluate(() => document.querySelector('#new-chat').click());
+      await page.waitForSelector('.chat-setup');
+      assert.deepEqual(await page.$$eval('.chat-setup input[name="chat-model"]', els => els.map(e => e.value)), ['G3', 'SQ', 'cloud']);
       if (shotsDir) await page.screenshot({ path: `${shotsDir}/phone-model-picker.png` });
     } else {
       await page.waitForSelector('#model-banner:not([hidden])');
@@ -1318,7 +1329,7 @@ await check('a crash while loading the model is caught on the next open; phones 
       await page.click('#model-banner button:has-text("Use lighter settings")');
       await page.waitForFunction(() => window.__loads === 1);
       const r = await page.evaluate(() => ({ last: window.__lastLoad, marker: localStorage.getItem('squiggle-model-loading'), cleanup: window.__cleanup }));
-      assert.deepEqual(r.last, { id: 'E2B', ctx: 4096, opts: { fast: false } });
+      assert.deepEqual(r.last, { id: 'E2B', ctx: 8192, opts: { fast: false } });
       assert.equal(r.marker, null, 'marker cleared after a good load');
       assert.deepEqual(r.cleanup, ['E4B', 'E2B', 'G3', 'SQ', 'cloud']);
       // Replies are tracked too: progress writes the marker, idle clears it.
@@ -1342,9 +1353,10 @@ await check('a crash while loading the model is caught on the next open; phones 
       await page.waitForFunction(() => window.__loads === 1);
       assert.equal(await page.evaluate(() => localStorage.getItem('squiggle-page-left')), null, 'the note is used up');
       assert.ok(await page.$eval('#model-banner', el => el.hidden || !/crashed/.test(el.textContent)), 'no crash banner after a refresh');
-      await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
-      await page.waitForSelector('#drawer .model-option');
-      assert.deepEqual(await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model)), ['E4B', 'E2B', 'G3', 'SQ', 'cloud']);
+      // The models a new chat offers (its settings, above the first message).
+      await page.evaluate(() => document.querySelector('#new-chat').click());
+      await page.waitForSelector('.chat-setup');
+      assert.deepEqual(await page.$$eval('.chat-setup input[name="chat-model"]', els => els.map(e => e.value)), ['E4B', 'E2B', 'G3', 'SQ', 'cloud']);
     }
     assert.deepEqual(page.errors, []);
     await ctx.close();
@@ -1566,15 +1578,17 @@ await check('Squiggle Small (fine-tuned) gets the harness: system prompt and too
   assert.equal(await D.page.evaluate(() => window.__engineLog.filter(e => e.type === 'complete').length), 0, 'no titles, facts or summaries from a small model');
 });
 
-await check('small-model mode is a per-model switch: off gives E2B the full prompt, on gives it the find-first one; Squiggle Small is always on', async () => {
+await check('the prompt follows the model, with no switches: a big model gets the full prompt, Squiggle Small its find-first one', async () => {
   const D = await device('smallmode');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
   await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
   await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
-  // Lab mode: the No prompt switch is listed only there.
-  await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'E2B'; s.lab = true; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
+  // Whatever an older version saved for the removed switches goes (settings.js `simplified`).
+  await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'E2B'; s.lab = true; s.smallMode = { E2B: true }; s.noPrompt = { E2B: true }; delete s.simplified; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
+  const saved = await D.page.evaluate(() => JSON.parse(localStorage.getItem('squiggle-settings')));
+  assert.ok(saved.simplified && !('lab' in saved) && !('smallMode' in saved) && !('noPrompt' in saved), JSON.stringify(saved));
   const send = async (text) => {
     const before = await D.page.evaluate(() => (window.__engineLog || []).filter(e => e.type === 'conversation').length);
     await D.page.click('#new-chat');
@@ -1583,44 +1597,20 @@ await check('small-model mode is a per-model switch: off gives E2B the full prom
     await D.page.waitForFunction(n => (window.__engineLog || []).filter(e => e.type === 'conversation').length > n, before);
     return D.page.evaluate(() => window.__engineLog.filter(e => e.type === 'conversation').at(-1));
   };
-  const off = await send('hi');
-  assert.match(off.system, /^You are Squiggle, a personal AI agent/, 'off by default: the full prompt');
+  const big = await send('hi');
+  assert.match(big.system, /^You are Squiggle, a personal AI agent/, 'a big model: the full prompt');
+  // Settings has none of the old model switches.
   await D.page.click('button[data-panel="settings"]');
-  const box = D.page.locator('#drawer label.toggle:has-text("Small-model mode") input');
-  assert.equal(await box.isChecked(), false);
-  await box.check();
-  assert.deepEqual(await D.page.evaluate(() => JSON.parse(localStorage.getItem('squiggle-settings')).smallMode), { E2B: true });
+  for (const name of ['Small-model mode', 'No prompt', 'Context window', 'Use the GPU', 'Use all CPU cores', 'Lab mode', 'One bash tool']) {
+    assert.equal(await D.page.locator(`#drawer :text("${name}")`).count(), 0, `no "${name}" in Settings`);
+  }
   await D.page.click('#close-drawer');
-  await D.page.waitForTimeout(500);
-  const on = await send('hello again');
-  assert.match(on.system, /^You are Squiggle, an assistant that figures things out\./);
-  assert.match(on.system, /need\(what\) asks the user for something only they know/);
-  assert.doesNotMatch(on.system, /```tool_call/, 'native tool formats don\'t get the fenced-block line');
-  assert.ok(on.tools.includes('find') && on.tools.includes('plan'), JSON.stringify(on.tools));
-  // No prompt (experimental): no system prompt at all, tools unchanged; saved per model; off again restores it.
-  await D.page.click('button[data-panel="settings"]');
-  const none = D.page.locator('#drawer label.toggle:has-text("No prompt") input');
-  assert.equal(await none.isChecked(), false);
-  await none.check();
-  assert.deepEqual(await D.page.evaluate(() => JSON.parse(localStorage.getItem('squiggle-settings')).noPrompt), { E2B: true });
-  await D.page.click('#close-drawer');
-  await D.page.waitForTimeout(500);
-  const bare = await send('hello with no prompt');
-  assert.equal(bare.system, '', 'no system prompt');
-  assert.deepEqual(bare.tools, on.tools, 'the same tools');
-  await D.page.click('button[data-panel="settings"]');
-  await none.uncheck();
-  await D.page.click('#close-drawer');
-  await D.page.waitForTimeout(500);
-  assert.match((await send('and back')).system, /^You are Squiggle, an assistant that figures things out\./);
-  // Squiggle Small: shown as always on, no switch.
+  // Squiggle Small: always its find-first prompt.
   await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'SQ'; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
-  await D.page.click('button[data-panel="settings"]');
-  await D.page.waitForSelector('#drawer .field:has-text("Small-model mode")');
-  assert.equal(await D.page.locator('#drawer label.toggle:has-text("Small-model mode")').count(), 0);
-  assert.match(await D.page.locator('#drawer .field:has-text("Small-model mode")').textContent(), /Always on for Fake SQ/);
+  const small = await send('hello again');
+  assert.doesNotMatch(small.system || '', /^You are Squiggle, a personal AI agent/, 'Squiggle Small never gets the full prompt');
 });
 
 await check('small models: a long page comes back as a card saved in /web, grep finds the answer, and used results shrink to what the model took', async () => {

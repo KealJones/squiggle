@@ -263,3 +263,18 @@ off (the crash-loop guard). The WebLLM models made the GPU switch moot for phone
 and remembers it. Settings lost the model zoo, context size, small-model mode, no-prompt, "Use the GPU" and "Use
 all CPU cores": cores are automatic on the CPU path. Everything else is a lab-mode model, kept so the evals and the
 casebook still reproduce. Open: a q4f32 WebLLM build of LFM3, so GPUs without 16-bit floats stay on the GPU.
+
+### Fewer models, fewer switches — shipped
+
+**Idea.** Keal, 2026-11-10: "too much to maintain". One model to test against everywhere (LFM3 1.7B, known to run on
+an iPhone 16 and desktops), his own two models kept as experiments, the context types as the thing people play with.
+
+**What happened.** Removed: Gemma 4 E2B/E4B, Gemma 3 270M, Qwen3 and Qwen3.5 (CPU and GPU), Llama 3.2 1B, LFM2.5
+1.2B, LFM3's test builds, lab mode, and the small-model, no-prompt, tool-surface, context-size, GPU and cores
+settings. Bash is LFM3's and the cloud model's tool surface, next to find, plan, done and need; Squiggle Small and
+Tiny Gemma 4 keep the separate tools they were trained on. curl fetches any URL (a made-up one fails on its own); the
+allowed-URL check stays on fetch_url for the two fine-tunes. Each chat picks its model and context type before its
+first message (Compress by default); the context type is then fixed, the model can still switch. LFM3 got a q4f32
+twin (lm-experiments job lfm3-mlc-9) so GPUs without 16-bit floats stay on the GPU. The runtimes and tool formats
+stay, so a model is one registry entry; the measurements and casebook entries from the removed models stay as
+history.

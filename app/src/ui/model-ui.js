@@ -119,7 +119,7 @@ function lighterModel(id) {
 }
 function lightest() {
   const S = agent.settings;
-  return !lighterModel(S.model) && S.contextSize <= 4096 && !S.fastDecode;
+  return !lighterModel(S.model) && !S.fastDecode;
 }
 
 function showCrashBanner(c) {
@@ -131,7 +131,7 @@ function showCrashBanner(c) {
   const nm = engine.MODELS[next];
   const sameModel = next !== S.model && engine.groupOf(next) && engine.groupOf(next) === engine.groupOf(S.model);
   const lighter = h('button', { class: 'btn primary', onclick: async () => {
-    Object.assign(agent.settings, { contextSize: 4096, fastDecode: false });
+    agent.settings.fastDecode = false;
     // Stepping down from one build to another of the same model: remember that this one crashed here, so the
     // automatic pick (engine.forDevice) doesn't go back to it on the next open.
     if (sameModel) { S.avoidBuilds = [...new Set([...(S.avoidBuilds || []), S.model])]; engine.setAvoided(S.avoidBuilds); }
@@ -152,7 +152,7 @@ function showCrashBanner(c) {
   } }, c.small.gpu ? 'Turn off the GPU and try again' : 'Turn off all cores and try again') : '';
   const again = h('button', { class: changed || once ? 'btn primary' : 'btn', onclick: () => { setCrashMarker(null); loadModel(); } }, changed ? 'Load model' : 'Try again');
   if (once) lighter.className = 'btn';
-  const settingsText = `${engine.MODELS[S.model].label}, ${S.contextSize / 1024}K context, speed boost ${S.fastDecode ? 'on' : 'off'}`;
+  const settingsText = `${engine.MODELS[S.model].label}, ${engine.contextFor(S.model) / 1024}K context`;
   banner(h('div', { class: 'dl' },
     h('span', {}, `${c.phase === 'reply' ? m.label + ' crashed this tab while answering' : 'Loading ' + m.label + ' crashed this tab last time'}${c.stage ? `, while ${c.stage}` : ''}.`),
     c.gpu ? h('span', { class: 'muted' }, `GPU: ${c.gpu}`) : '',
@@ -163,7 +163,7 @@ function showCrashBanner(c) {
       : lightest()
         ? 'This is already the lightest setup. Close other tabs and apps, then try again; some devices can\'t run the model.'
         : sameModel ? `${nm.label} can also run on the CPU: slower, but it uses ordinary memory instead of the GPU's.`
-          : `Lighter settings use ${nm.label} (needs less memory), a 4K context and no speed boost.`),
+          : `Lighter settings use ${nm.label} (needs less memory).`),
     risky ? h('span', { class: 'muted' }, `It was using the experimental ${c.small.gpu ? 'GPU' : 'all-cores'} setting.`) : '',
     h('div', { class: 'row' }, plain, once ? again : '', changed || lightest() || risky ? '' : lighter, once ? '' : again)));
 }
@@ -323,15 +323,15 @@ export async function loadModel() {
   const S = agent.settings;
   // A build compiled for a smaller window (MODELS maxContext, e.g. a community MLC build at 4K) can't take
   // more; the agent budgets from settings.contextSize, so the setting itself comes down to match.
-  const maxContext = engine.MODELS[S.model].maxContext;
-  if (maxContext && S.contextSize > maxContext) { S.contextSize = maxContext; saveSettings(); }
+  // Each model gets its own window (engine.contextFor: the most it was built for); there's no setting.
+  S.contextSize = engine.contextFor(S.model);
   const cloud = engine.MODELS[S.model].runtime === 'cloud';
   const step = h('span', { class: 'muted' });
   banner(h('div', { class: 'dl' }, h('div', { class: 'dl-head' }, squiggleWait(), h('span', {}, cloud ? 'Connecting to the cloud model…' : `Loading ${engine.MODELS[S.model].label}…`)), step));
   // The marker is rewritten at every step (localStorage writes are synchronous,
   // so it survives the tab being killed) and says where a crash happened.
-  // CPU builds: llama.cpp's WebGPU path is only reachable in lab mode now (the WebLLM builds run on the GPU); cores are automatic.
-  const small = engine.MODELS[S.model].runtime === 'wllama' && !engine.MODELS[S.model].backend ? { gpu: Boolean(S.smallGpu && engine.labOn()), threads: Boolean(S.smallThreads) } : null;
+  // CPU builds: llama.cpp's own WebGPU path is off (the WebLLM builds are the GPU path); cores are automatic.
+  const small = engine.MODELS[S.model].runtime === 'wllama' && !engine.MODELS[S.model].backend ? { gpu: false, threads: Boolean(S.smallThreads) } : null;
   const marker = { model: S.model, contextSize: S.contextSize, fast: S.fastDecode, small, at: Date.now(), stage: 'starting', gpu: cloud ? '' : await engine.gpuSummary(), ua: navigator.userAgent };
   setCrashMarker(marker);
   try {

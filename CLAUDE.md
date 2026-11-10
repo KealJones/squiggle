@@ -1,14 +1,15 @@
 # Squiggle — notes for engineers and coding agents
 
 A browser-only agent: LFM3 1.7B on WebLLM (WebGPU, our own MLC build) on phones and computers, or its GGUF on the
-CPU (wllama) without WebGPU (`engine.DEFAULTS`, 2026-11-10); optionally Gemma 4 26B on the relay's Workers AI. Gemma 4
-E4B (LiteRT-LM), LFM2.5 1.2B, Squiggle Small and the rest are lab-mode options. State is
+CPU (wllama) without WebGPU (`engine.DEFAULTS`, 2026-11-10); optionally Gemma 4 26B on the relay's Workers AI. Keal's
+own Squiggle Small and Tiny Gemma 4 stay as experimental options; every other model was removed (2026-11-10), the
+runtimes (LiteRT, wllama, WebLLM) and tool formats stay so adding one is a registry entry. State is
 synced through a private GitHub "storage repo", via a Cloudflare Worker that relays GitHub requests browsers
 can't make (device-flow login, git smart-HTTP). The app is static: either the Worker serves it (wrangler.toml,
 relay same-origin at /api) or GitHub Pages does (deploy.yml writes config.json with the relay URL;
 wrangler.relay.toml deploys a relay-only Worker that allows the Pages origin). Demo mode runs the same app
-with storage in the browser only and no sign-in (demo.js). Lab mode (Settings → Lab, `?lab=1`) lists the
-research models and experimental switches; docs/lab.md is the notebook for them.
+with storage in the browser only and no sign-in (demo.js). There's no lab mode any more: each chat picks its model and
+context type before its first message (chat.js `newChatSettings`); docs/lab.md is the notebook of experiments.
 
 ## Layout
 
@@ -109,7 +110,7 @@ docs/                   harness.md (the agent loop contract), failures.md (caseb
   demo mode the browser is the only copy.
 - The bash surface (`agent.bashSurface()`): the model gets `bash` and `remember` plus the harness tools instead of the
   file, web, git and maths tools. Commands that reach the network, GitHub or the sandbox go through `runTool` with the
-  agent's context, so a push still needs the approval card and curl still refuses made-up URLs; the whole output is
+  agent's context, so a push still needs the approval card and curl fetches any URL (the allowed-URL check stays on fetch_url for the two fine-tunes); the whole output is
   wrapped as untrusted; `.git` stays unreachable (`guard.resolveAgentPath`).
 - Demo mode (`storage.isLocal()`): the git and GitHub tools are left out of the model's list (agent.js
   `modelTools`), the cloud model isn't offered, the system prompt says so. Signing in later carries the local
@@ -219,11 +220,15 @@ that runs here (`runsHere`: WebGPU for GPU builds, shader-f16 for f16-only ones 
 `settings.avoidBuilds`), and that one build is the only one listed. `initModel` resolves the saved model to it,
 `sessionModel` resolves a chat saved on another device to it, and `cleanupStorage` frees the other build's download.
 A crash on the GPU build offers "Run it on the CPU instead", which adds it to `avoidBuilds` (Settings → "Try the GPU
-again" clears it). Settings shows how it runs (`engine.runnerLabel`) instead of asking: context size, small-model mode
-and no-prompt are lab-only, and there's no GPU or cores switch. Squiggle Small (`SQ`, LFM2.5-350M fine-tuned on the
-harness format, lm-experiments experiments/squiggle-ft, kealjones/squiggle-small, Q4_0 GGUF 219 MB) is a lab model now.
-Models with `lab: true` in MODELS (Gemma 4 E4B and E2B, LFM2.5 1.2B, Squiggle Small, tiny Gemma 4, the size tests, the
-stock small models, Gemma 3 270M, LFM3's other test builds) are listed only in lab mode (`engine.listedModels`; a device that already picked one keeps it).
+again" clears it). Settings shows how it runs (`engine.runnerLabel`) instead of asking. There are no context-size,
+small-model, no-prompt, tool-surface, GPU or cores settings (settings.js `simplified` clears what older versions saved):
+each model gets `engine.contextFor` (its `maxContext`, else 16K), small models always get the small-model prompt, and
+bash is the tool surface wherever `agent.bashSurface()` allows (LFM3 and the cloud model; the two fine-tunes keep the
+separate tools they were trained on). Context type is per chat, picked before the first message and fixed after
+(`session.contextMode`, set at the first send), Compress by default; the model can still switch in the chat details. Squiggle Small (`SQ`, LFM2.5-350M fine-tuned on the
+harness format, lm-experiments experiments/squiggle-ft, kealjones/squiggle-small, Q4_0 GGUF 219 MB) is an experimental option.
+The models are LFM3 (two builds), Squiggle Small (`SQ`), Tiny Gemma 4 (`TG4A`) and the cloud model; there's no lab
+mode (`engine.listedModels`; a device that already picked one keeps it).
 Gemma 3 270M (`G3`, unsloth's Q4_0 GGUF, 242 MB) stays as an option. Both run on wllama 3.13.0, CPU only
 (`n_gpu_layers: 0`), in `engine-wllama.js`; wllama caches the file itself. llama.cpp may split LFM2.5's
 `<think>` into `reasoning_content` (shown as thinking; a stray closing tag is dropped). Also the fallback on computers without WebGPU.
@@ -241,14 +246,26 @@ CPU builds use several cores automatically (`settings.smallThreads`, on by defau
 flips old devices once): `n_threads` up to 4 needs a cross-origin isolated page, which sw.js does by adding
 COOP/COEP/CORP to the app's own responses while the `squiggle-flags` cache holds `/__flags/isolate`; `initModel` sets
 that flag when the device lands on a CPU build, effective from the next open. A crash with it on offers to turn it
-off. llama.cpp's own WebGPU path (`smallGpu`) is reachable only in lab mode; the WebLLM builds are the GPU path. The composer note shows what's in
+off. llama.cpp's own WebGPU path (`smallGpu`) is off; the WebLLM builds are the GPU path. A leftover crash marker
+next to a `squiggle-page-left` note (written on pagehide / hidden) means the page was left, not crashed: it reloads
+quietly. A first real crash leads with Try again; stepping down leads after two in a row (`squiggle-crashes`). The composer note shows what's in
 use (GPU / N cores / Safari's slower compatibility build, which wllama picks when JSPI or Memory64 is missing) and the last
-reply's speed. Size-test models (LF12, LL1) are plain chat; Q06 (stock Qwen3 0.6B) uses the native tool path like Q35 and is the smallest tool-using model that stays under 1 GB on the CPU (docs/measurements-2026-11-04.md). CPU loads use an 8-bit KV cache with flash attention and n_batch 512 / n_ubatch 256 (`engine-wllama.js createEngine`, plain retry on failure): worth 300 MB on Qwen3 0.6B, 50 on Qwen3.5. TG4A is tiny Gemma 4 heal 4 pilot A (same runtime and size as TG4; trained on Toucan tool conversations, answers from tool results). It was trained without thinking, so it sets `thinking: false` in MODELS and `conversation()` never turns thinking on for it (with thinking on it re-calls the tool instead of answering from the result). TG4 (tiny Gemma 4, lm-experiments experiments/tiny-gemma4, distilled from E2B) sets `native: true`: wllama loads it with `jinja: true` and `NativeConversation` sends real `tools` through the GGUF's own Gemma 4 chat template, reading back llama.cpp's parsed `tool_calls`; the agent gives it E2B's system prompt, but small-model budgets and no background jobs. Its tools are gated (`agent.js gated()`, docs/harness.md "Tool names up front"): a few declared up front, the rest listed by name and declared when `tool_info(names)` or `find` asks for them, since every schema filled ~83% of a 4K window. Settings → Small-model mode (per model, `settings.smallMode`, true/false; unset = the default, on for small models and off for big ones) switches any model with tools except the fenced-format ones (always on) to the short `LITE_SYSTEM_NATIVE` prompt (docs/harness.md). docs/measurements-2026-11-04.md has the numbers behind the prompt sizes, `GATE`, the repeat guard and the chat-phase call cap; `node tests/e2e/model-drive.mjs --model Q35` reproduces them. Q35 (stock Qwen3.5 0.8B, unsloth's Q4_0 GGUF) uses the same native path with Qwen's own template, with thinking off (its card's default for this size). LF3 (stock LFM3-1.7B, Liquid's QAD Q4_0 GGUF, 1 GB; needs wllama ≥ 3.13) is the same native path with LFM3's template, thinking on; it's the first Liquid model trained for agent harnesses and, in llama.cpp replays of Keal's chats (2026-11-09), greets without tools, writes code itself and calls tool_info for a gated tool where LFM2.5 1.2B did not. `toolformats/lfm3.js` is its WebLLM-side format (no MLC build yet). Settings → "No prompt (experimental)" (lab mode only; `settings.noPrompt`, per model, `agent.noPrompt`) sends a switchable model no system prompt at all, memory notes included: LFM2.5 1.2B behaved the same with and without Squiggle's prompt, so its over-use of tools is its training, not the prompt. Small models get a thinking budget (400 reasoning tokens, `engine.generationFor`); the Qwens get their cards' sampling (no repeat penalty, a presence penalty), Gemma 4 its card's temperature 1.0 (docs/harness.md "Per-model generation settings"). `node tests/e2e/wllama-bench.mjs [--model SQ]` loads a
+reply's speed. CPU loads use an 8-bit KV cache with flash attention and n_batch 512 / n_ubatch 256 (`engine-wllama.js
+createEngine`, plain retry on failure). TG4A (Tiny Gemma 4, heal 4 pilot A: trained on Toucan tool conversations,
+answers from tool results) was trained without thinking, so it sets `thinking: false` in MODELS and `conversation()`
+never turns thinking on for it. Native-tool models (`native: true`: wllama with `jinja: true` and the GGUF's own
+template, or WebLLM with a `toolFormat`) get gated tools (`agent.js gated()`, docs/harness.md "Tool names up front"):
+a few declared up front, the rest by name until `tool_info(names)` or `find` asks. Small models always get the short
+small-model prompt (`LITE_SYSTEM_NATIVE`, or `LITE_SYSTEM_BASH` on the bash surface; Squiggle Small its fenced v2
+text) and a thinking budget (400 reasoning tokens, `engine.generationFor`). The removed models (Gemma 4 E2B/E4B,
+Gemma 3 270M, Qwen3/Qwen3.5, Llama 3.2, LFM2.5 1.2B, LFM3's test builds) and what was learned from them are in
+docs/lab.md and docs/measurements-*.md. `node tests/e2e/wllama-bench.mjs [--model SQ]` loads a
 real model in headless Chromium: one thread vs all cores vs WebGPU.
 
 WebLLM (`engine-webllm.js`, @mlc-ai/web-llm 0.2.87 from jsDelivr by default; a model can name another with `webllm`, loaded
 side by side as its own module, since a build's .wasm carries its TVM runtime and WebLLM's JS must match it): WL1 (Llama 3.2 1B,
-chat only), WQ06 (Qwen3 0.6B), WQ35 (Qwen3.5 0.8B), WLF3 (LFM3 1.7B, our own MLC build from lm-experiments experiments/lfm3-mlc: q4f16_1 at kealjones/LFM3-1.7B-q4f16_1-MLC, WebLLM 0.2.87, `toolformats/lfm3.js`; runs on an iPhone in Squiggle at 13.7 tok/s, first word in 15 s, 2026-11-10; memtest's 3K-token prompt kills the tab while answering; the 3-bit build WLF3Q3 runs but overthinks even a greeting, so 4-bit it is; WLF3QAD is the same model with Liquid's quantization-aware-trained 4-bit weights copied in exactly and a one-sequence model library, ~150 MB less scratch) and WLF12 (LFM2.5 1.2B Instruct, naklitechie's community build on WebLLM
+chat only), WQ06 (Qwen3 0.6B), WQ35 (Qwen3.5 0.8B), WLF3 (LFM3 1.7B, our own MLC build from lm-experiments experiments/lfm3-mlc: q4f16_1 at kealjones/LFM3-1.7B-q4f16_1-MLC, WebLLM 0.2.87, `toolformats/lfm3.js`; the shipped build is WLF3QAD,
+with a q4f32_1 twin (`mlcRecordF32`, job lfm3-mlc-9) for GPUs without shader-f16; runs on an iPhone in Squiggle at 13.7 tok/s, first word in 15 s, 2026-11-10; memtest's 3K-token prompt kills the tab while answering; the 3-bit build WLF3Q3 runs but overthinks even a greeting, so 4-bit it is; WLF3QAD is the same model with Liquid's quantization-aware-trained 4-bit weights copied in exactly and a one-sequence model library, ~150 MB less scratch) and WLF12 (LFM2.5 1.2B Instruct, naklitechie's community build on WebLLM
 0.2.86, `maxContext: 4096`, tools in LFM2's own format via `toolformats/lfm2.js`: Pythonic calls in `<|tool_call_start|>[…]`,
 results in a `tool` turn, raw prompts with `<|startoftext|>` added since WebLLM only adds BOS on its manifest path; card sampling
 temperature 0.1, repeat 1.05) are MLC builds on WebGPU. They keep `runtime: 'wllama'` (so isLite, chatOnly, nativeTools and the

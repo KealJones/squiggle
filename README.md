@@ -6,7 +6,7 @@
 
 <p align="center"><a href="https://kealjones.com/squiggle/"><b>Try it</b></a> (no account needed: pick "Try it without signing in") · <a href="docs/setup.md">Run your own</a> · <a href="docs/harness.md">How the agent loop works</a> · <a href="docs/failures.md">Failure casebook</a> · <a href="docs/evals.md">Evals</a> · <a href="docs/lab.md">Lab notebook</a></p>
 
-Squiggle runs LFM3 1.7B on your GPU, phone or computer, with no backend: the app is static files,
+Squiggle runs LFM3 1.7B on your phone or computer with no backend: the app is static files,
 the only server is a free Cloudflare Worker that relays the few GitHub requests a browser can't make. Your
 conversations, memory and the agent's files live in a **private GitHub repo you own**, so a chat started on a
 laptop continues on a phone. The agent can search the web, read pages, look things up on Wikidata, run code
@@ -60,15 +60,21 @@ The part built for people who care about retrieval.
   ([harness.md](docs/harness.md) is the contract for [agent.js](app/src/agent.js) and the fine-tune.)
 - **Recipes**: a finished plan is saved as how the task was solved, offered by `find` for similar requests
   once you approve it. Slow the first time is fine; the second time should be fast.
-- **LFM3 1.7B is the model** (Liquid's first small model trained for agent harnesses), on our own WebLLM build
-  at about 14 tokens a second on an iPhone. When a reply fills its 4K window the harness checkpoints by itself and
-  carries on in a fresh context, so one answer can take several windows. In lab mode it can drive one `bash` tool
-  (a real shell over the workspace, with git, gh and curl wired to the same approvals) instead of twenty schemas.
-- **Squiggle Small** is LFM2.5-350M fine-tuned on the harness's exact text (219 MB, runs on a phone CPU);
-  **Tiny Gemma 4** is Gemma 4 E2B pruned to a 0.6B core and healed by distillation. Both are honest about
-  being often wrong; both prove the pipeline. The stock small models (Qwen3, Qwen3.5, LFM2.5, LFM3) run
-  through their own tool formats on llama.cpp (WASM) or MLC (WebGPU), with a few schemas declared up front
-  and the rest looked up by name, because every schema at once was 99% of a 4K window.
+- **One model: LFM3 1.7B** (Liquid's first small model trained for agent harnesses), on our own WebLLM build with
+  Liquid's quantization-aware 4-bit weights, about 14 tokens a second on an iPhone. You pick the model; the device
+  picks the build (16-bit or 32-bit floats on WebGPU, else the GGUF on the CPU with every core). Its tools are one
+  `bash` over the workspace (cat, grep, pipes, plus git, gh, curl, search, wiki, node and bc wired to the same
+  approvals and URL rules) next to the harness's own `find`, `plan`, `done` and `need`. When a reply fills its 4K
+  window the harness checkpoints by itself and carries on in a fresh context, so one answer can take several windows.
+- **Context is the experiment.** Each chat picks how its context is built before its first message: Compress
+  (summary plus recent turns, the default), Smart (brings back earlier messages that fit), Fresh (nothing replayed;
+  a lookup first, handed over as a tool call) or AI-managed (the model budgets its own window). "What the model saw"
+  shows the exact prompt for any reply.
+- **Keal's own models stay as experiments**: Squiggle Small (LFM2.5-350M fine-tuned on the harness's exact text,
+  219 MB, runs on a phone CPU) and Tiny Gemma 4 (Gemma 4 E2B pruned to a 0.6B core and healed by distillation).
+  Both are honest about being often wrong; both prove the pipeline. They keep the separate tools they were trained
+  on. The engine still runs LiteRT, llama.cpp (WASM), MLC (WebGPU) and per-family tool formats, so adding a model is
+  one registry entry.
 - **The failure casebook** ([docs/failures.md](docs/failures.md)): 18 real bad answers, each with the chat id,
   the model, why it's wrong, the fix, and the unit test that now catches it. The bad answers are never put in
   a prompt or trained on; each pair is a preference pair for the next fine-tune. The same cases run as an
@@ -108,8 +114,10 @@ never bills). The full list and the data model are in [CLAUDE.md](CLAUDE.md).
 - **Try it**: [kealjones.com/squiggle](https://kealjones.com/squiggle/) → "Try it without signing in". The
   demo is the real app with storage in your browser, seeded with a sample chat and a few facts so memory and
   search have something to find; the git and GitHub tools are off until you sign in, which carries your demo
-  data into a private repo of yours. Needs WebGPU (recent Chrome, Edge or Safari) for Gemma 4; without it,
-  the 350M model runs on the CPU.
+  data into a private repo of yours.
+- **Supported**: tested on iPhone 16 and newer in mobile Safari (iOS 26), and desktop Chrome and Safari with WebGPU.
+  Other devices may well work (without WebGPU LFM3 runs on the CPU, slowly) but haven't been tested much; an older
+  iPhone may not have the memory for a 1.7B model in a browser tab.
 - **Run your own**: [docs/setup.md](docs/setup.md), about 10 minutes: a GitHub App, a Cloudflare Worker, your
   fork on GitHub Pages.
 - **Read it**: plain ES modules, no build step, no framework ([CLAUDE.md](CLAUDE.md) is the map).

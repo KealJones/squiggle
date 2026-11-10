@@ -29,7 +29,7 @@ export const settings = {
   fastDecode: true,         // multi-token prediction: faster, uses more memory
   smallGpu: false,          // small models (wllama): run on WebGPU (experimental)
   smallThreads: true,       // CPU builds (wllama): use several cores; automatic (needs an isolated page, sw.js), off only after a crash with it
-  contextMode: 'smart',     // 'smart' (default) | 'compact' | 'full'
+  contextMode: 'compact',   // chosen per chat before its first message (session.contextMode); Compress by default
   semantic: true,           // MiniLM embeddings for retrieval (its worker sleeps when idle, so phones too)
   recallChats: false,       // smart mode may recall messages from other chats too (off: old answers, right or wrong, leaked into unrelated chats)
   learn: true,              // extract memory facts after turns
@@ -37,7 +37,7 @@ export const settings = {
   debugTools: true,         // save each tool's full result on the reply (Settings → Lab), synced with the chat; on by default since 2026-11-09
   smallMode: {},            // model id → true/false: small-model mode for a model that can switch (smallModeSwitchable); unset = the model's default (smallMode)
   noPrompt: {},             // model id → true: no system prompt from Squiggle, just the tools in the model's own format (experimental)
-  toolSurface: 'tools',     // 'tools' | 'bash' (lab): one bash tool in place of the file, web, git and maths tools (tools/bash.js)
+  toolSurface: 'bash',      // models that can (agent.bashSurface): one bash tool in place of the file, web, git and maths tools (tools/bash.js)
 };
 
 const MAX_OUTPUT = 1536;
@@ -208,7 +208,11 @@ const GATE = ['plan', 'done', 'need', 'find', 'checkpoint', 'tool_info', ...PREL
 const BIG_ONLY = ['wikidata_query'];
 // The bash surface (settings.toolSurface 'bash', lab): the shell does files, the web, git and maths through commands
 // it already knows (tools/bash.js); memory keeps its own tool. Otherwise the shell isn't offered.
-export const bashSurface = () => settings.toolSurface === 'bash';
+// One bash tool in place of the file, web, git and maths tools, for the models that can take it (Keal, 2026-11-10:
+// "we don't need those tools anymore"): LFM3, trained for agent harnesses, and the cloud model. Squiggle Small and
+// Tiny Gemma 4 keep the separate tools: those, and Squiggle Small's fenced prompt, are what they were trained on.
+export const bashSurface = () => settings.toolSurface === 'bash'
+  && (engine.agentTrained(settings.model) || Boolean(engine.MODELS[settings.model] && engine.MODELS[settings.model].runtime === 'cloud'));
 const BASH_SURFACE = new Set(['bash', 'remember']);
 const onSurface = (name) => (bashSurface() ? BASH_SURFACE.has(name) : name !== 'bash');
 // Demo mode (storage.isLocal: no GitHub sign-in) leaves out the tools that need one: git and GitHub.

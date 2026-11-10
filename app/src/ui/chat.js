@@ -14,7 +14,9 @@ import { state } from './state.js';
 import { openThread, openPanel, closeDrawer, renderThreadPanel, renderNotesPanel } from './panels.js';
 import { renderSide } from './side.js';
 import { toggleReadAloud } from './voice-ui.js';
-import { ensureModel, loadCrashMarker, updateComposerNote, useSessionModel } from './model-ui.js';
+import { ensureModel, loadCrashMarker, updateComposerNote, useSessionModel, sessionModel, switchModel, useSessionContext } from './model-ui.js';
+import * as engine from '../engine.js';
+import { CONTEXT_MODES, contextMode } from '../context.js';
 import { showChatInUrl } from './links.js';
 
 export const closeSidebar = () => $('#sidebar').classList.remove('open');
@@ -111,7 +113,36 @@ function emptyState() {
     icon('squiggle'),
     h('h2', {}, 'What are we working on?'),
     h('p', {}, 'Squiggle runs on this device and picks up where you left off on any other.'),
+    newChatSettings(),
     h('div', { class: 'suggestions' }, ideas.map(t => h('button', { onclick: () => { $('#input').value = t; $('#input').focus(); } }, t))));
+}
+
+// A new chat's settings, before its first message: which model and how its context is built (Keal, 2026-11-10:
+// "a little setting button before the first message, that after it's started is gone"). The context type stays for
+// the chat's life (the sidebar shows it); the model can still switch in the chat details.
+function newChatSettings() {
+  const session = state.current;
+  const model = sessionModel(session);
+  const mode = session.contextMode || agent.settings.defaultContextMode || 'compact';
+  const summary = h('span', {}, 'This chat: ', h('b', {}, engine.MODELS[model] ? engine.MODELS[model].label : model), ' · ', h('b', {}, contextMode(mode).short));
+  const choice = (name, value, checked, label, hint, onPick) => h('label', { class: 'choice' },
+    h('input', { type: 'radio', name, value, checked: checked ? true : null, onchange: onPick }),
+    h('span', {}, h('span', { class: 'choice-label' }, label), hint ? h('span', { class: 'choice-hint' }, hint) : ''));
+  const models = engine.listedModels({ cloudOffered: state.cloudOffered }).map(id => choice('chat-model', id, id === model, engine.MODELS[id].label,
+    `${engine.MODELS[id].size}${engine.MODELS[id].experimental ? ' · experimental' : ''}`, async () => {
+      session.model = id; sessions.touch(session);
+      await switchModel(sessionModel(session)); renderChat();
+    }));
+  const modes = Object.entries(CONTEXT_MODES).filter(([, d]) => d.offered).map(([k, d]) => choice('chat-context', k, k === mode, d.label, d.hint.split('. ')[0] + '.', () => {
+    session.contextMode = k; sessions.touch(session);
+    useSessionContext(session); renderChat();
+  }));
+  return h('details', { class: 'chat-setup' },
+    h('summary', {}, icon('i-settings'), summary, h('span', { class: 'muted' }, 'Change')),
+    h('div', { class: 'chat-setup-body' },
+      h('fieldset', {}, h('legend', {}, 'Model'), ...models),
+      h('fieldset', {}, h('legend', {}, 'Context'), ...modes),
+      h('p', { class: 'muted' }, 'The context type stays for this chat; the model can switch later in the chat details.')));
 }
 
 export function messageEl(m, { inThread, streaming, session }) {
@@ -326,6 +357,8 @@ export async function send(text, threadId, files = []) {
     if (!ok) return;
   }
   const session = state.current;
+  // The first message settles the chat's context type: what was picked, or the default (it's shown, not changed, after).
+  if (!session.contextMode && !session.messages.some(m => !m.deleted)) session.contextMode = agent.settings.defaultContextMode || 'compact';
   const container = threadId ? $('#thread-messages') : $('#messages-inner');
   const scroller = threadId ? $('#thread-scroll') : $('#messages');
   if (!threadId && !session.messages.some(m => !m.thread)) container.replaceChildren();
