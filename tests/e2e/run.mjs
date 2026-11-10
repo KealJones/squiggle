@@ -1334,12 +1334,14 @@ await check('a crash while loading the model is caught on the next open; phones 
 await check('bash tool (lab): just-bash on the workspace; /home writes sync; git, curl, bc, help; .git out of reach', async () => {
   const D = await device('bash');
   await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
-  const run = (command) => D.page.evaluate(async (command) => {
+  const run = (command, room = 20000) => D.page.evaluate(async ([command, room]) => {
     const { runTool } = await import('/src/tools.js');
-    const r = await runTool({ function: { name: 'bash', arguments: { command } } }, { session: { messages: [] }, room: 20000, approve: async () => 'deny' });
+    // One chat's session across calls, like a real turn: its /tmp lives as long as the chat does.
+    const session = (window.__bashSession = window.__bashSession || { messages: [] });
+    const r = await runTool({ function: { name: 'bash', arguments: { command } } }, { session, room, approve: async () => 'deny' });
     const strip = (s) => String(s || '').replace(/<\/?untrusted[^>]*>\n?/g, '');
-    return { code: r.model.exit_code, out: strip(r.model.stdout), err: strip(r.model.stderr), error: r.model.error, label: r.label };
-  }, command);
+    return { code: r.model.exit_code, out: strip(r.model.stdout), err: strip(r.model.stderr), error: r.model.error, label: r.label, saved: r.model.saved_to };
+  }, [command, room]);
   let r = await run('ls /');
   assert.match(r.out, /home[\s\S]*repos[\s\S]*tmp/, JSON.stringify(r));
   r = await run('mkdir -p /home/notes && echo "buy milk" > /home/notes/todo.md && echo "call Dana" >> /home/notes/todo.md && cat /home/notes/todo.md | wc -l');
@@ -1374,6 +1376,16 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
   assert.notEqual(r.code, 0);
   r = await run('echo scratch > /tmp/a && cat /tmp/a');
   assert.equal(r.out.trim(), 'scratch');
+  // Output too big for the window is kept whole in /tmp/out-N.txt; the model sees the start and where the rest is.
+  r = await run('seq 1 20000', 2000);
+  assert.ok(r.saved && /^\/tmp\/out-\d+\.txt$/.test(r.saved), JSON.stringify(r).slice(0, 300));
+  assert.match(r.out, /^1\n2\n/);
+  assert.match(r.out, /20000 lines[\s\S]*the whole output is in \/tmp\/out-\d+\.txt/);
+  assert.ok(r.out.length < 2000, 'the preview fits the room');
+  r = await run(`wc -l < ${r.saved} && tail -1 ${r.saved}`);
+  assert.match(r.out, /20000\n20000/, 'nothing was thrown away: ' + JSON.stringify(r));
+  r = await run('');
+  assert.match(r.error || '', /e\.g\. gh repo list/, 'an empty command gets an example back');
   assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
   await D.ctx.close();
 });

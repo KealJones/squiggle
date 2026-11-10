@@ -486,9 +486,23 @@ export const bash = defineTool({
     try { r = await shell.exec(script, { signal: ctx.signal }); } catch (e) { r = { stdout: '', stderr: String(e.message || e), exitCode: 1 }; }
     const room = Math.max(1500, (ctx.room || 24000) - 400);
     const out = String(r.stdout || ''), errText = String(r.stderr || '');
-    const cut = (s, n) => (s.length > n ? s.slice(0, n) + `\n… (${s.length - n} more characters; narrow it with grep, head or sed -n)` : s);
+    const cut = (s, n) => (s.length > n ? s.slice(0, n) + `\n… (${s.length - n} more characters)` : s);
     const model = { exit_code: r.exitCode };
-    if (out) model.stdout = wrapUntrusted('bash output', cut(out, Math.floor(room * 0.85)));
+    // Output too big for the window isn't thrown away: the whole of it goes to /tmp/out-N.txt (this chat's
+    // in-memory /tmp) and the model sees the start and where the rest is, to grep, tail or sed -n. The prompt
+    // asks it to pipe or save big output itself; this is the backstop, so one curl can't overflow a 4K window.
+    const limit = Math.floor(room * 0.85);
+    if (out.length > limit) {
+      const n = (ctx.session ? (ctx.session.__bashOut = (ctx.session.__bashOut || 0) + 1) : Date.now() % 100000);
+      const file = `/tmp/out-${n}.txt`;
+      let saved = true;
+      try { await tmp.writeFile(file, out); } catch { saved = false; }
+      const lines = out.replace(/\n$/, '').split('\n').length;
+      const head = out.slice(0, Math.floor(limit * 0.6));
+      model.stdout = wrapUntrusted('bash output', head + `\n… (${lines} lines, ${out.length} characters in all, too much for your window` +
+        (saved ? `; the whole output is in ${file}: grep it, or read it in pieces with sed -n or tail)` : '; run it again piped through grep, head or tail)'));
+      if (saved) model.saved_to = file;
+    } else if (out) model.stdout = wrapUntrusted('bash output', out);
     if (errText) model.stderr = cut(errText, Math.floor(room * 0.15));
     if (!out && !errText) model.stdout = '(no output)';
     return {
