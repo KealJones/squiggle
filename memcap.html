@@ -87,7 +87,8 @@
     <ul class="tips">
       <li>The tab <b>will crash and reload</b> over and over. That's how it finds the limit.</li>
       <li>If you see an error page instead of a reload, tap reload. It picks up where it left off.</li>
-      <li>Keep this tab on screen until it says it's done (about 2–4 minutes). Close other apps first for steadier numbers.</li>
+      <li>Keep this tab on screen until it says it's done (a few minutes).</li>
+      <li>The limit moves with whatever else the phone is doing. For the worst case, run it again later with your usual apps open: results add up, and the headline is the <b>lowest</b> run.</li>
     </ul>
   </section>
 
@@ -109,8 +110,8 @@
       <label for="rounds">Rounds (each one tests every kind)
         <select id="rounds">
           <option value="1">1 (quick)</option>
-          <option value="3" selected>3</option>
-          <option value="5">5 (steadiest)</option>
+          <option value="3">3</option>
+          <option value="5" selected>5 (steadiest)</option>
         </select>
       </label>
       <label for="cap">Stop at most at
@@ -178,7 +179,7 @@ for (const p of ORDER) { const o = document.createElement('option'); o.value = p
 // before the step that gets the tab killed.
 const COARSE_MB = 32, FINE_MB = 8, FAST_MB = 64, PAUSE_MS = 150;
 const touch = navigator.maxTouchPoints > 1 || matchMedia('(pointer: coarse)').matches;
-const opts = { rounds: 3, cap: Number(params.get('cap')) || (touch ? 8192 : 2048), ...store.get(KEY.opts, {}) };
+const opts = { rounds: 5, cap: Number(params.get('cap')) || (touch ? 8192 : 2048), ...store.get(KEY.opts, {}) };
 if (params.get('cap')) opts.cap = Number(params.get('cap'));
 $('rounds').value = String(opts.rounds);
 if (![...$('cap').options].some(o => Number(o.value) === opts.cap)) {
@@ -330,21 +331,25 @@ function stats(probe) {
   if (!rows.length) return null;
   const sorted = [...rows].sort((a, b) => a.mb - b.mb);
   const mid = sorted[Math.floor((sorted.length - 1) / 2)];   // the lower middle: a real run, so its JS/GPU split is real too
-  return { n: rows.length, median: mid.mb, min: sorted[0].mb, max: sorted.at(-1).mb, capped: mid.capped, mid, all: sorted.map(r => r.mb) };
+  return { n: rows.length, median: mid.mb, lo: sorted[0], min: sorted[0].mb, max: sorted.at(-1).mb, capped: mid.capped, mid, all: sorted.map(r => r.mb) };
 }
 
 function verdict() {
   const s = Object.fromEntries(ORDER.map(p => [p, stats(p)]));
   const lines = [];
-  const page = [s.js, s.wasm].filter(Boolean).sort((a, b) => b.median - a.median)[0];
+  const page = [s.js, s.wasm].filter(Boolean).sort((a, b) => b.min - a.min)[0];
   const ge = (st) => (st.capped ? '≥' : '');
+  // The cap moves with what else the phone is doing, so the headline is the lowest run (what you can count
+  // on), with the best run after it.
+  const span = (st) => st.n > 1 && st.max - st.min >= 16 ? `${fmt(st.min)}, up to ${ge(st)}${fmt(st.max)}` : `${ge(st)}${fmt(st.min)}`;
   if (page) {
-    const parts = ['js', 'wasm'].filter(p => s[p]).map(p => `${PROBES[p].label} ${ge(s[p])}${fmt(s[p].median)}`);
-    lines.push(`A web page on this phone can hold about <b>${ge(page)}${fmt(page.median)}</b> before the browser kills the tab <span class="sub">(${parts.join(', ')})</span>.`);
+    const parts = ['js', 'wasm'].filter(p => s[p]).map(p => `${PROBES[p].label} ${span(s[p])}`);
+    lines.push(`A web page on this phone can count on about <b>${fmt(page.min)}</b> before the browser kills the tab${page.n > 1 && page.max - page.min >= 16 ? `, and got up to <b>${ge(page)}${fmt(page.max)}</b> at best` : ''}. <span class="sub">(${parts.join('; ')})</span>`);
   }
-  if (s.gpu) lines.push(`The GPU (WebGPU) alone took about <b>${ge(s.gpu)}${fmt(s.gpu.median)}</b>.`);
+  if (s.gpu) lines.push(`The GPU (WebGPU) alone: count on <b>${fmt(s.gpu.min)}</b>${s.gpu.n > 1 && s.gpu.max - s.gpu.min >= 16 ? `, up to ${ge(s.gpu)}${fmt(s.gpu.max)}` : ''}.`);
   if (s.mix && (s.js || s.gpu)) {
     const alone = Math.max(s.js?.median || 0, s.gpu?.median || 0);
+    // Shared or not compares typical runs (medians), not the floors.
     const t = s.mix.median, split = `${fmt(s.mix.mid.jsMB)} JS + ${fmt(s.mix.mid.gpuMB)} GPU`;
     const ratio = t / alone;
     const call = s.mix.capped ? 'hit the cap first, so this can’t tell whether they share a budget.'
@@ -354,7 +359,7 @@ function verdict() {
     lines.push(`Together they topped out at <b>${fmt(t)}</b> (${split}): ${call}`);
   }
   const spread = Math.max(0, ...ORDER.map(p => s[p] && s[p].n > 1 ? s[p].max - s[p].min : 0));
-  if (spread > 150) lines.push(`<span class="sub">Runs of the same kind differed by up to ${fmt(spread)}. Other apps change the limit; close them and run again for steadier numbers.</span>`);
+  if (spread > 150) lines.push(`<span class="sub">Runs of the same kind differed by up to ${fmt(spread)}: the limit moves with what else the phone is doing.</span>`);
   return { s, html: lines.map(l => `<p>${l}</p>`).join('') };
 }
 
@@ -366,19 +371,20 @@ function render() {
   const pct = (mb) => `${Math.min(100, 100 * mb / scale)}%`;
   $('bars').replaceChildren(...ORDER.filter(p => s[p]).map(p => {
     const st = s[p], el = document.createElement('div'); el.className = 'bar';
-    const range = st.n > 1 ? ` (${fmt(st.min)}–${fmt(st.max)}, ${st.n} runs)` : ' (1 run)';
+    const range = st.n > 1 ? ` (lowest – best of ${st.n} runs)` : ' (1 run)';
     el.innerHTML = `<div class="top"><span></span><span></span></div><div class="track"></div><div class="note"></div>`;
     el.querySelector('.top span').textContent = PROBES[p].label;
-    el.querySelector('.top span:last-child').textContent = `${st.capped ? '≥' : '~'}${fmt(st.median)}`;
+    el.querySelector('.top span:last-child').textContent = st.n > 1 && st.max - st.min >= 16 ? `${fmt(st.min)} – ${fmt(st.max)}` : `${st.capped ? '≥' : '~'}${fmt(st.min)}`;
     el.querySelector('.note').textContent = `${PROBES[p].note}${range}`;
     const track = el.querySelector('.track');
-    const seg = (mb, color) => { const i = document.createElement('i'); i.style.width = pct(mb); i.style.background = color; track.append(i); };
-    if (p === 'mix') { seg(st.mid.jsMB, PROBES.js.color); seg(st.mid.gpuMB, PROBES.gpu.color); }
-    else seg(st.median, PROBES[p].color);
+    const seg = (mb, color, faint) => { const i = document.createElement('i'); i.style.width = pct(mb); i.style.background = color; if (faint) i.style.opacity = '.3'; track.append(i); };
+    // Solid up to the lowest run (what you can count on), faint from there to the best run.
+    if (p === 'mix') { const lo = st.lo; seg(lo.jsMB, PROBES.js.color); seg(lo.gpuMB, PROBES.gpu.color); seg(st.max - st.min, 'var(--fg)', true); }
+    else { seg(st.min, PROBES[p].color); seg(st.max - st.min, PROBES[p].color, true); }
     for (const v of st.all) { const d = document.createElement('span'); d.className = 'dot'; d.style.left = pct(v); track.append(d); }
     if (p === 'mix') {
       const lg = document.createElement('div'); lg.className = 'legend';
-      lg.innerHTML = `<span><i style="background:${PROBES.js.color}"></i>JS</span><span><i style="background:${PROBES.gpu.color}"></i>GPU</span><span>tick = one run</span>`;
+      lg.innerHTML = `<span><i style="background:${PROBES.js.color}"></i>JS</span><span><i style="background:${PROBES.gpu.color}"></i>GPU</span><span>solid = lowest run, faint = up to the best, tick = one run</span>`;
       el.append(lg);
     }
     return el;
@@ -572,8 +578,8 @@ function summaryText() {
   const lines = [`Phone memory capacity — ${new Date().toISOString().slice(0, 10)}`, `Device: ${FACTS.device}`];
   for (const p of ORDER) {
     const st = s[p]; if (!st) continue;
-    const extra = p === 'mix' ? ` = ${fmt(st.mid.jsMB)} JS + ${fmt(st.mid.gpuMB)} GPU` : '';
-    lines.push(`${PROBES[p].label}: ${st.capped ? '≥' : '~'}${fmt(st.median)}${extra} (${st.n} run${st.n > 1 ? 's' : ''}${st.n > 1 ? `, ${fmt(st.min)}–${fmt(st.max)}` : ''})`);
+    const extra = p === 'mix' ? ` (lowest run: ${fmt(st.lo.jsMB)} JS + ${fmt(st.lo.gpuMB)} GPU)` : '';
+    lines.push(`${PROBES[p].label}: count on ${fmt(st.min)}, best ${st.capped ? '≥' : ''}${fmt(st.max)}, median ${fmt(st.median)}, ${st.n} run${st.n > 1 ? 's' : ''}${extra}`);
   }
   if (lines.length === 2) lines.push('No results yet.');
   lines.push(location.href.split('?')[0]);
