@@ -162,7 +162,26 @@ const MODELS = {
   // LFM3 (2026-11-03): 24 layers, 13 gated short convolutions + 5 sliding-window + 6 global attention; thinking on by
   // default. llama.cpp runs it (wllama 3.13.0); transformers.js from 4.4.0-next.0 (Lfm3ForCausalLM); no MLC build.
   lf3: { label: 'LFM3 1.7B', family: 'lfm', gguf: HF + 'LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-QAD-Q4_0.gguf', ggufMB: 1001,
+    mlc: 'LFM3-1.7B-q4f16_1-MLC', mlcF16Only: true,
+    mlcRecord: {   // our own build (lm-experiments experiments/lfm3-mlc), q4f16_1, 4K window
+      model: HF + 'kealjones/LFM3-1.7B-q4f16_1-MLC/resolve/main/',
+      model_lib: HF + 'kealjones/LFM3-1.7B-q4f16_1-MLC/resolve/main/LFM3-1.7B-q4f16_1-webgpu.wasm',
+      maxCtx: 4096 },
     onnx: 'LiquidAI/LFM3-1.7B-ONNX', onnxMB: 1319, transformers: '4.4.0-next.0' },
+  // The same model with Liquid's quantization-aware-trained 4-bit weights and a one-sequence model library (~150 MB less scratch)
+  lf3qad: { label: 'LFM3 1.7B QAD', family: 'lfm', mlcMB: 990,
+    mlc: 'LFM3-1.7B-QAD-q4f16_1-MLC', mlcF16Only: true,
+    mlcRecord: {
+      model: HF + 'kealjones/LFM3-1.7B-QAD-q4f16_1-MLC/resolve/main/',
+      model_lib: HF + 'kealjones/LFM3-1.7B-QAD-q4f16_1-MLC/resolve/main/LFM3-1.7B-q4f16_1-b1-webgpu.wasm',
+      maxCtx: 4096 } },
+  // The same model in MLC's 3-bit quantization (our own build; no GGUF or ONNX of it)
+  lf3q3: { label: 'LFM3 1.7B 3-bit', family: 'lfm', mlcMB: 769,
+    mlc: 'LFM3-1.7B-q3f16_1-MLC', mlcF16Only: true,
+    mlcRecord: {
+      model: HF + 'kealjones/LFM3-1.7B-q3f16_1-MLC/resolve/main/',
+      model_lib: HF + 'kealjones/LFM3-1.7B-q3f16_1-MLC/resolve/main/LFM3-1.7B-q3f16_1-webgpu.wasm',
+      maxCtx: 4096 } },
 };
 // Which engines can run a model: wllama needs a GGUF, WebLLM an MLC build, transformers.js an ONNX repo.
 const hasBuild = (engine, m) => engine === 'none' || (engine.startsWith('wllama') ? Boolean(m.gguf) : engine === 'webllm' ? Boolean(m.mlc) : engine === 'onnx' ? Boolean(m.onnx) : false);
@@ -196,7 +215,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const say = (t) => { $('status').textContent = t; };
 
 for (const [id, m] of Object.entries(MODELS)) {
-  const o = document.createElement('option'); o.value = id; o.textContent = `${m.label} (~${m.ggufMB} MB GGUF)`; $('model').append(o);
+  const o = document.createElement('option'); o.value = id; o.textContent = `${m.label} (~${m.ggufMB || m.mlcMB} MB ${m.gguf ? 'GGUF' : 'MLC'})`; $('model').append(o);
 }
 // Remember the last choice so a reopen after a kill lands on the same settings.
 const last = store.get('memtest-choice', null);
@@ -286,7 +305,7 @@ const pick = (run) => ({ engine: run.engine, model: run.model, probe: run.probe,
 // first, so every measurement starts from a clean tab.
 const KEY_AUTO = 'memtest-auto';
 const ENGINES = ['wllama-cpu', 'wllama-gpu', 'webllm', 'onnx'];
-const MODEL_ORDER = ['lf35', 'q06', 'lf07', 'q35', 'lf12', 'lf12t', 'll1', 'lf3', 'q2b'];   // smallest download first
+const MODEL_ORDER = ['lf35', 'q06', 'lf07', 'q35', 'lf12', 'lf12t', 'll1', 'lf3q3', 'lf3', 'lf3qad', 'q2b'];   // smallest download first
 function buildQueue(ctx, fill) {
   const gpu = FACTS.WebGPU !== 'no' && FACTS.WebGPU !== 'no adapter' && !String(FACTS.WebGPU).startsWith('error');
   const q = [{ engine: 'none', model: 'q06', probe: 'js' }];

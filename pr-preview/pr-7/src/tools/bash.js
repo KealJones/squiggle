@@ -467,7 +467,9 @@ export const bash = defineTool({
   parameters: params({ command: str('The command, e.g. ls /repos or grep -rn "login" /repos/app/src | head') }, ['command']),
   async run({ command }, ctx = {}) {
     const script = String(command || '').trim();
-    if (!script) return { model: { error: 'Give a command.' } };
+    // An empty command gets an example back, not just "give one": LFM2.5 1.2B sent command="" twice on "list my
+    // repos" and gave up (tools vs bash run, 2026-11-10).
+    if (!script) return { model: { error: 'The command was empty. Put the whole shell line in command, e.g. gh repo list, ls /repos or man.' }, label: 'bash (empty command)' };
     let L;
     try { L = await load(ctx.bashLib); } catch (e) { return { model: { error: `The shell couldn't load: ${e.message || e}` }, label: 'bash (not loaded)' }; }
     const tmp = ctx.bashTmp || (ctx.session ? (ctx.session.__bashTmp = ctx.session.__bashTmp || new L.InMemoryFs()) : new L.InMemoryFs());
