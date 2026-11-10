@@ -55,7 +55,7 @@ export const MODELS = {
   // tool_info(["run_js"]) for a gated tool, where LFM2.5 1.2B did none of those (llama.cpp replays, Nov 9). Thinking on
   // by default (its card). wllama 3.13's llama.cpp runs it through the GGUF's own template; on a phone CPU it's slow
   // (1 GB, thinks first), so this entry is for computers and for seeing it work; no MLC build exists.
-  LF3: { label: 'LFM3 1.7B (CPU)', size: '1.0 GB', note: 'the same LFM3 1.7B on the CPU, for devices without WebGPU: 1 GB, and much slower than the GPU build', phone: true, runtime: 'wllama', tools: true, native: true, family: 'lfm3',
+  LF3: { label: 'LFM3 1.7B', size: '1.0 GB', group: 'LFM3', note: 'Liquid\'s LFM3 1.7B with tools in its own format, thinking first: the first small model trained for agent harnesses. On this device it runs on the CPU (no WebGPU here), so replies are slower than on a GPU', phone: true, runtime: 'wllama', tools: true, native: true, family: 'lfm3',
     url: HF + 'LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-QAD-Q4_0.gguf', bytes: 1049615680 },
   // Not on this device: runs on the relay (only listed when the relay offers it).
   // WebLLM (MLC) on WebGPU (engine-webllm.js, Keal 2026-11-02): the same small-model path as the
@@ -96,7 +96,7 @@ export const MODELS = {
   // the 107 linear layers of LiquidAI's LFM3-1.7B-QAD-Q4_0.gguf bit-for-bit into our q4f16_1 layout (qad_to_mlc.py:
   // Q4_0 (k-8)*d = MLC (q-7)*s with q = 15-k, s = -d); embedding, norms and conv kernels as in WLF3. Its model library is
   // compiled for one sequence (max_batch_size=1): ~17 MB of scratch instead of ~163 MB, which WebLLM never used.
-  WLF3QAD: { label: 'LFM3 1.7B', size: '~990 MB', note: 'Liquid\'s LFM3 1.7B on WebGPU with tools in its own format, thinking first: the first small model trained for agent harnesses, about 14 words a second on an iPhone. Liquid\'s own 4-bit weights. 4K context at most', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
+  WLF3QAD: { label: 'LFM3 1.7B', size: '~990 MB', group: 'LFM3', f16Only: true, note: 'Liquid\'s LFM3 1.7B on WebGPU with tools in its own format, thinking first: the first small model trained for agent harnesses, about 14 words a second on an iPhone. Liquid\'s own 4-bit weights. 4K context at most', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
     mlc: 'LFM3-1.7B-QAD-q4f16_1-MLC', bytes: 990000000,
     mlcRecord: {
       model: HF + 'kealjones/LFM3-1.7B-QAD-q4f16_1-MLC/resolve/main/',
@@ -183,16 +183,56 @@ export function isMobile() {
   return /Android|iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 }
 
-// The model for this device: computers run E4B. Phones with WebGPU run Qwen3 0.6B on WebLLM: the only one that
-// stays alive in iPhone 16 Safari and uses tools (2026-11-04); Gemma 4 gets the tab killed. Phones without WebGPU
-// run Squiggle Small (LFM2.5 350M fine-tuned on the harness) on the CPU. Phones can still pick the cloud model.
 export const hasWebGpu = () => typeof navigator !== 'undefined' && Boolean(navigator.gpu);
 // The defaults in one place. Since 2026-11-10 it's LFM3 1.7B everywhere (Keal: "we only need LFM3"): our WebLLM build
 // on WebGPU, Liquid's GGUF on the CPU without it. Gemma 4 E4B, LFM2.5 1.2B and the rest are lab-mode options.
 export const DEFAULTS = { computer: 'WLF3QAD', phoneGpu: 'WLF3QAD', phoneCpu: 'LF3' };
 export function deviceModel() {
-  if (!hasWebGpu()) return DEFAULTS.phoneCpu;
-  return isMobile() ? DEFAULTS.phoneGpu : DEFAULTS.computer;
+  return forDevice(isMobile() ? DEFAULTS.phoneGpu : DEFAULTS.computer);
+}
+
+// One model, several builds (Keal, 2026-11-10: "a user should only have to pick LFM3 1.7B, not the GGUF vs GPU
+// version for their device"). Each build stays its own MODELS entry (its download, runtime, tool format) with
+// `group` naming the model it's a build of; GROUPS lists the builds in order of preference, and the first one
+// that can run on this device is the one listed, loaded and resolved to when a chat from another device names
+// a different build.
+export const GROUPS = { LFM3: { label: 'LFM3 1.7B', builds: ['WLF3QAD', 'LF3'] } };
+export const groupOf = (id) => (MODELS[id] && MODELS[id].group) || null;
+// Whether the GPU has 16-bit floats (shader-f16): null until probeGpu() has asked the adapter. LFM3's WebLLM build
+// is q4f16 only, so a GPU without them takes the CPU build (a q4f32 build would fix that).
+let gpuF16 = null;
+export async function probeGpu() {
+  if (gpuF16 !== null || !hasWebGpu()) return gpuF16;
+  try { const a = await navigator.gpu.requestAdapter(); gpuF16 = Boolean(a && a.features.has('shader-f16')); } catch { gpuF16 = false; }
+  return gpuF16;
+}
+// Could this build run here: WebGPU for the GPU runtimes (and 16-bit floats for an f16-only build), and the
+// phone limits.
+// Builds that crashed this device's tab and were stepped down from (settings.avoidBuilds, set by the crash banner):
+// skipped, so the next open doesn't go straight back to the build that crashed.
+let avoid = new Set();
+export const setAvoided = (ids) => { avoid = new Set(ids || []); };
+export function runsHere(id) {
+  const m = MODELS[id];
+  if (!m || !modelFitsDevice(id) || avoid.has(id)) return false;
+  if (m.backend === 'webllm' || m.runtime === 'litert') {
+    if (!hasWebGpu()) return false;
+    if (m.f16Only && gpuF16 === false) return false;
+  }
+  return true;
+}
+// The build of this model for this device; a model without a group is itself.
+export function forDevice(id) {
+  const g = GROUPS[groupOf(id)];
+  return g ? (g.builds.find(runsHere) || id) : id;
+}
+// How it runs, in words, for Settings and the sidebar: "on your GPU (WebGPU)" / "on the CPU".
+export function runnerLabel(id) {
+  const m = MODELS[id];
+  if (!m) return '';
+  if (m.runtime === 'cloud') return 'in the cloud, through the relay';
+  if (m.backend === 'webllm' || m.runtime === 'litert') return 'on your GPU (WebGPU)';
+  return 'on the CPU' + (typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated ? ', all cores' : '');
 }
 
 // Lab mode: the research and size-test models (`lab: true` in MODELS) and the experimental switches in
@@ -202,8 +242,10 @@ export const labOn = () => lab;
 export const setLab = (v) => { lab = Boolean(v); };
 // Would this model be listed for the user to pick? `current` is listed even when it's a lab model, so a
 // device that chose one keeps seeing its choice.
+// A model with several builds is listed once, as the build this device runs (forDevice).
 export const listed = (id, { cloudOffered = false, current = null } = {}) => {
   const m = MODELS[id];
+  if (m && m.group) return forDevice(id) === id && (!m.needsRelay || cloudOffered);
   return Boolean(m) && modelFitsDevice(id) && (!m.needsRelay || cloudOffered) && (!m.lab || lab || id === current);
 };
 export const listedModels = (opts) => Object.keys(MODELS).filter(id => listed(id, opts));
