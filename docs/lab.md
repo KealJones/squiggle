@@ -201,6 +201,25 @@ thought too tight for it alongside the model.
 **What happened.** The worker is terminated 15 s after a search on phones (3 min on computers), freeing its
 ~100 MB, so it fits; on by default everywhere now.
 
+### One bash tool in place of the file, web, git and maths tools — lab
+
+**Idea.** Keal, 2026-11-09: small models are bad at picking among ~20 tool schemas, and the schemas fill the
+window. A shell is one tool every model has seen millions of times. `bash` (vercel-labs' just-bash) runs on the
+same workspace the other tools use (/home syncs through storage.js, /repos and /web through LightningFS), with
+git, gh, curl, search, wiki, node and bc as custom commands that call the existing tools, so approvals and URL
+rules hold. `man` lists them, `<command> --help` explains one. The prompt tells the model its window is small
+and to pipe, grep or save to a file; output that still won't fit is saved whole to /tmp/out-N.txt and the model
+gets the start and the path. Settings → Lab → "One bash tool (experimental)".
+
+**What happened.** Tool definitions shrink from ~1,250–1,600 tokens to ~720–810. On LFM2.5 1.2B (10 tasks,
+tests/eval/tasks-tools.json, compact, native llama.cpp, 2026-11-10) bash passed 2 of 10 against 3 of 9 for the
+regular tools (task 10 didn't run before the box restarted). It does write shell: `cat /repos/app/src/index.js`,
+`wc -l`, `grep -i console /repos/app`, `git clone https://github.com/tester/app`. What sinks it is never
+recovering from an error (grep on a directory without -r, a cat before the clone, `bc -d 15 % 240`), and twice
+sending an empty command on "list my repos". The empty command now gets an example back (`gh repo list`).
+LFM3 1.7B, trained for agent harnesses, is the real test; it needs a llama.cpp newer than llama-cpp-python
+0.3.36 bundles, so its run is still to do. Results: docs/evals/WLF12-compact-bash-tasks-tools.json.
+
 ## Runtime switches
 
 ### Use the GPU / use all CPU cores for the CPU models — lab
