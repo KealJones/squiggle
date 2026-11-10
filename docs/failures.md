@@ -242,3 +242,24 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   llama.cpp (tests/eval/run.mjs `--llm`): "List my GitHub repos" now calls `github_list_repos` in Compress, Smart
   and Fresh; "pull github.com/tester/app" clones tester/app in Fresh (in Compress it listed the repos instead).
 - **Caught by:** tests/find.test.js, tests/tools-git-resolve.test.js "case 16", tests/guard.test.js; eval case 18.
+
+### 17. The harness called a quarter-full window full, then dropped the answer
+
+- **Asked:** "can you tell me about my github project squiggle", then "continue", then "hello?", 2026-11-10.
+- **Model:** LFM3 1.7B QAD on WebLLM, bash tool surface, Compress (chat `s0mwb2elnj0000ae4b`, PR #7 preview).
+- **What it did:** good shell work: `ls /repos`, `ls -la /repos/squiggle`, then `head -n 80 README.md` rather than
+  `cat`. The harness refused that `head` ("your context is almost full") with the real prompt at ~2,000 of 4,096
+  tokens, then stopped the turn ("Stopped: the context filled up") when the model tried one more command. On
+  "continue" it planned 4 steps that each ran fine in a fresh context, then in the final reply (no tools offered)
+  called `bash` for the workflow files and wrote nothing, so the reply was blank. "hello?" then looked unanswered
+  and it started the whole job again.
+- **Why it's bad:** not the model's choices; the harness's. It counted every round's thinking as still in the
+  window though LFM3's template resends only the latest round's, it refused calls below 2,500 characters of room
+  though every tool sizes its output to the room (and bash saves the rest to a file), it threw away three good
+  lookups instead of asking for an answer, and it let a tool call in the final reply erase four finished steps.
+- **Good answer:** a few lookups, then a short description of Squiggle from the README and package.json.
+- **Fix:** only the newest round's thinking counts against the window (chat phase and steps); a call is refused
+  only below 1,200 characters of room (agent.js `FULL_ROOM`); when full, the model gets one "answer now from what
+  you found" before the turn stops; a blank final reply gets one "no tools in this reply" nudge and then falls back
+  to the step results (tasks.js `resultsReply`).
+- **Caught by:** tests/tasks.test.js "case 17" (`resultsReply`); the window accounting is not covered.

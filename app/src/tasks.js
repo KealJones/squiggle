@@ -314,6 +314,14 @@ export function finalUser(task, { dialect = DIALECT.v2 } = {}) {
   return `${truncate(task.request || task.goal, MAX_REQUEST)}\n\n${dialect.note('Every step is done. Write the reply to this request now, using what the steps found. Don\'t call tools.')}`;
 }
 
+// When the final reply comes back blank even after a nudge, the steps' own results are the reply, so the work
+// isn't lost and the next message doesn't redo the task (agent.js final).
+export function resultsReply(task) {
+  const done = (task.steps || []).filter(s => s.result && !NO_RESULT.test(s.result));
+  if (!done.length) return '';
+  return `Here's what I found for "${truncate(task.goal, 120)}":\n\n` + done.map(s => `- **${s.text}**: ${s.result.replace(/\s+/g, ' ')}`).join('\n');
+}
+
 // The task that can pick up again from the new message: only the one the
 // latest reply in this conversation line belongs to (`lastTaskId`), when it is
 // waiting on an answer, or stopped and the user says to go on. A stopped task

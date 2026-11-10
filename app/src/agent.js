@@ -41,6 +41,10 @@ export const settings = {
 };
 
 const MAX_OUTPUT = 1536;
+// A tool call is refused only below this much free room (characters, after the reply's reserve): every tool sizes
+// its output to the room it's given, and bash saves what doesn't fit to /tmp/out-N.txt. It was 2,500, which
+// refused LFM3 1.7B's `head -n 80 README.md` with ~1,600 tokens free (2026-11-10).
+const FULL_ROOM = 1200;
 const CHAT_PLAN_NUDGE = 6;  // tool calls without a plan before the model is reminded it can make one
 const LITE_CHAT_NUDGE = 3;  // small models: nudged to answer after this many, no more lookups after twice this
 
@@ -543,7 +547,7 @@ class Turn {
     const reserve = Math.min(MAX_OUTPUT, 700);
     if (managed()) pending += `\n\n${tasks.budgetLine(used, settings.contextSize, reserve, dialect())}`;
     this.setWindow(windowOf(ctx.report, { system: plain() ? 0 : estTokens(ctx.system), tools: toolTokens, message: estTokens(this.shown) + estTokens(att.text) }), used);
-    let chatCalls = 0, full = false, askedForAnswer = false;
+    let chatCalls = 0, full = false, askedForAnswer = false, lastThink = 0;
     this.seenCalls = new Map();
     let messages = ctx.messages;
     if (seed) {
@@ -570,7 +574,12 @@ class Turn {
     for (;;) {
       const r = await this.respond(pending);
       if (r.text) this.prefix += r.text + (r.toolCalls.length ? '\n\n' : '');
-      used += estTokens((r.text || '') + (r.thinking || '') + JSON.stringify(r.toolCalls || [])) - (r.saved || 0);
+      // Thinking from earlier rounds isn't sent back (the templates keep at most the latest round's), so only the
+      // newest thinking counts against the window. Counting all of it made LFM3 1.7B's turns "full" with half the
+      // window free (2026-11-10, chat s0mwb2elnj0000ae4b).
+      const think = estTokens(r.thinking || '');
+      used += estTokens((r.text || '') + JSON.stringify(r.toolCalls || [])) + think - lastThink - (r.saved || 0);
+      lastThink = think;
       this.grow(used);
       if (this.aborted) return null;
       if (!r.toolCalls.length) {
@@ -590,10 +599,20 @@ class Turn {
       // A checkpoint in the chat phase turns the turn into a task, so its summary survives like a step result.
       const cp = managed() && r.toolCalls.find(c => c.function && c.function.name === 'checkpoint');
       if (cp) return this.checkpointTask(cp.function.arguments || {});
-      if (full) { this.prefix += '\n\n_(Stopped: the context filled up. Ask again and I\'ll make a plan for what\'s left.)_'; return null; }
+      if (full) {
+        // Full, and it reached for another tool anyway: one chance to answer from what it has before stopping.
+        // Stopping straight away threw away three good lookups (LFM3 1.7B, 2026-11-10).
+        if (!askedForAnswer) {
+          askedForAnswer = true;
+          pending = r.toolCalls.map(c => toolResult(c, { error: 'Not run: there is no room left this turn. Answer the user now in plain words from what you found (say what you could not check), or call plan for the rest.' }));
+          continue;
+        }
+        this.prefix += '\n\n_(Stopped: the context filled up. Ask again and I\'ll make a plan for what\'s left.)_';
+        return null;
+      }
       const results = [];
       for (const call of r.toolCalls) {
-        if (room() < 2500) {
+        if (room() < FULL_ROOM) {
           results.push(toolResult(call, { error: managed()
             ? 'Not run: your context is almost full. Call checkpoint (summary, needs, next) to carry on fresh, or answer now with what you have.'
             : 'Not run: your context is almost full. Call plan with the work that is left (you get a fresh context for each step), or answer now with what you have.' }));
@@ -821,11 +840,13 @@ class Turn {
     const room = () => Math.max(0, (settings.contextSize - used - reserve) * 3);
     this.setWindow(windowOf(this.reply.context, { system: estTokens(system), tools: toolTokens, message: estTokens(pending) }), used);
     const label = `Step ${n}: ${step.text}`;
-    let said = '', blank = 0, idle = 0, warnedFull = false;
+    let said = '', blank = 0, idle = 0, warnedFull = false, lastThink = 0;
     try {
       for (;;) {
         const r = await this.respond(pending, { show: false });
-        used += estTokens((r.text || '') + (r.thinking || '') + JSON.stringify(r.toolCalls || []));
+        const think = estTokens(r.thinking || '');  // only the newest round's thinking is resent (see the chat phase)
+        used += estTokens((r.text || '') + JSON.stringify(r.toolCalls || [])) + think - lastThink;
+        lastThink = think;
         this.grow(used);
         const looped = LOOPED.test(r.text || '');
         const text = (r.text || '').replace(LOOPED, '').trim();
@@ -892,7 +913,7 @@ class Turn {
             ended = 'next';
             break;
           }
-          if (room() < 2500) {
+          if (room() < FULL_ROOM) {
             // Out of room: warn once, then close the step with what it has.
             if (warnedFull) { tasks.finishStep(task, said || '(the step ran out of room before finishing)'); ended = 'next'; break; }
             warnedFull = true;
@@ -953,8 +974,16 @@ class Turn {
     const maxTokens = Math.max(600, settings.contextSize - Math.min(MAX_OUTPUT, 1024) - 300);
     await this.open('Final reply', { system: tasks.finalSystem(systemPrompt(this.threadId, this.session, 'final'), task, { maxTokens }), messages: [], tools: [], maxOutputTokens: MAX_OUTPUT });
     if (this.prefix && !/\n\n$/.test(this.prefix)) this.prefix += '\n\n';
-    const r = await this.respond(tasks.finalUser(task, { dialect: dialect() }));
-    this.prefix += r.text || '';
+    let r = await this.respond(tasks.finalUser(task, { dialect: dialect() }));
+    // No tools are offered here, but a model may still call one (LFM3 1.7B went for `cat` on the workflows after a
+    // 4-step plan, 2026-11-10) and say nothing: the reply came out blank and the next message redid the whole task.
+    // Answer the call with "no tools now", once; if it's still blank, the step results are the answer.
+    if (!(r.text || '').trim()) {
+      const nudge = 'No tools in this reply. Write the answer for the user now, in plain words, from the step results above.';
+      r = await this.respond(r.toolCalls && r.toolCalls.length ? r.toolCalls.map(c => toolResult(c, { error: nudge })) : dialect().note(nudge));
+    }
+    const text = (r.text || '').trim() ? r.text : tasks.resultsReply(task);
+    this.prefix += text || '';
     await this.close();
   }
 
