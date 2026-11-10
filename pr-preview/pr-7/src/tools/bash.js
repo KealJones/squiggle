@@ -13,7 +13,7 @@
 // `.git` folders stay out of reach (guard.resolveAgentPath), as everywhere else.
 //
 // The commands that need Squiggle (the network, GitHub, the sandbox) call the existing tools, so their rules hold:
-// git push still asks the user through the approval card, curl still refuses made-up URLs on small models and goes
+// git push still asks the user through the approval card, curl fetches any URL (a made-up one just fails) and goes
 // through the relay, results still come back as outside content.
 //   git clone|status|log|show|checkout|switch|branch|add|commit|push|pull     gh repo list|clone, gh pr create
 //   curl URL (the page as readable text)    search QUERY (web search)    wiki NAME (Wikipedia + Wikidata)
@@ -286,8 +286,8 @@ export function commands(defineCommand, toolCtx, seen) {
   // `<cmd> --help` (or -h, or `man <cmd>`): the details live here, not in the tool description, so they cost
   // context only when the model asks (Keal's idea: name the custom commands, let --help teach them).
   const helped = (text, run) => async (argv, ctx) => (argv.some(a => a === '--help' || a === '-h') && !(argv[0] === 'commit' || argv[0] === 'log') ? { stdout: text.trim() + '\n', stderr: '', exitCode: 0 } : run(argv, ctx));
-  const call = async (name, args) => {
-    const res = await runTool({ function: { name, arguments: args } }, { ...toolCtx, pageCards: false });
+  const call = async (name, args, extra = {}) => {
+    const res = await runTool({ function: { name, arguments: args } }, { ...toolCtx, pageCards: false, ...extra });
     seen.push(res);
     return res;
   };
@@ -362,7 +362,10 @@ export function commands(defineCommand, toolCtx, seen) {
     const url = f._.find(a => /^(https?:\/\/|[\w-]+\.[\w.-]+)/i.test(a));
     if (!url) return fail('curl: give a URL');
     if (f.X || f.request || f.d || f.data) return fail('curl here only reads pages (GET)');
-    const res = await call('fetch_url', { url });
+    // Any URL is fetched, not only ones a search or the user gave (Keal, 2026-11-10): the allowed-URL check was for
+    // models that made URLs up all the time; a model that knows a real URL may use it, and a made-up one fails on its
+    // own (404, no such host). The separate fetch_url tool keeps the check for Keal's two small models.
+    const res = await call('fetch_url', { url }, { allowUrl: undefined });
     if (res.model && res.model.error) return asOutput(res);
     const page = (res.observation && res.observation.text) || String(res.model.text || '').replace(STRIP, '');
     return say(page.endsWith('\n') ? page : page + '\n');
@@ -443,7 +446,7 @@ Files: /home (yours, synced to the user's devices), /repos/<name> (git clones), 
   gh repo clone <owner/name>              same as git clone
   gh pr create --title "…" [--body "…"] [--base main]   from the pushed branch of the repo you're in`,
   curl: `curl URL: fetch a web page and print it as readable text (not HTML). GET only.
-  Only pages from a search result, a page you read or the user (made-up URLs aren't opened).
+  A URL that doesn't exist fails (404 or no such host): prefer links from search results or the user.
   curl https://example.com | grep -i -m5 word     find a line without reading the whole page`,
   search: `search WORDS [-n N]: search the web; prints titles, links and snippets.
   search "who directed jaws"     then: curl <a link from the results> | grep -i director`,

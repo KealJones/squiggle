@@ -158,6 +158,20 @@ a { color: var(--action); }
 .empty { max-width: 520px; margin: 14vh auto 0; text-align: center; color: var(--ink-soft); }
 .empty svg { width: 120px; height: 40px; color: var(--ink); }
 .empty h2 { color: var(--ink); font-size: 1.5rem; margin: 12px 0 6px; letter-spacing: -0.01em; }
+.chat-setup { margin: 16px auto 0; max-width: 440px; text-align: left; border: 1px solid var(--rule); border-radius: 12px; background: var(--sheet); font-size: 0.9rem; }
+.chat-setup > summary { display: flex; align-items: center; gap: 8px; padding: 8px 12px; cursor: pointer; list-style: none; color: var(--ink); }
+.chat-setup > summary::-webkit-details-marker { display: none; }
+.chat-setup > summary svg { width: 16px; height: 16px; flex: none; }
+.chat-setup > summary .muted { margin-left: auto; }
+.chat-setup[open] > summary { border-bottom: 1px solid var(--rule); }
+.chat-setup-body { padding: 10px 12px 12px; display: grid; gap: 10px; }
+.chat-setup fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 6px; }
+.chat-setup legend { font-weight: 600; color: var(--ink); margin-bottom: 4px; }
+.chat-setup .choice { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.chat-setup .choice input { margin-top: 3px; }
+.chat-setup .choice-label { display: block; color: var(--ink); }
+.chat-setup .choice-hint { display: block; color: var(--ink-soft); font-size: 0.82rem; line-height: 1.35; }
+.chat-setup .muted { color: var(--ink-soft); margin: 0; }
 .suggestions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 18px; }
 .suggestions button { border: 1px solid var(--rule); background: var(--sheet); border-radius: 999px; padding: 6px 12px; cursor: pointer; color: var(--ink); font-size: 0.9rem; }
 

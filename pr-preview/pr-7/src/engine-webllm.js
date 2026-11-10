@@ -54,10 +54,11 @@ async function appConfigFor(id) {
   return { ...prebuiltAppConfig, model_list: [...prebuiltAppConfig.model_list, custom.get(id)] };
 }
 
-// q4f16 needs the GPU's shader-f16 feature; the f32 build runs without it (more memory).
-// Our own builds only come in q4f16.
+// q4f16 needs the GPU's shader-f16 feature; the f32 build runs without it (more memory). One of our own builds
+// gets the f32 path only when its q4f32_1 twin is registered (engine.js mlcRecordF32).
 async function pickId(mlc) {
-  if (custom.has(mlc)) return mlc;
+  const f32 = mlc.replace('q4f16_1', 'q4f32_1');
+  if (custom.has(mlc) && !custom.has(f32)) return mlc;
   try {
     const a = navigator.gpu && await navigator.gpu.requestAdapter();
     if (a && a.features.has('shader-f16')) return mlc;

@@ -11,11 +11,6 @@ export function loadSettings() {
   const mobile = engine.isMobile();
   // Lab mode (research models and experimental switches): ?lab=1 / ?lab=0 in the address sets it for this
   // device; otherwise the saved setting. Decided before the model, since it changes which ones are listed.
-  try {
-    const q = new URLSearchParams(location.search).get('lab');
-    if (q !== null) saved = { ...saved, lab: q !== '0' && q !== 'false' };
-  } catch {}
-  engine.setLab(saved.lab);
   engine.setAvoided(saved.avoidBuilds);
   Object.assign(agent.settings, { model: engine.deviceModel() }, mobile ? { contextSize: 4096, fastDecode: false } : {}, saved);
   // Phones only run models that fit a phone; anything else moves to the default.
@@ -66,6 +61,18 @@ export function loadSettings() {
     saved = { ...saved, model: agent.settings.model, lfm3Default: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
+  // Squiggle got simpler (Keal, 2026-11-10): no lab mode, no small-model / no-prompt / tool-surface / GPU switches and no
+  // context-size setting (each model gets its own maximum, engine.contextFor). Context is chosen per chat, before its
+  // first message, and Compress is the default. Whatever an older version saved for those goes, once; a model that
+  // no longer exists becomes this device's default.
+  if (!saved.simplified) {
+    for (const k of ['lab', 'smallMode', 'noPrompt', 'toolSurface', 'smallGpu', 'contextSize']) delete saved[k];
+    Object.assign(agent.settings, { smallMode: {}, noPrompt: {}, toolSurface: 'bash', smallGpu: false, contextMode: 'compact' });
+    saved = { ...saved, contextMode: 'compact', simplified: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
+  if (!engine.MODELS[agent.settings.model]) agent.settings.model = engine.deviceModel();
+  agent.settings.contextSize = engine.contextFor(agent.settings.model);
   // Search by meaning on phones too: its worker sleeps (and frees its memory) 15 s after a search (embed.js).
   if (mobile && !saved.phoneSemantic) {
     agent.settings.semantic = true;
