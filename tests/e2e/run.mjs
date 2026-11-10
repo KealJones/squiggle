@@ -1264,6 +1264,16 @@ await check('attachments: a PDF is read with pdf.js from the pinned CDN URL', as
   assert.equal(a.error, undefined);
 });
 
+// A tab killed for memory gets no pagehide; a reload does, and Squiggle reads that as "left, not crashed". So a
+// simulated crash takes back the note the page writes on the way out.
+const crashReload = async (page) => {
+  await page.evaluate(() => {
+    const forget = () => localStorage.removeItem('squiggle-page-left');
+    window.addEventListener('pagehide', forget);
+    document.addEventListener('visibilitychange', forget);   // fires after pagehide on the way out
+  });
+  await page.reload();
+};
 await check('a crash while loading the model is caught on the next open; phones without WebGPU default to Squiggle Small', async () => {
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
   const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1';
@@ -1285,7 +1295,7 @@ await check('a crash while loading the model is caught on the next open; phones 
       // The previous load never finished: the tab was killed.
       localStorage.setItem('squiggle-model-loading', JSON.stringify({ model: 'E4B', contextSize: 8192, fast: true, at: Date.now(), stage: 'loading the model onto the GPU', gpu: 'apple common-3, f16' }));
     }, CFG);
-    await page.reload();
+    await crashReload(page);
     if (phone) {
       // Phones without WebGPU run Squiggle Small on the CPU (with it, Qwen3 0.6B on WebLLM): the old Gemma 4 crash doesn't block it, and it loads right away.
       await page.waitForFunction(() => window.__loads === 1);
@@ -1319,9 +1329,19 @@ await check('a crash while loading the model is caught on the next open; phones 
       assert.equal(await page.evaluate(() => localStorage.getItem('squiggle-model-loading')), null);
       // A crash mid-reply says so on the next open.
       await page.evaluate(() => window.__progress('writing the reply'));
-      await page.reload();
+      await crashReload(page);
       await page.waitForSelector('#model-banner:not([hidden])');
       assert.match(await page.textContent('#model-banner'), /Fake E2B crashed this tab while answering, while writing the reply\./);
+      // A first crash may be a one-off: "Try again" comes first.
+      assert.match(await page.textContent('#model-banner .row button.primary'), /^(Try again|Load model)$/);
+      // Leaving mid-reply (a refresh, closing the tab, iOS backgrounding it) isn't a crash: no banner, it just loads.
+      await page.click('#model-banner .row button.primary');
+      await page.waitForFunction(() => window.__loads === 1);
+      await page.evaluate(() => window.__progress('writing the reply'));
+      await page.reload();
+      await page.waitForFunction(() => window.__loads === 1);
+      assert.equal(await page.evaluate(() => localStorage.getItem('squiggle-page-left')), null, 'the note is used up');
+      assert.ok(await page.$eval('#model-banner', el => el.hidden || !/crashed/.test(el.textContent)), 'no crash banner after a refresh');
       await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
       await page.waitForSelector('#drawer .model-option');
       assert.deepEqual(await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model)), ['E4B', 'E2B', 'G3', 'SQ', 'cloud']);

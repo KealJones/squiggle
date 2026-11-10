@@ -44,6 +44,8 @@ export async function initModel() {
   const info = await engine.downloadInfo(agent.settings.model);
   if (!info.complete) { state.modelState = 'missing'; showDownloadBanner(info); return; }
   let crashed = loadCrashMarker();
+  // Left mid-load or mid-reply (refresh, closed, backgrounded), not crashed: load again without asking.
+  if (takeLeftNote() && crashed) { console.info(`Squiggle: the page was left while ${crashed.stage || 'working'}, not a crash; loading again.`); setCrashMarker(null); crashed = null; }
   // A crash with a different model (say Gemma 4 on a phone) says nothing about this one.
   if (crashed && crashed.model !== agent.settings.model && !engine.needsGpu(agent.settings.model)) { setCrashMarker(null); crashed = null; }
   if (crashed) { state.modelState = 'idle'; showCrashBanner(crashed); return; }
@@ -70,6 +72,35 @@ function setCrashMarker(v) {
   try { v ? localStorage.setItem(LOADING_KEY, JSON.stringify(v)) : localStorage.removeItem(LOADING_KEY); } catch {}
 }
 
+// Not every leftover marker is a crash. Refreshing, closing the tab, or iOS discarding it in the background all end
+// the page mid-load too, but those fire pagehide or "hidden" first; a tab killed for memory gets no warning. So
+// leaving while a marker is set notes it (LEFT_KEY), coming back clears the note, and a marker found next to a
+// note means the page was left, not crashed: it loads again quietly (Keal, 2026-11-10: "a clean try again would
+// work sometimes").
+const LEFT_KEY = 'squiggle-page-left';
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  const leaving = () => { try { if (localStorage.getItem(LOADING_KEY)) localStorage.setItem(LEFT_KEY, String(Date.now())); } catch {} };
+  window.addEventListener('pagehide', leaving);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') leaving();
+    else { try { localStorage.removeItem(LEFT_KEY); } catch {} }
+  });
+}
+function takeLeftNote() {
+  try { const v = localStorage.getItem(LEFT_KEY); localStorage.removeItem(LEFT_KEY); return v; } catch { return null; }
+}
+// Real crashes in a row with one model: the first one suggests trying again (it may be a one-off), the second
+// steps down. A reply that finishes clears the count.
+const CRASHES_KEY = 'squiggle-crashes';
+function countCrash(model) {
+  let c = null;
+  try { c = JSON.parse(localStorage.getItem(CRASHES_KEY) || 'null'); } catch {}
+  const n = c && c.model === model ? c.n + 1 : 1;
+  try { localStorage.setItem(CRASHES_KEY, JSON.stringify({ model, n })); } catch {}
+  return n;
+}
+function clearCrashes() { try { localStorage.removeItem(CRASHES_KEY); } catch {} }
+
 function showLoadBanner() {
   const m = engine.MODELS[agent.settings.model];
   banner(h('span', {}, `${m.label} is downloaded.`),
@@ -94,6 +125,8 @@ function lightest() {
 function showCrashBanner(c) {
   const m = engine.MODELS[c.model] || engine.MODELS[agent.settings.model];
   const S = agent.settings;
+  const crashes = countCrash(c.model);
+  const once = crashes < 2;   // the first crash may be a one-off: "Try again" leads, the step-down is offered
   const next = lighterModel(S.model) || S.model;
   const nm = engine.MODELS[next];
   const sameModel = next !== S.model && engine.groupOf(next) && engine.groupOf(next) === engine.groupOf(S.model);
@@ -117,19 +150,22 @@ function showCrashBanner(c) {
     if (c.small.gpu) { S.smallGpu = false; saveSettings(); loadModel(); return; }
     S.smallThreads = false; saveSettings(); await setIsolation(false); location.reload();
   } }, c.small.gpu ? 'Turn off the GPU and try again' : 'Turn off all cores and try again') : '';
-  const again = h('button', { class: changed ? 'btn primary' : 'btn', onclick: () => { setCrashMarker(null); loadModel(); } }, changed ? 'Load model' : 'Try again');
+  const again = h('button', { class: changed || once ? 'btn primary' : 'btn', onclick: () => { setCrashMarker(null); loadModel(); } }, changed ? 'Load model' : 'Try again');
+  if (once) lighter.className = 'btn';
   const settingsText = `${engine.MODELS[S.model].label}, ${S.contextSize / 1024}K context, speed boost ${S.fastDecode ? 'on' : 'off'}`;
   banner(h('div', { class: 'dl' },
     h('span', {}, `${c.phase === 'reply' ? m.label + ' crashed this tab while answering' : 'Loading ' + m.label + ' crashed this tab last time'}${c.stage ? `, while ${c.stage}` : ''}.`),
     c.gpu ? h('span', { class: 'muted' }, `GPU: ${c.gpu}`) : '',
     h('span', { class: 'muted' }, changed
       ? `This device now uses lighter settings (${settingsText}), which need much less memory.`
+      : once && !lightest()
+        ? `It may have been a one-off: try again first.${sameModel ? ' If it keeps happening, it can run on the CPU instead.' : ''}`
       : lightest()
         ? 'This is already the lightest setup. Close other tabs and apps, then try again; some devices can\'t run the model.'
         : sameModel ? `${nm.label} can also run on the CPU: slower, but it uses ordinary memory instead of the GPU's.`
           : `Lighter settings use ${nm.label} (needs less memory), a 4K context and no speed boost.`),
     risky ? h('span', { class: 'muted' }, `It was using the experimental ${c.small.gpu ? 'GPU' : 'all-cores'} setting.`) : '',
-    h('div', { class: 'row' }, plain, changed || lightest() || risky ? '' : lighter, again)));
+    h('div', { class: 'row' }, plain, once ? again : '', changed || lightest() || risky ? '' : lighter, once ? '' : again)));
 }
 
 export function banner(...content) {
@@ -304,7 +340,7 @@ export async function loadModel() {
     // While a reply is generated, keep a marker too: a crash mid-reply then
     // says so on the next open.
     engine.setProgress((st) => {
-      if (!st) { setCrashMarker(null); return; }
+      if (!st) { setCrashMarker(null); clearCrashes(); return; }
       setCrashMarker({ ...marker, phase: 'reply', stage: st, at: Date.now() });
     });
     state.modelState = 'ready';
