@@ -12,7 +12,7 @@ import * as tasks from './tasks.js';
 import { find as findAll, renderFind, PAST_CHAT, PUSHBACK, checkQuery, rerankWeb, urlLedger, rankTools } from './find.js';
 import * as prefetchLib from './prefetch.js';
 import { buildEntities, resolve as resolveRefs, renderRefs } from './refs.js';
-import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes, chunk } from './context.js';
+import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes, chunk, resultGist } from './context.js';
 export { scrubFakeToolNotes };
 import { toolSpecs, listTools, runTool } from './tools.js';
 import { UNTRUSTED_RULES, wrapUntrusted } from './untrusted.js';
@@ -493,7 +493,10 @@ class Turn {
       small: lite(),
       // No prompt means nothing from Squiggle in the system turn, memory notes included.
       recall: noPrompt() ? null : (q, k) => memory.recall(q, k), factText: memory.factText, factsTitle: dialect().memoryTitle,
-      actions: !lite(),   // "Tool calls you made" read to small models as things the user said
+      // "Tool calls you made" read to small models as things the user said; LFM3 is trained for harness text, and
+      // without it re-ran the same commands every turn. Results ride along when replies keep them (debugTools).
+      actions: !lite() || engine.agentTrained(settings.model),
+      actionResults: (!lite() || engine.agentTrained(settings.model)) && !fencedSmall(),
       embed: settings.contextMode === 'smart' && settings.semantic ? embed : null,
     });
   }
@@ -600,13 +603,11 @@ class Turn {
       const cp = managed() && r.toolCalls.find(c => c.function && c.function.name === 'checkpoint');
       if (cp) return this.checkpointTask(cp.function.arguments || {});
       if (full) {
-        // Full, and it reached for another tool anyway: one chance to answer from what it has before stopping.
-        // Stopping straight away threw away three good lookups (LFM3 1.7B, 2026-11-10).
-        if (!askedForAnswer) {
-          askedForAnswer = true;
-          pending = r.toolCalls.map(c => toolResult(c, { error: 'Not run: there is no room left this turn. Answer the user now in plain words from what you found (say what you could not check), or call plan for the rest.' }));
-          continue;
-        }
+        // Full, told so ("Not run: … answer now or call plan"), and it reached for another tool anyway: carry on by
+        // itself in a fresh context (a one-step task that starts from what this reply found) instead of stopping and
+        // waiting for "continue" (Keal, 2026-11-10; stopping threw away three good lookups by LFM3 1.7B). Squiggle
+        // Small keeps the stop: its prompts are its training text.
+        if (!fencedSmall()) return this.carryOn(r.toolCalls);
         this.prefix += '\n\n_(Stopped: the context filled up. Ask again and I\'ll make a plan for what\'s left.)_';
         return null;
       }
@@ -656,14 +657,31 @@ class Turn {
     return task;
   }
 
+  // Out of room in the chat phase with more to do: the harness's own checkpoint. What this reply's tools returned
+  // (in short, wrapped as untrusted) and the call the model was about to make carry over into a fresh context.
+  carryOn(calls = []) {
+    const done = this.reply.tools.filter(t => t.ok !== false && !['plan', 'done', 'tool_info', 'checkpoint'].includes(t.name));
+    let budget = Math.floor(settings.contextSize * 0.3 * 3.2);   // characters: about 30% of a fresh window
+    const lines = [];
+    for (const t of done.slice().reverse()) {
+      const line = `- ${oneLine(t.label || t.name, 120)}${t.result ? ` → ${resultGist(t.result, 600)}` : ''}`;
+      if (line.length > budget) break;
+      lines.unshift(line); budget -= line.length;
+    }
+    const wanted = calls.map(c => { const f = c.function || {}; const a = f.arguments || {}; return f.name === 'bash' && a.command ? `$ ${oneLine(a.command, 120)}` : `${f.name}(${oneLine(JSON.stringify(a), 100)})`; }).join(', ');
+    const summary = lines.length ? wrapUntrusted('what this reply found so far', lines.join('\n')) : '(nothing found yet)';
+    return this.checkpointTask({ summary, next: `Finish the request using what you found so far${wanted ? ` (you were about to run ${wanted})` : ''}.` },
+      'out of room: carrying on in a fresh context');
+  }
+
   // checkpoint in the chat phase: a one-step task that carries on from the summary in a fresh context.
-  checkpointTask(args = {}) {
+  checkpointTask(args = {}, label = null) {
     const next = String(args.next || '').trim() || 'Finish the request';
     const task = this.startPlan({ goal: truncate(this.shown, 200), steps: [next] });
     const step = task.steps[0];
     step.checkpoint = { summary: truncate(String(args.summary || ''), 2000), needs: tasks.normSteps([{ text: 'x', needs: args.needs }])[0].needs || [], next };
     this.checkpoints++;
-    this.reply.tools.push({ name: 'checkpoint', label: `checkpointed: carrying on fresh (${truncate(next, 60)})`, ok: true });
+    this.reply.tools.push({ name: 'checkpoint', label: label || `checkpointed: carrying on fresh (${truncate(next, 60)})`, ok: true });
     sessions.saveTask(this.session, task);
     return task;
   }
@@ -724,9 +742,10 @@ class Turn {
       const facts = (await memory.recall(`${this.shown}\n${focus}`, 8)).filter(r => r.score >= 0.2);
       if (facts.length) sections.push({ title: dialect().memoryTitle, text: facts.map(f => '- ' + memory.factText(f.fact)).join('\n') });
     } catch {}
+    // A checkpoint to carry on from: the model's own (AI-managed) or the harness's when a reply ran out of room (carryOn).
+    if (step.checkpoint && step.checkpoint.summary) sections.unshift({ title: 'Your checkpoint (where you left off)', text: step.checkpoint.summary, keep: true });
     if (managed()) {
-      // The step's own choices replace the automatic retrieval: a checkpoint to carry on from, and attachments.
-      if (step.checkpoint && step.checkpoint.summary) sections.unshift({ title: 'Your checkpoint (where you left off)', text: step.checkpoint.summary, keep: true });
+      // The step's own choices replace the automatic retrieval: attachments.
       const refs = [...new Set([...(step.needs || []), ...((step.checkpoint && step.checkpoint.needs) || [])])];
       if (refs.length) {
         const got = (await Promise.all(refs.map(x => this.attachment(x, task).catch(e => ({ ref: x, text: `Couldn't attach: ${e.message || e}` }))))).filter(Boolean);
@@ -1252,6 +1271,9 @@ class Turn {
 // A tool result for the debug record: its text without the untrusted-content wrappers, capped so a long
 // page doesn't bloat the synced chat file.
 const DEBUG_MAX = 12000;
+// One line, cut to max characters (truncate() adds a note on its own line).
+const oneLine = (s, max) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > max ? t.slice(0, max - 1) + '…' : t; };
+
 function debugText(result) {
   const s = (typeof result === 'string' ? result : JSON.stringify(result, null, 1)).replace(STRIP_UNTRUSTED, '');
   return s.length > DEBUG_MAX ? `${s.slice(0, DEBUG_MAX)}\n… (${s.length - DEBUG_MAX} more characters not saved)` : s;
