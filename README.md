@@ -6,7 +6,7 @@
 
 <p align="center"><a href="https://kealjones.com/squiggle/"><b>Try it</b></a> (no account needed: pick "Try it without signing in") · <a href="docs/setup.md">Run your own</a> · <a href="docs/harness.md">How the agent loop works</a> · <a href="docs/failures.md">Failure casebook</a> · <a href="docs/evals.md">Evals</a> · <a href="docs/lab.md">Lab notebook</a></p>
 
-Squiggle runs Gemma 4 on your GPU (or a 1.2B model on your phone) with no backend: the app is static files,
+Squiggle runs LFM3 1.7B on your GPU, phone or computer, with no backend: the app is static files,
 the only server is a free Cloudflare Worker that relays the few GitHub requests a browser can't make. Your
 conversations, memory and the agent's files live in a **private GitHub repo you own**, so a chat started on a
 laptop continues on a phone. The agent can search the web, read pages, look things up on Wikidata, run code
@@ -14,7 +14,7 @@ in a sandbox, keep a fact graph about you, search every past chat, and clone, co
 requests on your repos, with the safety rules enforced in code rather than asked of the model.
 
 It is also a working lab for a question: **how small can the model be if the harness is good?** Squiggle's
-own fine-tuned 350M model uses the same tools as Gemma 4, the context modes are built for a 4K window, and
+default model is 1.7B and runs on an iPhone, the context modes are built for a 4K window, and
 every bad answer a model gives becomes a test (the casebook) and an eval case.
 
 <!-- screenshot: docs/images/demo.png (docs/images/SHOTS.md) -->
@@ -60,12 +60,16 @@ The part built for people who care about retrieval.
   ([harness.md](docs/harness.md) is the contract for [agent.js](app/src/agent.js) and the fine-tune.)
 - **Recipes**: a finished plan is saved as how the task was solved, offered by `find` for similar requests
   once you approve it. Slow the first time is fine; the second time should be fast.
+- **LFM3 1.7B is the model** (Liquid's first small model trained for agent harnesses), on our own WebLLM build
+  at about 14 tokens a second on an iPhone. When a reply fills its 4K window the harness checkpoints by itself and
+  carries on in a fresh context, so one answer can take several windows. In lab mode it can drive one `bash` tool
+  (a real shell over the workspace, with git, gh and curl wired to the same approvals) instead of twenty schemas.
 - **Squiggle Small** is LFM2.5-350M fine-tuned on the harness's exact text (219 MB, runs on a phone CPU);
   **Tiny Gemma 4** is Gemma 4 E2B pruned to a 0.6B core and healed by distillation. Both are honest about
   being often wrong; both prove the pipeline. The stock small models (Qwen3, Qwen3.5, LFM2.5, LFM3) run
   through their own tool formats on llama.cpp (WASM) or MLC (WebGPU), with a few schemas declared up front
   and the rest looked up by name, because every schema at once was 99% of a 4K window.
-- **The failure casebook** ([docs/failures.md](docs/failures.md)): 16 real bad answers, each with the chat id,
+- **The failure casebook** ([docs/failures.md](docs/failures.md)): 18 real bad answers, each with the chat id,
   the model, why it's wrong, the fix, and the unit test that now catches it. The bad answers are never put in
   a prompt or trained on; each pair is a preference pair for the next fine-tune. The same cases run as an
   eval against any model (`node tests/eval/run.mjs --model WQ06 --mode fresh`).

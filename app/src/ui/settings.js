@@ -51,6 +51,13 @@ export function loadSettings() {
     saved = { ...saved, model: agent.settings.model, phoneLFM: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
+  // LFM3 1.7B is the model everywhere now (Keal, 2026-11-10): a device on one of the earlier defaults moves over once.
+  // A model picked on purpose (the cloud model, a lab model) stays; the old ones are still in lab mode.
+  if (!saved.lfm3Default) {
+    if (['E4B', 'E2B', 'WLF12', 'WQ06', 'SQ', 'G3', 'WLF3'].includes(agent.settings.model)) agent.settings.model = engine.deviceModel();
+    saved = { ...saved, model: agent.settings.model, lfm3Default: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
   // Search by meaning on phones too: its worker sleeps (and frees its memory) 15 s after a search (embed.js).
   if (mobile && !saved.phoneSemantic) {
     agent.settings.semantic = true;

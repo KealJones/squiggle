@@ -263,3 +263,21 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   you found" before the turn stops; a blank final reply gets one "no tools in this reply" nudge and then falls back
   to the step results (tasks.js `resultsReply`).
 - **Caught by:** tests/tasks.test.js "case 17" (`resultsReply`); the window accounting is not covered.
+
+### 18. Every turn redid the same lookups, and "continue" was the user's job
+
+- **Asked:** the same chat as case 17 (`s0mwb2elnj0000ae4b`), 2026-11-10: "continue", then "hello?".
+- **Model:** LFM3 1.7B QAD on WebLLM, bash tool surface, Compress.
+- **What it did:** each turn started over with `ls /repos`, `ls -la /repos/squiggle`, `head -n 80 README.md`. On
+  "hello?" its thinking said "Earlier I asked for clarification about their GitHub project", which it never did.
+- **Why it's bad:** Compress replays the words of earlier turns, not their tool calls, and the "Tool calls you made"
+  section is off for small models (older ones read it as the user's words), so the work was invisible. The words it
+  did see were the harness's "_(Stopped: … Ask again and I'll make a plan …)_" replayed as its own turn, which it read
+  as having asked the user something. And a full context ended the turn, so the user had to type "continue".
+- **Good answer:** no repeated lookups; one reply, however many contexts it takes.
+- **Fix:** the section is on for models trained for harnesses (engine.js `agentTrained`: LFM3), with a one-line
+  gist of what each call returned (context.js `resultGist`, wrapped as untrusted); harness notices are scrubbed from
+  replayed turns; and when the chat phase is full and the model still reaches for a tool, the harness checkpoints by
+  itself (agent.js `carryOn`): a one-step task whose fresh context starts from what the reply found and the call it
+  was about to make. Squiggle Small keeps the old stop (its prompts are its training text).
+- **Caught by:** tests/context.test.js "case 18"; `carryOn` is not covered.

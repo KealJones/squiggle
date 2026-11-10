@@ -1,7 +1,8 @@
 # Squiggle — notes for engineers and coding agents
 
-A browser-only agent: Gemma 4 E4B on WebGPU (LiteRT-LM) on computers; LFM2.5 1.2B on WebLLM (WebGPU) or
-Squiggle Small on the CPU (wllama) on phones; optionally Gemma 4 26B on the relay's Workers AI. State is
+A browser-only agent: LFM3 1.7B on WebLLM (WebGPU, our own MLC build) on phones and computers, or its GGUF on the
+CPU (wllama) without WebGPU (`engine.DEFAULTS`, 2026-11-10); optionally Gemma 4 26B on the relay's Workers AI. Gemma 4
+E4B (LiteRT-LM), LFM2.5 1.2B, Squiggle Small and the rest are lab-mode options. State is
 synced through a private GitHub "storage repo", via a Cloudflare Worker that relays GitHub requests browsers
 can't make (device-flow login, git smart-HTTP). The app is static: either the Worker serves it (wrangler.toml,
 relay same-origin at /api) or GitHub Pages does (deploy.yml writes config.json with the relay URL;

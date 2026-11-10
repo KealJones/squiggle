@@ -239,7 +239,7 @@ async function setupModel(body) {
     setDefaultModel(engine.DEFAULTS.phoneCpu);
     const cm = engine.MODELS[engine.DEFAULTS.phoneCpu];
     body.append(h('h2', {}, 'No WebGPU on this browser'), h('p', {}, gpu.reason),
-      h('p', {}, `Squiggle will run ${cm.label} on the CPU instead: a ${cm.size} download, much less capable than Gemma 4.`),
+      h('p', {}, `Squiggle will run ${cm.label} on the CPU instead: a ${cm.size} download, much slower than on the GPU.`),
       h('button', { class: 'btn primary', onclick: async () => { await startApp(); ensureModel(); } }, 'Download and start'));
     return;
   }

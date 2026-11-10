@@ -14,7 +14,7 @@ const HF = 'https://huggingface.co/';
 
 // phone: small enough for a phone's per-tab memory. size: download size.
 export const MODELS = {
-  E4B: { label: 'Gemma 4 E4B', size: '3.0 GB', note: 'smartest on-device model, best with tools', phone: false, runtime: 'litert', family: 'gemma4',
+  E4B: { label: 'Gemma 4 E4B', size: '3.0 GB', lab: true, note: 'smartest on-device model, best with tools', phone: false, runtime: 'litert', family: 'gemma4',
     url: HF + 'litert-community/gemma-4-E4B-it-litert-lm/resolve/main/gemma-4-E4B-it-web.litertlm' },
   E2B: { label: 'Gemma 4 E2B', size: '2.0 GB', lab: true, note: 'faster, still good with tools', phone: false, runtime: 'litert', family: 'gemma4',
     url: HF + 'litert-community/gemma-4-E2B-it-litert-lm/resolve/main/gemma-4-E2B-it-web.litertlm' },
@@ -22,7 +22,7 @@ export const MODELS = {
     url: HF + 'unsloth/gemma-3-270m-it-GGUF/resolve/main/gemma-3-270m-it-Q4_0.gguf', bytes: 241574944 },
   // Experimental: LFM2.5-350M fine-tuned on Squiggle's harness format (lm-experiments
   // experiments/squiggle-ft). Same runtime and prompt format as G3.
-  SQ: { label: 'Squiggle Small', size: '219 MB', experimental: true, note: 'Keal\'s own fine-tune: LFM2.5 350M trained on Squiggle\'s tools and habits (plan, find, done). Uses tools and looks things up; still often wrong; runs on a phone\'s CPU, no WebGPU needed', phone: true, runtime: 'wllama', tools: true, family: 'fenced',
+  SQ: { label: 'Squiggle Small', size: '219 MB', lab: true, experimental: true, note: 'Keal\'s own fine-tune: LFM2.5 350M trained on Squiggle\'s tools and habits (plan, find, done). Uses tools and looks things up; still often wrong; runs on a phone\'s CPU, no WebGPU needed', phone: true, runtime: 'wllama', tools: true, family: 'fenced',
     url: HF + 'kealjones/squiggle-small/resolve/main/squiggle-small-lfm25-Q4_0.gguf', bytes: 219312160 },
   // Size tests for phones (Keal, 2026-10-28): how big a model an iPhone tab survives on wllama.
   // Plain chat only (stock models: no harness), smallest to largest.
@@ -45,7 +45,7 @@ export const MODELS = {
   // Heal 4 pilot A (lm-experiments experiments/tiny-gemma4, 2026-11-03): heal 3 + 750 steps on Toucan's multi-turn
   // tool conversations with real results. In tests it answers from tool results (heal 3 replied with nothing) and
   // handles a failed search, but plain text got a little worse. Same size and runtime as TG4.
-  TG4A: { label: 'Tiny Gemma 4', size: '778 MB', experimental: true, note: 'Keal\'s own build: Gemma 4 E2B pruned to a 0.6B core, healed by distillation, then trained on tool conversations with real results. Answers from what a search returns; still often wrong; runs on a phone\'s CPU', phone: true, runtime: 'wllama', tools: true, native: true, family: 'gemma4', thinking: false,
+  TG4A: { label: 'Tiny Gemma 4', size: '778 MB', lab: true, experimental: true, note: 'Keal\'s own build: Gemma 4 E2B pruned to a 0.6B core, healed by distillation, then trained on tool conversations with real results. Answers from what a search returns; still often wrong; runs on a phone\'s CPU', phone: true, runtime: 'wllama', tools: true, native: true, family: 'gemma4', thinking: false,
     url: HF + 'kealjones/tiny-gemma4-test/resolve/main/tiny-gemma4-heal4a-Q4_0.gguf', bytes: 778158496 },
   // Stock Qwen3.5 0.8B (Keal, 2026-10-31): tools through Qwen's own chat template, like TG4 (native), no fine-tune.
   Q35: { label: 'Test: Qwen3.5 0.8B', size: '507 MB', experimental: true, lab: true, note: 'stock Qwen3.5 0.8B with tools in its own tool format (no Squiggle training). Runs without thinking, as its model card recommends for this size, and needs about 1.1 GB of memory while answering. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, family: 'qwen35', thinking: false,
@@ -55,7 +55,7 @@ export const MODELS = {
   // tool_info(["run_js"]) for a gated tool, where LFM2.5 1.2B did none of those (llama.cpp replays, Nov 9). Thinking on
   // by default (its card). wllama 3.13's llama.cpp runs it through the GGUF's own template; on a phone CPU it's slow
   // (1 GB, thinks first), so this entry is for computers and for seeing it work; no MLC build exists.
-  LF3: { label: 'Test: LFM3 1.7B', size: '1.0 GB', experimental: true, lab: true, note: 'stock LFM3 1.7B with tools in its own format, thinking first. The first Liquid model trained for agent harnesses: it chats, writes code and picks tools sensibly where LFM2.5 did not, but it is 1 GB on the CPU and thinks before every reply. Experimental', phone: true, runtime: 'wllama', tools: true, native: true, family: 'lfm3',
+  LF3: { label: 'LFM3 1.7B (CPU)', size: '1.0 GB', note: 'the same LFM3 1.7B on the CPU, for devices without WebGPU: 1 GB, and much slower than the GPU build', phone: true, runtime: 'wllama', tools: true, native: true, family: 'lfm3',
     url: HF + 'LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-QAD-Q4_0.gguf', bytes: 1049615680 },
   // Not on this device: runs on the relay (only listed when the relay offers it).
   // WebLLM (MLC) on WebGPU (engine-webllm.js, Keal 2026-11-02): the same small-model path as the
@@ -73,7 +73,7 @@ export const MODELS = {
   // Tools in LFM2's own format (toolformats/lfm2.js: Pythonic calls, results in a tool turn), so it's native
   // and small: the short find-first prompt with gated tools. On an iPhone (memtest, full 4K prompt): first
   // word in 19 s, 18.7 tok/s, ahead of Qwen3 0.6B on WebLLM; its KV cache is in 6 of 16 layers.
-  WLF12: { label: 'LFM2.5 1.2B', size: '~630 MB', note: 'the phone model: LFM2.5 1.2B Instruct on WebGPU with tools in its own format, about 19 words a second on an iPhone. Needs WebGPU; 4K context at most', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm2', family: 'lfm2', thinking: false, webllm: '0.2.86', maxContext: 4096,
+  WLF12: { label: 'LFM2.5 1.2B', size: '~630 MB', lab: true, note: 'the phone model: LFM2.5 1.2B Instruct on WebGPU with tools in its own format, about 19 words a second on an iPhone. Needs WebGPU; 4K context at most', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm2', family: 'lfm2', thinking: false, webllm: '0.2.86', maxContext: 4096,
     mlc: 'LFM2.5-1.2B-Instruct-q4f16_1-MLC', bytes: 630000000,
     mlcRecord: {
       model: HF + 'naklitechie/LFM2.5-1.2B-Instruct-q4f16_1-MLC/resolve/main/',
@@ -85,7 +85,7 @@ export const MODELS = {
   // layers attend over a 256-token window). Tools in LFM3's own format (toolformats/lfm3.js). On an iPhone in Squiggle
   // (2026-11-10, small-model prompt and tools): "Hii" → a plain greeting, first word in 15 s, 13.7 tok/s. memtest's
   // 3K-token prompt killed the tab while answering, so long chats are at the phone's memory edge.
-  WLF3: { label: 'Test: LFM3 1.7B (GPU)', size: '~990 MB', experimental: true, note: 'LFM3 1.7B on WebLLM (WebGPU) with tools in its own format, thinking first: about 14 words a second on an iPhone, 8x the CPU build. Our own 4-bit build of Liquid\'s weights; long chats may run a phone out of memory. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
+  WLF3: { label: 'Test: LFM3 1.7B (GPU)', size: '~990 MB', lab: true, experimental: true, note: 'LFM3 1.7B on WebLLM (WebGPU) with tools in its own format, thinking first: about 14 words a second on an iPhone, 8x the CPU build. Our own 4-bit build of Liquid\'s weights; long chats may run a phone out of memory. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
     mlc: 'LFM3-1.7B-q4f16_1-MLC', bytes: 990000000,
     mlcRecord: {
       model: HF + 'kealjones/LFM3-1.7B-q4f16_1-MLC/resolve/main/',
@@ -96,7 +96,7 @@ export const MODELS = {
   // the 107 linear layers of LiquidAI's LFM3-1.7B-QAD-Q4_0.gguf bit-for-bit into our q4f16_1 layout (qad_to_mlc.py:
   // Q4_0 (k-8)*d = MLC (q-7)*s with q = 15-k, s = -d); embedding, norms and conv kernels as in WLF3. Its model library is
   // compiled for one sequence (max_batch_size=1): ~17 MB of scratch instead of ~163 MB, which WebLLM never used.
-  WLF3QAD: { label: 'Test: LFM3 1.7B QAD (GPU)', size: '~990 MB', experimental: true, note: 'LFM3 1.7B on WebLLM with Liquid\'s own 4-bit weights (trained to survive 4 bits) and a model library that reserves ~150 MB less memory than the plain 4-bit build. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
+  WLF3QAD: { label: 'LFM3 1.7B', size: '~990 MB', note: 'Liquid\'s LFM3 1.7B on WebGPU with tools in its own format, thinking first: the first small model trained for agent harnesses, about 14 words a second on an iPhone. Liquid\'s own 4-bit weights. 4K context at most', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
     mlc: 'LFM3-1.7B-QAD-q4f16_1-MLC', bytes: 990000000,
     mlcRecord: {
       model: HF + 'kealjones/LFM3-1.7B-QAD-q4f16_1-MLC/resolve/main/',
@@ -107,7 +107,7 @@ export const MODELS = {
   // It isn't (the 4-bit runs), and 3-bit loses the model's judgement: on an iPhone (2026-11-10) "Hii" became 400 tokens of
   // "likely a placeholder… I'll proceed to use the tool calls?", with or without Squiggle's prompt, where the 4-bit build and
   // Liquid's own 4-bit (llama.cpp) both just greet. Kept for comparison.
-  WLF3Q3: { label: 'Test: LFM3 1.7B 3-bit (GPU)', size: '~770 MB', experimental: true, note: 'LFM3 1.7B in 3-bit on WebLLM (WebGPU), a fifth smaller than the 4-bit build but noticeably worse: it overthinks even a greeting. For comparison only. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
+  WLF3Q3: { label: 'Test: LFM3 1.7B 3-bit (GPU)', size: '~770 MB', lab: true, experimental: true, note: 'LFM3 1.7B in 3-bit on WebLLM (WebGPU), a fifth smaller than the 4-bit build but noticeably worse: it overthinks even a greeting. For comparison only. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
     mlc: 'LFM3-1.7B-q3f16_1-MLC', bytes: 806000000,
     mlcRecord: {
       model: HF + 'kealjones/LFM3-1.7B-q3f16_1-MLC/resolve/main/',
@@ -146,6 +146,9 @@ export const isLite = (id = loadedModel) => Boolean(MODELS[id] && MODELS[id].run
 // Gemma 4's own tool format through llama.cpp's chat template (engine-wllama.js NativeConversation), not
 // Squiggle Small's ```tool_call blocks: for small builds distilled from E2B (tiny Gemma 4).
 export const nativeTools = (id = loadedModel) => isLite(id) && Boolean(MODELS[id] && MODELS[id].native);
+// Small by runtime, but trained for agent harnesses (LFM3): it can take the harness's own notes (the tool calls it
+// made earlier, with what they returned) without mistaking them for the user's words, which earlier small models did.
+export const agentTrained = (id = loadedModel) => Boolean(MODELS[id] && MODELS[id].family === 'lfm3');
 // Can a conversation start with a tool call already made and its result (Fresh context's lookup)? Models that
 // call tools in their own format (OpenAI-shaped history: wllama, WebLLM) and the cloud model can; LiteRT and the
 // fenced small-model format can't, so they get the lookup in the system prompt.
@@ -184,10 +187,12 @@ export function isMobile() {
 // stays alive in iPhone 16 Safari and uses tools (2026-11-04); Gemma 4 gets the tab killed. Phones without WebGPU
 // run Squiggle Small (LFM2.5 350M fine-tuned on the harness) on the CPU. Phones can still pick the cloud model.
 export const hasWebGpu = () => typeof navigator !== 'undefined' && Boolean(navigator.gpu);
-// The defaults in one place: swap PHONE_GPU when a better phone model lands (LFM3 on an MLC build, say).
-export const DEFAULTS = { computer: 'E4B', phoneGpu: 'WLF12', phoneCpu: 'SQ' };
+// The defaults in one place. Since 2026-11-10 it's LFM3 1.7B everywhere (Keal: "we only need LFM3"): our WebLLM build
+// on WebGPU, Liquid's GGUF on the CPU without it. Gemma 4 E4B, LFM2.5 1.2B and the rest are lab-mode options.
+export const DEFAULTS = { computer: 'WLF3QAD', phoneGpu: 'WLF3QAD', phoneCpu: 'LF3' };
 export function deviceModel() {
-  return isMobile() ? (hasWebGpu() ? DEFAULTS.phoneGpu : DEFAULTS.phoneCpu) : DEFAULTS.computer;
+  if (!hasWebGpu()) return DEFAULTS.phoneCpu;
+  return isMobile() ? DEFAULTS.phoneGpu : DEFAULTS.computer;
 }
 
 // Lab mode: the research and size-test models (`lab: true` in MODELS) and the experimental switches in
