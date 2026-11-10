@@ -212,11 +212,18 @@ stubs the Web Speech API; real-model behaviour needs a WebGPU device and is chec
 
 iOS Safari kills tabs that load Gemma 4 E2B/E4B, and smaller ONNX models (tried and removed:
 Gemma 3, SmolLM, a QAT E2B build on onnxruntime-web) failed on WebGPU readback. The defaults are `engine.DEFAULTS`
-(one place to change): phones with WebGPU run LFM2.5 1.2B on WebLLM (`WLF12`, 2026-11-09; phones on Qwen3 0.6B/SQ/G3
-move over once, settings.js `phoneLFM`), phones without it Squiggle Small (`SQ`): LFM2.5-350M fine-tuned on the harness
-format (lm-experiments experiments/squiggle-ft, public at kealjones/squiggle-small, Q4_0 GGUF 219 MB, experimental v1).
-Models with `lab: true` in MODELS (the size tests, the stock small models, tiny Gemma 4 heal 3, LFM3, Gemma 3 270M, E2B)
-are listed only in lab mode (`engine.listedModels`; a device that already picked one keeps it).
+(one place to change): LFM3 1.7B everywhere since 2026-11-10 (settings.js `lfm3Default` moves devices on an old default
+once). A model can have several builds (`engine.GROUPS`, `group` on each MODELS entry): LFM3 is `WLF3QAD` (WebLLM,
+q4f16, `f16Only`) then `LF3` (GGUF on wllama, CPU). The user picks the model; `engine.forDevice` picks the first build
+that runs here (`runsHere`: WebGPU for GPU builds, shader-f16 for f16-only ones after `probeGpu`, not in
+`settings.avoidBuilds`), and that one build is the only one listed. `initModel` resolves the saved model to it,
+`sessionModel` resolves a chat saved on another device to it, and `cleanupStorage` frees the other build's download.
+A crash on the GPU build offers "Run it on the CPU instead", which adds it to `avoidBuilds` (Settings → "Try the GPU
+again" clears it). Settings shows how it runs (`engine.runnerLabel`) instead of asking: context size, small-model mode
+and no-prompt are lab-only, and there's no GPU or cores switch. Squiggle Small (`SQ`, LFM2.5-350M fine-tuned on the
+harness format, lm-experiments experiments/squiggle-ft, kealjones/squiggle-small, Q4_0 GGUF 219 MB) is a lab model now.
+Models with `lab: true` in MODELS (Gemma 4 E4B and E2B, LFM2.5 1.2B, Squiggle Small, tiny Gemma 4, the size tests, the
+stock small models, Gemma 3 270M, LFM3's other test builds) are listed only in lab mode (`engine.listedModels`; a device that already picked one keeps it).
 Gemma 3 270M (`G3`, unsloth's Q4_0 GGUF, 242 MB) stays as an option. Both run on wllama 3.13.0, CPU only
 (`n_gpu_layers: 0`), in `engine-wllama.js`; wllama caches the file itself. llama.cpp may split LFM2.5's
 `<think>` into `reasoning_content` (shown as thinking; a stray closing tag is dropped). Also the fallback on computers without WebGPU.
@@ -230,10 +237,11 @@ the fine-tune in lm-experiments trains on that exact text). No tool names go in 
 tools up with `find` (answered by the agent) and sees details only for tools it found. The cloud model stays
 available on phones. `cleanupStorage` frees downloads of models that aren't offered or don't fit.
 Loads and replies write a crash marker with the current step, shown on the next open.
-Two experimental settings for wllama models (off by default, lab mode only): "Use the GPU" (`smallGpu`: wllama 3.8's WebGPU,
-`n_gpu_layers: 999`) and "Use all CPU cores" (`smallThreads`: `n_threads` up to 4; needs a cross-origin isolated
-page, which sw.js does by adding COOP/COEP/CORP to the app's own responses while the `squiggle-flags` cache holds
-`/__flags/isolate`; takes a reload). A crash with either on offers to turn them off. The composer note shows what's in
+CPU builds use several cores automatically (`settings.smallThreads`, on by default since 2026-11-10, `autoThreads`
+flips old devices once): `n_threads` up to 4 needs a cross-origin isolated page, which sw.js does by adding
+COOP/COEP/CORP to the app's own responses while the `squiggle-flags` cache holds `/__flags/isolate`; `initModel` sets
+that flag when the device lands on a CPU build, effective from the next open. A crash with it on offers to turn it
+off. llama.cpp's own WebGPU path (`smallGpu`) is reachable only in lab mode; the WebLLM builds are the GPU path. The composer note shows what's in
 use (GPU / N cores / Safari's slower compatibility build, which wllama picks when JSPI or Memory64 is missing) and the last
 reply's speed. Size-test models (LF12, LL1) are plain chat; Q06 (stock Qwen3 0.6B) uses the native tool path like Q35 and is the smallest tool-using model that stays under 1 GB on the CPU (docs/measurements-2026-11-04.md). CPU loads use an 8-bit KV cache with flash attention and n_batch 512 / n_ubatch 256 (`engine-wllama.js createEngine`, plain retry on failure): worth 300 MB on Qwen3 0.6B, 50 on Qwen3.5. TG4A is tiny Gemma 4 heal 4 pilot A (same runtime and size as TG4; trained on Toucan tool conversations, answers from tool results). It was trained without thinking, so it sets `thinking: false` in MODELS and `conversation()` never turns thinking on for it (with thinking on it re-calls the tool instead of answering from the result). TG4 (tiny Gemma 4, lm-experiments experiments/tiny-gemma4, distilled from E2B) sets `native: true`: wllama loads it with `jinja: true` and `NativeConversation` sends real `tools` through the GGUF's own Gemma 4 chat template, reading back llama.cpp's parsed `tool_calls`; the agent gives it E2B's system prompt, but small-model budgets and no background jobs. Its tools are gated (`agent.js gated()`, docs/harness.md "Tool names up front"): a few declared up front, the rest listed by name and declared when `tool_info(names)` or `find` asks for them, since every schema filled ~83% of a 4K window. Settings → Small-model mode (per model, `settings.smallMode`, true/false; unset = the default, on for small models and off for big ones) switches any model with tools except the fenced-format ones (always on) to the short `LITE_SYSTEM_NATIVE` prompt (docs/harness.md). docs/measurements-2026-11-04.md has the numbers behind the prompt sizes, `GATE`, the repeat guard and the chat-phase call cap; `node tests/e2e/model-drive.mjs --model Q35` reproduces them. Q35 (stock Qwen3.5 0.8B, unsloth's Q4_0 GGUF) uses the same native path with Qwen's own template, with thinking off (its card's default for this size). LF3 (stock LFM3-1.7B, Liquid's QAD Q4_0 GGUF, 1 GB; needs wllama ≥ 3.13) is the same native path with LFM3's template, thinking on; it's the first Liquid model trained for agent harnesses and, in llama.cpp replays of Keal's chats (2026-11-09), greets without tools, writes code itself and calls tool_info for a gated tool where LFM2.5 1.2B did not. `toolformats/lfm3.js` is its WebLLM-side format (no MLC build yet). Settings → "No prompt (experimental)" (lab mode only; `settings.noPrompt`, per model, `agent.noPrompt`) sends a switchable model no system prompt at all, memory notes included: LFM2.5 1.2B behaved the same with and without Squiggle's prompt, so its over-use of tools is its training, not the prompt. Small models get a thinking budget (400 reasoning tokens, `engine.generationFor`); the Qwens get their cards' sampling (no repeat penalty, a presence penalty), Gemma 4 its card's temperature 1.0 (docs/harness.md "Per-model generation settings"). `node tests/e2e/wllama-bench.mjs [--model SQ]` loads a
 real model in headless Chromium: one thread vs all cores vs WebGPU.

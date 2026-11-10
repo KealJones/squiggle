@@ -16,6 +16,7 @@ export function loadSettings() {
     if (q !== null) saved = { ...saved, lab: q !== '0' && q !== 'false' };
   } catch {}
   engine.setLab(saved.lab);
+  engine.setAvoided(saved.avoidBuilds);
   Object.assign(agent.settings, { model: engine.deviceModel() }, mobile ? { contextSize: 4096, fastDecode: false } : {}, saved);
   // Phones only run models that fit a phone; anything else moves to the default.
   if (!engine.MODELS[agent.settings.model] || !engine.modelFitsDevice(agent.settings.model)) {
@@ -49,6 +50,13 @@ export function loadSettings() {
   if (mobile && !saved.phoneLFM) {
     if (engine.hasWebGpu && engine.hasWebGpu() && ['WQ06', 'SQ', 'G3'].includes(agent.settings.model)) agent.settings.model = engine.DEFAULTS.phoneGpu;
     saved = { ...saved, model: agent.settings.model, phoneLFM: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
+  // Several CPU cores is automatic now (there's no setting): the old default saved "off" on every device, so it
+  // flips once; a crash with it on turns it off again (the crash banner).
+  if (!saved.autoThreads) {
+    agent.settings.smallThreads = true;
+    saved = { ...saved, smallThreads: true, autoThreads: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
   // LFM3 1.7B is the model everywhere now (Keal, 2026-11-10): a device on one of the earlier defaults moves over once.

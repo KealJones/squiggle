@@ -28,7 +28,7 @@ export const settings = {
   contextSize: 8192,
   fastDecode: true,         // multi-token prediction: faster, uses more memory
   smallGpu: false,          // small models (wllama): run on WebGPU (experimental)
-  smallThreads: false,      // small models (wllama): use several CPU cores; needs an isolated page (sw.js)
+  smallThreads: true,       // CPU builds (wllama): use several cores; automatic (needs an isolated page, sw.js), off only after a crash with it
   contextMode: 'smart',     // 'smart' (default) | 'compact' | 'full'
   semantic: true,           // MiniLM embeddings for retrieval (its worker sleeps when idle, so phones too)
   recallChats: false,       // smart mode may recall messages from other chats too (off: old answers, right or wrong, leaked into unrelated chats)

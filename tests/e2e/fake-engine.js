@@ -17,6 +17,14 @@ export const engineReady = () => ready;
 export const currentModel = () => 'E2B';
 export const isLite = (id) => Boolean(MODELS[id] && MODELS[id].runtime === 'wllama');
 export const agentTrained = () => false;
+// One model, several builds (the real engine's GROUPS): the fake models have none, so every id is its own build.
+export const GROUPS = {};
+export const groupOf = () => null;
+export const forDevice = (id) => id;
+export const probeGpu = async () => true;
+export const setAvoided = () => {};
+export const runsHere = (id) => Boolean(MODELS[id]);
+export const runnerLabel = (id) => (MODELS[id] && MODELS[id].runtime === 'cloud' ? 'in the cloud, through the relay' : MODELS[id] && MODELS[id].runtime === 'litert' ? 'on your GPU (WebGPU)' : 'on the CPU');
 export const chatOnly = (id) => isLite(id) && !(MODELS[id] && MODELS[id].tools);
 export const webgpuStatus = async () => ({ ok: true });
 export const suggestModel = () => 'E2B';

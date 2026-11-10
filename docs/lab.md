@@ -252,3 +252,14 @@ off (the crash-loop guard). The WebLLM models made the GPU switch moot for phone
   one got the tab killed.
 - **Recipes injected into the prompt; other chats in smart context by default; recalled messages inside the
   user turn without a marker.** Each one made a small model answer something the person didn't ask.
+
+### One model, picked for the device — shipped
+
+**Idea.** Keal, 2026-11-10, after LFM3 1.7B on our WebLLM build carried the bash tool well on a phone and a desktop:
+"a user should only have to pick LFM3 1.7B, not the GGUF vs GPU version for their device", and no runner settings.
+
+**What happened.** LFM3 is one entry with two builds (`engine.GROUPS`): WebLLM q4f16 when there's WebGPU with
+16-bit floats, the GGUF on the CPU otherwise. The device picks; a crash on the GPU build steps down to the CPU one
+and remembers it. Settings lost the model zoo, context size, small-model mode, no-prompt, "Use the GPU" and "Use
+all CPU cores": cores are automatic on the CPU path. Everything else is a lab-mode model, kept so the evals and the
+casebook still reproduce. Open: a q4f32 WebLLM build of LFM3, so GPUs without 16-bit floats stay on the GPU.

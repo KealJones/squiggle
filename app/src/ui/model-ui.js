@@ -13,9 +13,18 @@ import { saveSettings, setDefaultModel } from './settings.js';
 import { renderSide } from './side.js';
 
 export async function initModel() {
-  // Free space taken by models Squiggle no longer offers, and on phones by
-  // on-device models a phone can't run.
-  engine.cleanupStorage({ keep: (id) => engine.modelFitsDevice(id) })
+  // Which build of the model this device runs (LFM3 on the GPU, or on the CPU without WebGPU or 16-bit floats):
+  // the GPU is asked once, then a saved build that can't run here becomes the one that can.
+  await engine.probeGpu();
+  const build = engine.forDevice(agent.settings.model);
+  if (build !== agent.settings.model) setDefaultModel(build);
+  // A CPU build runs faster on several cores, which needs a cross-origin isolated page: sw.js isolates the app's
+  // own responses once the flag is set, from the next open (no reload now). Off again after a crash with it.
+  const M = engine.MODELS[build];
+  if (M && M.runtime === 'wllama' && !M.backend && agent.settings.smallThreads && typeof crossOriginIsolated !== 'undefined' && !crossOriginIsolated) setIsolation(true);
+  // Free space taken by models Squiggle no longer offers, on phones by on-device models a phone can't run, and
+  // by builds of a model this device doesn't use (LFM3's CPU build on a device that runs it on the GPU).
+  engine.cleanupStorage({ keep: (id) => engine.modelFitsDevice(id) && (!engine.groupOf(id) || engine.forDevice(id) === id) })
     .then((n) => n && console.info(`Freed ${(n / 1e9).toFixed(1)} GB of old model downloads.`)).catch(() => {});
   if (engine.MODELS[agent.settings.model].runtime === 'cloud') {
     if (!state.cloudOffered) {
@@ -70,7 +79,11 @@ function showLoadBanner() {
 // Models from most to least memory needed; a crash offers the next one down.
 const BY_MEMORY = ['E4B', 'E2B', 'LF3', 'LL1', 'TG4', 'TG4A', 'LF12', 'Q35', 'Q06', 'SQ', 'G3'];
 function lighterModel(id) {
+  // A build of a model with several (LFM3): the next build in its group that fits, say the CPU one after the GPU one.
+  const g = engine.GROUPS[engine.groupOf(id)];
+  if (g) return g.builds.slice(g.builds.indexOf(id) + 1).find(b => engine.MODELS[b] && engine.modelFitsDevice(b)) || null;
   const i = BY_MEMORY.indexOf(id);
+  if (i < 0) return null;
   return BY_MEMORY.slice(i + 1).find(m => engine.MODELS[m] && engine.modelFitsDevice(m)) || null;
 }
 function lightest() {
@@ -83,11 +96,15 @@ function showCrashBanner(c) {
   const S = agent.settings;
   const next = lighterModel(S.model) || S.model;
   const nm = engine.MODELS[next];
+  const sameModel = next !== S.model && engine.groupOf(next) && engine.groupOf(next) === engine.groupOf(S.model);
   const lighter = h('button', { class: 'btn primary', onclick: async () => {
     Object.assign(agent.settings, { contextSize: 4096, fastDecode: false });
+    // Stepping down from one build to another of the same model: remember that this one crashed here, so the
+    // automatic pick (engine.forDevice) doesn't go back to it on the next open.
+    if (sameModel) { S.avoidBuilds = [...new Set([...(S.avoidBuilds || []), S.model])]; engine.setAvoided(S.avoidBuilds); }
     setDefaultModel(next); setCrashMarker(null);
     state.modelPromise = null; ensureModel(); // downloads the lighter model first if needed, then loads
-  } }, next === S.model ? 'Use lighter settings' : `Use lighter settings (${nm.label}, ${nm.size})`);
+  } }, sameModel ? `Run it on the CPU instead (${nm.size}, slower)` : next === S.model ? 'Use lighter settings' : `Use lighter settings (${nm.label}, ${nm.size})`);
   // Settings may have become lighter since the crash (e.g. phones moved to a phone model).
   const changed = c.model !== S.model || c.contextSize !== S.contextSize || Boolean(c.fast) !== Boolean(S.fastDecode)
     || Boolean(c.small && c.small.gpu) !== Boolean(S.smallGpu && engine.MODELS[S.model].runtime === 'wllama' && !engine.MODELS[S.model].backend)
@@ -109,7 +126,8 @@ function showCrashBanner(c) {
       ? `This device now uses lighter settings (${settingsText}), which need much less memory.`
       : lightest()
         ? 'This is already the lightest setup. Close other tabs and apps, then try again; some devices can\'t run the model.'
-        : `Lighter settings use ${nm.label} (needs less memory), a 4K context and no speed boost.`),
+        : sameModel ? `${nm.label} can also run on the CPU: slower, but it uses ordinary memory instead of the GPU's.`
+          : `Lighter settings use ${nm.label} (needs less memory), a 4K context and no speed boost.`),
     risky ? h('span', { class: 'muted' }, `It was using the experimental ${c.small.gpu ? 'GPU' : 'all-cores'} setting.`) : '',
     h('div', { class: 'row' }, plain, changed || lightest() || risky ? '' : lighter, again)));
 }
@@ -199,9 +217,12 @@ export async function switchModel(id) {
 // A chat can have its own model (session.model); otherwise the device default
 // applies. Called when a chat opens and before each turn. Never mid-reply.
 export function sessionModel(session) {
-  const own = session && session.model;
+  // A chat started on another device may name a different build of the same model (LFM3 on the GPU there, the
+  // CPU here): engine.forDevice turns any build into this device's.
+  const own = engine.forDevice(session && session.model);
   const fits = (id) => engine.MODELS[id] && engine.modelFitsDevice(id) && (!engine.MODELS[id].needsRelay || state.cloudOffered);
-  return fits(own) ? own : (fits(agent.settings.defaultModel) ? agent.settings.defaultModel : agent.settings.model);
+  const dflt = engine.forDevice(agent.settings.defaultModel);
+  return fits(own) ? own : (fits(dflt) ? dflt : engine.forDevice(agent.settings.model));
 }
 export async function useSessionModel(session) {
   if (state.busy) return;
@@ -273,7 +294,8 @@ export async function loadModel() {
   banner(h('div', { class: 'dl' }, h('div', { class: 'dl-head' }, squiggleWait(), h('span', {}, cloud ? 'Connecting to the cloud model…' : `Loading ${engine.MODELS[S.model].label}…`)), step));
   // The marker is rewritten at every step (localStorage writes are synchronous,
   // so it survives the tab being killed) and says where a crash happened.
-  const small = engine.MODELS[S.model].runtime === 'wllama' && !engine.MODELS[S.model].backend ? { gpu: Boolean(S.smallGpu), threads: Boolean(S.smallThreads) } : null;
+  // CPU builds: llama.cpp's WebGPU path is only reachable in lab mode now (the WebLLM builds run on the GPU); cores are automatic.
+  const small = engine.MODELS[S.model].runtime === 'wllama' && !engine.MODELS[S.model].backend ? { gpu: Boolean(S.smallGpu && engine.labOn()), threads: Boolean(S.smallThreads) } : null;
   const marker = { model: S.model, contextSize: S.contextSize, fast: S.fastDecode, small, at: Date.now(), stage: 'starting', gpu: cloud ? '' : await engine.gpuSummary(), ua: navigator.userAgent };
   setCrashMarker(marker);
   try {

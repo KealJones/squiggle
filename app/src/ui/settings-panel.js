@@ -14,7 +14,7 @@ import { saveSettings, applyTheme, setDefaultContextMode } from './settings.js';
 import { modelPicker, showSetup } from './setup.js';
 import * as demo from '../demo.js';
 import { openDrawer } from './panels.js';
-import { switchModel, loadModel, setIsolation, updateComposerNote, loadSemantic, sessionModel } from './model-ui.js';
+import { switchModel, loadModel, updateComposerNote, loadSemantic, sessionModel } from './model-ui.js';
 
 // ── Building blocks ────────────────────────────────────────────────────────
 const section = (title, ...fields) => h('section', { class: 'settings-sec' }, h('h3', {}, title), ...fields.filter(Boolean));
@@ -102,7 +102,7 @@ function noPromptField(S) {
 // The device's default model. The main models are listed; test and experimental
 // ones fold away unless one of them is the current choice.
 function modelField(S) {
-  const def = engine.MODELS[S.defaultModel] ? S.defaultModel : S.model;
+  const def = engine.forDevice(engine.MODELS[S.defaultModel] ? S.defaultModel : S.model);
   const onPick = async (v) => {
     if (v === def) return;
     S.defaultModel = v; saveSettings();   // the saved model is the default
@@ -120,9 +120,18 @@ function modelField(S) {
     more.open = extra.some(o => o.dataset.model === def);
   }
   const own = state.current && state.current.model && state.current.model !== def ? `This chat uses ${engine.MODELS[state.current.model] ? engine.MODELS[state.current.model].label : state.current.model} (set in the chat details); the default applies to other chats.` : '';
-  return field('Default model', h('div', {}, all, more), [engine.isMobile()
-    ? 'Phones run the small CPU models: Gemma 4 doesn\'t fit in a phone browser tab. The cloud model is the stronger option when your relay offers it.'
-    : 'Gemma 4 E4B is the smartest and best with tools. Each model downloads once per device.', own].filter(Boolean).join(' '));
+  // How it runs is picked for the device (engine.forDevice): said here, not asked. A build that crashed here was
+  // stepped down from; it can be tried again.
+  const M = engine.MODELS[S.model];
+  const how = M ? `${M.label} runs ${engine.runnerLabel(S.model)} on this device, picked automatically.` : '';
+  const avoided = (S.avoidBuilds || []).filter(id => engine.MODELS[id]);
+  const retry = avoided.length ? h('button', { class: 'btn', onclick: async () => {
+    S.avoidBuilds = []; engine.setAvoided([]); saveSettings();
+    await switchModel(engine.forDevice(S.model)); renderSettingsPanel();
+  } }, 'Try the GPU again') : '';
+  return field('Model', h('div', {}, all, more, retry ? h('div', { class: 'row' }, retry) : ''), [how,
+    avoided.length ? 'The GPU build crashed this tab before, so it runs on the CPU.' : '',
+    M && M.runtime !== 'cloud' && state.cloudOffered ? 'The cloud model is there for bigger jobs.' : '', own].filter(Boolean).join(' '));
 }
 
 // ── The panel ──────────────────────────────────────────────────────────────
@@ -133,7 +142,6 @@ export function renderSettingsPanel() {
   const seg = (options, value, onPick) => h('div', { class: 'seg' }, options.map(([v, label]) => h('button', { 'aria-pressed': String(v === value), onclick: () => { onPick(v); saveSettings(); renderSettingsPanel(); } }, label)));
   const cfg = storage.storageConfig();
   const M = engine.MODELS[S.model];
-  const plainWllama = M.runtime === 'wllama' && !M.backend;
   const mode = S.defaultContextMode || S.contextMode || 'smart';
   const modes = Object.entries(CONTEXT_MODES).filter(([k, d]) => d.offered || (d.lab && engine.labOn()) || k === mode);
   const reloadIfReady = async () => { if (engine.engineReady()) await loadModel(); };
@@ -148,18 +156,12 @@ export function renderSettingsPanel() {
   body.append(
     section('Model',
       modelField(S),
-      smallModeField(S),
+      // The tuning knobs are lab-only: the device picks the build, its context and its cores.
+      engine.labOn() ? smallModeField(S) : '',
       engine.labOn() ? noPromptField(S) : '',
-      field('Context window', seg([[4096, '4K'], [8192, '8K'], [16384, '16K']].filter(([v]) => !M.maxContext || v <= M.maxContext), S.contextSize, async (v) => { S.contextSize = v; await reloadIfReady(); }),
+      !engine.labOn() ? '' : field('Context window', seg([[4096, '4K'], [8192, '8K'], [16384, '16K']].filter(([v]) => !M.maxContext || v <= M.maxContext), S.contextSize, async (v) => { S.contextSize = v; await reloadIfReady(); }),
         M.maxContext ? `This build was compiled for ${M.maxContext / 1024}K at most.` : 'Bigger remembers more per turn but uses more memory and is slower to start. Phones are safest at 4K.'),
       M.runtime === 'litert' ? switchRow('Speed boost', 'Replies come noticeably faster, but it loads an extra helper model and needs more memory. Off by default on phones.', S.fastDecode, async (e) => { S.fastDecode = e.target.checked; saveSettings(); await reloadIfReady(); }) : '',
-      plainWllama && engine.labOn() ? switchRow('Use the GPU (experimental)', 'Runs this model on WebGPU instead of the CPU: could be much faster, or could crash the tab. If it crashes, Squiggle offers to turn it off.', S.smallGpu, async (e) => { S.smallGpu = e.target.checked; saveSettings(); await reloadIfReady(); }) : '',
-      plainWllama && engine.labOn() ? switchRow('Use all CPU cores (experimental)', 'Splits the work across several cores, mostly speeding up the wait before a reply starts. Reloads the page.', S.smallThreads, async (e) => {
-        S.smallThreads = e.target.checked; saveSettings();
-        const ok = await setIsolation(S.smallThreads);
-        if (!ok && S.smallThreads) { toast('Not available here: it needs the app\'s offline helper (service worker), which only runs over https.'); return; }
-        toast('Reloading to apply…', 2000); setTimeout(() => location.reload(), 600);
-      }) : '',
     ),
 
     section('Context',
