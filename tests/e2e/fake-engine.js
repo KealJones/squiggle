@@ -16,10 +16,12 @@ const lock = (fn) => { const r = chain.then(fn, fn); chain = r.catch(() => {}); 
 export const engineReady = () => ready;
 export const currentModel = () => 'E2B';
 export const isLite = (id) => Boolean(MODELS[id] && MODELS[id].runtime === 'wllama');
+export const agentTrained = () => false;
 export const chatOnly = (id) => isLite(id) && !(MODELS[id] && MODELS[id].tools);
 export const webgpuStatus = async () => ({ ok: true });
 export const suggestModel = () => 'E2B';
-export const deviceModel = () => (/iPhone|Android/.test(navigator.userAgent) ? 'G3' : 'E4B');
+// Like the real one: a phone without WebGPU gets the CPU default (the fake phone has none, so Squiggle Small).
+export const deviceModel = () => (/iPhone|Android/.test(navigator.userAgent) ? (hasWebGpu() ? DEFAULTS.phoneGpu : DEFAULTS.phoneCpu) : DEFAULTS.computer);
 export const needsGpu = (id) => Boolean(MODELS[id] && MODELS[id].runtime === 'litert');
 export const cleanupStorage = async ({ keep } = {}) => { window.__cleanup = Object.keys(MODELS).filter(id => !keep || keep(id)); return 0; };
 export const modelFitsDevice = (id) => !isMobile() || Boolean(MODELS[id] && MODELS[id].phone);
