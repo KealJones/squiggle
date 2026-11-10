@@ -86,6 +86,17 @@ export const MODELS = {
       model_lib: HF + 'kealjones/LFM3-1.7B-q4f16_1-MLC/resolve/main/LFM3-1.7B-q4f16_1-webgpu.wasm',
       overrides: { context_window_size: 4096 },
     } },
+  // LFM3 1.7B with Liquid's own quantization-aware-trained 4-bit weights (Keal, 2026-11-10): lm-experiments job lfm3-mlc-8 copies
+  // the 107 linear layers of LiquidAI's LFM3-1.7B-QAD-Q4_0.gguf bit-for-bit into our q4f16_1 layout (qad_to_mlc.py:
+  // Q4_0 (k-8)*d = MLC (q-7)*s with q = 15-k, s = -d); embedding, norms and conv kernels as in WLF3. Its model library is
+  // compiled for one sequence (max_batch_size=1): ~17 MB of scratch instead of ~163 MB, which WebLLM never used.
+  WLF3QAD: { label: 'Test: LFM3 1.7B QAD (GPU)', size: '~990 MB', experimental: true, note: 'LFM3 1.7B on WebLLM with Liquid\'s own 4-bit weights (trained to survive 4 bits) and a model library that reserves ~150 MB less memory than the plain 4-bit build. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
+    mlc: 'LFM3-1.7B-QAD-q4f16_1-MLC', bytes: 990000000,
+    mlcRecord: {
+      model: HF + 'kealjones/LFM3-1.7B-QAD-q4f16_1-MLC/resolve/main/',
+      model_lib: HF + 'kealjones/LFM3-1.7B-QAD-q4f16_1-MLC/resolve/main/LFM3-1.7B-q4f16_1-b1-webgpu.wasm',
+      overrides: { context_window_size: 4096 },
+    } },
   // The same model in MLC's 3-bit group quantization (q3f16_1, 769 MB): Keal's call, in case 4-bit is too big on a phone.
   // It isn't (the 4-bit runs), and 3-bit loses the model's judgement: on an iPhone (2026-11-10) "Hii" became 400 tokens of
   // "likely a placeholder… I'll proceed to use the tool calls?", with or without Squiggle's prompt, where the 4-bit build and
