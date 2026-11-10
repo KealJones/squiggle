@@ -239,7 +239,7 @@ real model in headless Chromium: one thread vs all cores vs WebGPU.
 
 WebLLM (`engine-webllm.js`, @mlc-ai/web-llm 0.2.87 from jsDelivr by default; a model can name another with `webllm`, loaded
 side by side as its own module, since a build's .wasm carries its TVM runtime and WebLLM's JS must match it): WL1 (Llama 3.2 1B,
-chat only), WQ06 (Qwen3 0.6B), WQ35 (Qwen3.5 0.8B) and WLF12 (LFM2.5 1.2B Instruct, naklitechie's community build on WebLLM
+chat only), WQ06 (Qwen3 0.6B), WQ35 (Qwen3.5 0.8B), WLF3 (LFM3 1.7B, our own MLC build from lm-experiments experiments/lfm3-mlc: q4f16_1 at kealjones/LFM3-1.7B-q4f16_1-MLC, WebLLM 0.2.87, `toolformats/lfm3.js`; runs on an iPhone in Squiggle at 13.7 tok/s, first word in 15 s, 2026-11-10; memtest's 3K-token prompt kills the tab while answering; the 3-bit build WLF3Q3 runs but overthinks even a greeting, so 4-bit it is; WLF3QAD is the same model with Liquid's quantization-aware-trained 4-bit weights copied in exactly and a one-sequence model library, ~150 MB less scratch) and WLF12 (LFM2.5 1.2B Instruct, naklitechie's community build on WebLLM
 0.2.86, `maxContext: 4096`, tools in LFM2's own format via `toolformats/lfm2.js`: Pythonic calls in `<|tool_call_start|>[…]`,
 results in a `tool` turn, raw prompts with `<|startoftext|>` added since WebLLM only adds BOS on its manifest path; card sampling
 temperature 0.1, repeat 1.05) are MLC builds on WebGPU. They keep `runtime: 'wllama'` (so isLite, chatOnly, nativeTools and the

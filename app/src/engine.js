@@ -80,6 +80,40 @@ export const MODELS = {
       model_lib: HF + 'naklitechie/LFM2.5-1.2B-Instruct-q4f16_1-MLC/resolve/main/LFM2.5-1.2B-Instruct-q4f16_1-webgpu.wasm',
       overrides: { context_window_size: 4096 },
     } },
+  // LFM3 1.7B on WebLLM (Keal, 2026-11-09): our own MLC build (lm-experiments experiments/lfm3-mlc: model definition for
+  // mlc-llm, TVM built from source at WebLLM 0.2.87's commit, q4f16_1, 4K window, prefill chunks of 256 because five of its
+  // layers attend over a 256-token window). Tools in LFM3's own format (toolformats/lfm3.js). On an iPhone in Squiggle
+  // (2026-11-10, small-model prompt and tools): "Hii" → a plain greeting, first word in 15 s, 13.7 tok/s. memtest's
+  // 3K-token prompt killed the tab while answering, so long chats are at the phone's memory edge.
+  WLF3: { label: 'Test: LFM3 1.7B (GPU)', size: '~990 MB', experimental: true, note: 'LFM3 1.7B on WebLLM (WebGPU) with tools in its own format, thinking first: about 14 words a second on an iPhone, 8x the CPU build. Our own 4-bit build of Liquid\'s weights; long chats may run a phone out of memory. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
+    mlc: 'LFM3-1.7B-q4f16_1-MLC', bytes: 990000000,
+    mlcRecord: {
+      model: HF + 'kealjones/LFM3-1.7B-q4f16_1-MLC/resolve/main/',
+      model_lib: HF + 'kealjones/LFM3-1.7B-q4f16_1-MLC/resolve/main/LFM3-1.7B-q4f16_1-webgpu.wasm',
+      overrides: { context_window_size: 4096 },
+    } },
+  // LFM3 1.7B with Liquid's own quantization-aware-trained 4-bit weights (Keal, 2026-11-10): lm-experiments job lfm3-mlc-8 copies
+  // the 107 linear layers of LiquidAI's LFM3-1.7B-QAD-Q4_0.gguf bit-for-bit into our q4f16_1 layout (qad_to_mlc.py:
+  // Q4_0 (k-8)*d = MLC (q-7)*s with q = 15-k, s = -d); embedding, norms and conv kernels as in WLF3. Its model library is
+  // compiled for one sequence (max_batch_size=1): ~17 MB of scratch instead of ~163 MB, which WebLLM never used.
+  WLF3QAD: { label: 'Test: LFM3 1.7B QAD (GPU)', size: '~990 MB', experimental: true, note: 'LFM3 1.7B on WebLLM with Liquid\'s own 4-bit weights (trained to survive 4 bits) and a model library that reserves ~150 MB less memory than the plain 4-bit build. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
+    mlc: 'LFM3-1.7B-QAD-q4f16_1-MLC', bytes: 990000000,
+    mlcRecord: {
+      model: HF + 'kealjones/LFM3-1.7B-QAD-q4f16_1-MLC/resolve/main/',
+      model_lib: HF + 'kealjones/LFM3-1.7B-QAD-q4f16_1-MLC/resolve/main/LFM3-1.7B-q4f16_1-b1-webgpu.wasm',
+      overrides: { context_window_size: 4096 },
+    } },
+  // The same model in MLC's 3-bit group quantization (q3f16_1, 769 MB): Keal's call, in case 4-bit is too big on a phone.
+  // It isn't (the 4-bit runs), and 3-bit loses the model's judgement: on an iPhone (2026-11-10) "Hii" became 400 tokens of
+  // "likely a placeholder… I'll proceed to use the tool calls?", with or without Squiggle's prompt, where the 4-bit build and
+  // Liquid's own 4-bit (llama.cpp) both just greet. Kept for comparison.
+  WLF3Q3: { label: 'Test: LFM3 1.7B 3-bit (GPU)', size: '~770 MB', experimental: true, note: 'LFM3 1.7B in 3-bit on WebLLM (WebGPU), a fifth smaller than the 4-bit build but noticeably worse: it overthinks even a greeting. For comparison only. Experimental', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
+    mlc: 'LFM3-1.7B-q3f16_1-MLC', bytes: 806000000,
+    mlcRecord: {
+      model: HF + 'kealjones/LFM3-1.7B-q3f16_1-MLC/resolve/main/',
+      model_lib: HF + 'kealjones/LFM3-1.7B-q3f16_1-MLC/resolve/main/LFM3-1.7B-q3f16_1-webgpu.wasm',
+      overrides: { context_window_size: 4096 },
+    } },
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true, family: 'gemma4' },
 };
 
