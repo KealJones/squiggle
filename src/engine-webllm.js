@@ -9,6 +9,7 @@
 // Qwen3, Qwen3.5, Gemma 4, LFM2) that renders its template and reads its calls back. WebLLM keeps its
 // files in Cache Storage (webllm/config, /model, /wasm); sw.js keeps those caches across updates.
 import { reusePrefix } from './prefix-cache.js';
+import { report, gpu, trackBuffers } from './incidents.js';
 import { toolFormat, PLAIN } from './toolformats/index.js';
 import { heldBack } from './toolformats/text.js';
 
@@ -136,8 +137,10 @@ function watchDevices() {
     const device = await request.apply(this, args);
     try {
       const notes = gpuNotes = { lost: null, error: null };
+      const drop = trackBuffers(device);
       device.lost.then((info) => {
-        notes.lost = { reason: info && info.reason, message: info && info.message, at: Date.now() };
+        drop();
+        notes.lost = { reason: info && info.reason, message: info && info.message, at: Date.now(), gpuBytes: gpu.atLoss };
         console.warn('Squiggle: GPU device lost', notes.lost);
         for (const fn of lostListeners) { try { fn(notes); } catch {} }
       });
@@ -238,19 +241,26 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
       reloads += 1;
       stale = false;
       console.info('Squiggle: the GPU device was lost; loading the model onto the GPU again.');
+      const was = lostNotes || device, started = Date.now();
       const old = engine;
       engine = null;
       try { old && await old.unload(); } catch {}
-      let last = null;
+      let last = null, tries = 0;
       for (const wait of waits) {
         if (wait) await sleep(wait);
         if (closed) return;
+        tries += 1;
         try { engine = await make(() => {}); break; } catch (e) {
           last = e;
           if (!noAdapter(e) && !gpuGone(e)) break;
           console.warn('Squiggle: no GPU yet, asking again', String((e && e.message) || e));
         }
       }
+      report('gpu-lost', {
+        model: id, lost: was && was.lost, firstGpuError: was && was.error, reloads, tries, reloadMs: Date.now() - started,
+        backAgain: Boolean(engine), loadError: engine ? undefined : String((last && last.message) || last).slice(0, 300),
+        visible: globalThis.document ? document.visibilityState : undefined,
+      });
       if (!engine) {
         stale = true;
         if (!noAdapter(last) && !gpuGone(last)) throw last;

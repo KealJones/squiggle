@@ -20,6 +20,7 @@ import { embed, embedReady } from './embed.js';
 import { bm25, tokenize } from './search.js';
 import { estTokens, truncate, uid } from './util.js';
 import { createTrace, openConv, addRound, takeRendered } from './trace.js';
+import { report } from './incidents.js';
 import { parseJsonl } from './merge.js';
 import { attachmentPrompt, saveAttachments, toRecord } from './attachments.js';
 
@@ -311,6 +312,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
         ? 'The conversation got too long for the model\'s context window. Start a new chat to keep going.'
         : (e.message || e);
       turn.prefix += `\n\n⚠️ ${msg}`;
+      turn.error = String(msg);
       if (turn.task && turn.task.status === 'active' && !turn.task.waiting) { turn.task.status = 'stopped'; sessions.saveTask(session, turn.task); }
       ui.onError && ui.onError(e);
     } finally {
@@ -339,6 +341,8 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
       storage.write(reply.trace, JSON.stringify(turn.trace)).catch(e => console.warn('trace', e));
     }
     const saved = sessions.addMessage(session, reply);
+    // The prompt it was working on is the trace (prompts/…), when "Save tool results and prompts" is on.
+    if (turn.error) report('reply-error', { message: turn.error.slice(0, 500), session: session.id, reply: saved.id, trace: reply.trace, model: reply.model, window: reply.context && reply.context.window, task: turn.task ? { goal: String(turn.task.goal || '').slice(0, 200), step: (turn.task.steps || []).findIndex(st => st.status === 'active') } : undefined });
     ui.onDone && ui.onDone(saved);
     if (session.title === 'New chat' && !threadId) nameSession(session);
     afterTurn(session, threadId, turn.task && turn.task.status === 'done' && turn.finishedNow ? turn.task : null);

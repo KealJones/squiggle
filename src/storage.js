@@ -15,6 +15,7 @@ import { git, fs, pfs, net, remoteUrl, exists, writeFile, rmrf, walk, stageAll, 
 import { gh, accessibleRepos } from './github.js';
 import { kv, mutex, emitter, uid } from './util.js';
 import { mergeFor } from './merge.js';
+import { report } from './incidents.js';
 
 const DIR = '/state';
 const MARKER = '.squiggle.json';
@@ -272,7 +273,10 @@ export function sync() {
       await persist();
       events.emit('synced', { changed: changedPaths });
     } catch (e) {
-      lastError = String((e && e.message) || e);
+      const msg = String((e && e.message) || e);
+      // Written down once per new error; it reaches GitHub with the first sync that works (incidents.js).
+      if (msg !== lastError) report('sync-failed', { message: msg.slice(0, 500), lastSync: lastSync ? new Date(lastSync).toISOString() : null });
+      lastError = msg;
       console.warn('Sync failed:', e);
     } finally {
       syncing = false; events.emit('status', syncStatus());
