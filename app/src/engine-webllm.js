@@ -148,11 +148,42 @@ export function gpuLossDetail() {
   return bits.length ? ` (${bits.join('; ')})` : ' (the browser gave no reason)';
 }
 
+// iOS 27 Safari (WebKit 325185 "Long running command buffers can hang the system") kills its GPU process when one
+// command buffer runs, or waits in the queue, for more than about 3 seconds; the device is lost with reason
+// "destroyed" (onnxruntime#33753: a ~900-token prompt read in one go on an iPhone, iOS 27.2). WebLLM reads a
+// prompt in prefill_chunk_size pieces (256 tokens for our LFM3 builds, ~2.5 s each on an iPhone 16) and queues them
+// all without waiting, so the later pieces time out in the queue: Keal's iPhone lost the GPU on "Hi" (a ~1,000-token
+// prompt) from iOS 27.2.1 on, with the build that ran there on iOS 26. On WebKit the pieces are made smaller and each
+// one waits for the GPU to finish. The compiled kernels take any length up to the build's chunk size, so it's a
+// runtime setting; it reaches into WebLLM's pipeline (loadedModelIdToPipeline, prefillChunkSize, embedAndForward,
+// sync, all in 0.2.86/0.2.87), and does nothing if those aren't there.
+export const PACED_CHUNK = 128;
+export const webkitGpu = (ua = (globalThis.navigator && navigator.userAgent) || '') =>
+  /iPhone|iPad|iPod/.test(ua) || (/AppleWebKit/.test(ua) && /Safari\//.test(ua) && !/Chrome|Chromium|CriOS|Edg|Firefox|FxiOS/.test(ua));
+export function paceGpu(engine, chunk = PACED_CHUNK) {
+  const pipes = engine && engine.loadedModelIdToPipeline;
+  if (!pipes || typeof pipes.values !== 'function') return 0;
+  let paced = 0;
+  for (const p of pipes.values()) {
+    if (!p || p.squigglePaced || typeof p.embedAndForward !== 'function') continue;
+    const forward = p.embedAndForward;
+    p.embedAndForward = async function (...args) {
+      const out = await forward.apply(this, args);
+      if (typeof this.sync === 'function') await this.sync();   // this piece is done before the next is queued
+      return out;
+    };
+    if (typeof p.prefillChunkSize === 'number' && p.prefillChunkSize > chunk) p.prefillChunkSize = chunk;
+    p.squigglePaced = true;
+    paced += 1;
+  }
+  return paced;
+}
+
 // format: a tool format id (toolformats/) for models whose tools go through their own template (native),
 // null for the fenced ```tool_call format and chat-only models (plain text both ways).
 // engine: an already-made engine with WebLLM's API (tests pass a fake). makeEngine: how to make another one
 // when the GPU device is lost (tests pass a fake; by default the same CreateMLCEngine call, from WebLLM's cache).
-export async function createShim(mlc, contextSize, onStage = () => {}, { format = null, engine: given = null, makeEngine = null } = {}) {
+export async function createShim(mlc, contextSize, onStage = () => {}, { format = null, engine: given = null, makeEngine = null, pace = webkitGpu() } = {}) {
   const id = given ? mlc : await pickId(mlc);
   const fmt = toolFormat(format) || PLAIN;
   const manifest = Boolean((custom.get(id) || {}).model_manifest);
@@ -163,6 +194,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
   watchDevices();
   onStage('loading the model onto the GPU');
   let engine = given || await make();
+  if (pace && !paceGpu(engine)) console.warn('Squiggle: could not pace WebLLM\'s GPU work (its internals changed); long prompts may lose the GPU on Safari.');
   let reloads = 0;
   // A fresh engine from the files WebLLM already cached. Not reported through onStage: that's the load screen's
   // (and its crash marker's), and this happens mid-reply.
@@ -171,6 +203,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
     console.info('Squiggle: the GPU device was lost; loading the model onto the GPU again.');
     try { await engine.unload(); } catch {}
     engine = await make(() => {});
+    if (pace) paceGpu(engine);
   }
 
   // One reply. Chat formats go through WebLLM's chat API, raw ones send the rendered prompt as a text
@@ -268,6 +301,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
     async exit() { try { await engine.unload(); } catch {} },
     info: { gpu: true, threads: 1, compat: false, webllm: true, webllmVersion: versionFor(id), toolFormat: fmt.id, toolNames: Boolean(fmt.listsNames), id },
     get reloads() { return reloads; },
+    get paced() { return Boolean(pace); },
   };
 }
 

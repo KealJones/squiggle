@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseQwenCalls, toWebLLMMessages, toolSystem, splitRaw, createShim } from '../app/src/engine-webllm.js';
+import { parseQwenCalls, toWebLLMMessages, toolSystem, splitRaw, createShim, paceGpu, webkitGpu } from '../app/src/engine-webllm.js';
 import { NativeConversation, Conversation } from '../app/src/engine-wllama.js';
 
 const TOOLS = [
@@ -142,6 +142,34 @@ test('a GPU lost again right after the reload: one retry only, and the error say
   const conv = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 64 } });
   await assert.rejects(async () => { for await (const x of conv.sendMessageStreaming('hi')) void x; }, /dropped the model again right after it was reloaded/);
   assert.equal(made, 1);
+});
+
+test('paceGpu: smaller prompt pieces, and each waits for the GPU before the next is queued (iOS 27 Safari)', async () => {
+  const order = [];
+  const pipe = {
+    prefillChunkSize: 256,
+    async embedAndForward(chunk) { order.push(`forward ${chunk.length}`); return 'logits'; },
+    async sync() { order.push('sync'); },
+  };
+  const engine = { loadedModelIdToPipeline: new Map([['m', pipe]]) };
+  assert.equal(paceGpu(engine), 1);
+  assert.equal(pipe.prefillChunkSize, 128);
+  assert.equal(await pipe.embedAndForward([1, 2, 3]), 'logits');
+  await pipe.embedAndForward([4]);
+  assert.deepEqual(order, ['forward 3', 'sync', 'forward 1', 'sync']);
+  assert.equal(paceGpu(engine), 0, 'never wrapped twice');
+  const small = { prefillChunkSize: 64, async embedAndForward() {}, async sync() {} };
+  paceGpu({ loadedModelIdToPipeline: new Map([['s', small]]) });
+  assert.equal(small.prefillChunkSize, 64, 'a smaller chunk stays');
+  assert.equal(paceGpu({}), 0, 'an engine without those internals is left alone');
+});
+
+test('webkitGpu: every iPhone browser and Mac Safari, not Chrome or Firefox on a computer', () => {
+  assert.ok(webkitGpu('Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Mobile/15E148 Safari/604.1'));
+  assert.ok(webkitGpu('Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/140.0 Mobile/15E148 Safari/604.1'));
+  assert.ok(webkitGpu('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15'));
+  assert.ok(!webkitGpu('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'));
+  assert.ok(!webkitGpu('Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0'));
 });
 
 test('other errors are not mistaken for a lost GPU', async () => {
