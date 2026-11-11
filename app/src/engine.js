@@ -65,7 +65,7 @@ let lib = null;
 let engine = null;
 let loadedModel = null;
 let engineContext = 0;
-const genLock = mutex();          // one generation at a time
+const genLock = mutex();          // generations and model lifecycle share the engine
 let activeConv = null;
 let bgBusy = false;
 
@@ -89,8 +89,11 @@ export const agentTrained = (id = loadedModel) => Boolean(MODELS[id] && MODELS[i
 export const seedsToolHistory = (id = loadedModel) => nativeTools(id) || Boolean(MODELS[id] && MODELS[id].runtime === 'cloud');
 export const chatOnly = (id = loadedModel) => isLite(id) && !(MODELS[id] && MODELS[id].tools);
 
-export async function webgpuStatus() {
-  if (!('gpu' in navigator)) return { ok: false, reason: 'This browser has no WebGPU. Use a recent Chrome, Edge, or Safari (iOS/macOS 26+).' };
+let gpuStatus;
+let gpuStatusPromise;
+
+async function checkWebGpu() {
+  if (!hasWebGpu()) return { ok: false, reason: 'This browser has no WebGPU. Use a recent Chrome, Edge, or Safari (iOS/macOS 26+).' };
   try {
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) return { ok: false, reason: 'WebGPU is present but no GPU adapter is available.' };
@@ -98,6 +101,11 @@ export async function webgpuStatus() {
   } catch (e) {
     return { ok: false, reason: 'WebGPU failed to start: ' + e.message };
   }
+}
+
+// Setup and model selection use the same adapter check for this page.
+export function webgpuStatus() {
+  return gpuStatusPromise ??= checkWebGpu().then(status => (gpuStatus = status));
 }
 
 // A short description of the GPU, for crash reports.
@@ -137,13 +145,9 @@ export const contextFor = (id) => (MODELS[id] && MODELS[id].maxContext) || 16384
 // a different build.
 export const GROUPS = { LFM3: { label: 'LFM3 1.7B', builds: ['WLF3QAD', 'LF3'] } };
 export const groupOf = (id) => (MODELS[id] && MODELS[id].group) || null;
-// Whether the GPU has 16-bit floats (shader-f16): null until probeGpu() has asked the adapter. A build marked f16Only
-// (no q4f32 twin) takes the next build on a GPU without them; LFM3's WebLLM build has its twin (mlcRecordF32).
-let gpuF16 = null;
 export async function probeGpu() {
-  if (gpuF16 !== null || !hasWebGpu()) return gpuF16;
-  try { const a = await navigator.gpu.requestAdapter(); gpuF16 = Boolean(a && a.features.has('shader-f16')); } catch { gpuF16 = false; }
-  return gpuF16;
+  const { adapter } = await webgpuStatus();
+  return adapter ? adapter.features.has('shader-f16') : null;
 }
 // Could this build run here: WebGPU for the GPU runtimes (and 16-bit floats for an f16-only build), and the
 // phone limits.
@@ -155,8 +159,8 @@ export function runsHere(id) {
   const m = MODELS[id];
   if (!m || !modelFitsDevice(id) || avoid.has(id)) return false;
   if (m.backend === 'webllm' || m.runtime === 'litert') {
-    if (!hasWebGpu()) return false;
-    if (m.f16Only && gpuF16 === false) return false;
+    if (!hasWebGpu() || gpuStatus?.ok === false) return false;
+    if (m.f16Only && gpuStatus?.adapter?.features.has('shader-f16') === false) return false;
   }
   return true;
 }
@@ -399,10 +403,14 @@ let engineSmall = '';
 // Small models (wllama): how the last load ran ({ gpu, threads, compat }) and the last reply's speed.
 export const smallInfo = () => (engine && engine.info) || null;
 export const smallSpeed = async () => (isLite() ? (await import('./engine-wllama.js')).lastSpeed() : null);
-export async function load(id, contextSize, { fast = true, onStage = () => {}, small = {} } = {}) {
+export function load(id, contextSize, options) {
+  return genLock(() => loadEngine(id, contextSize, options));
+}
+
+async function loadEngine(id, contextSize, { fast = true, onStage = () => {}, small = {} } = {}) {
   const smallKey = JSON.stringify({ gpu: Boolean(small.gpu), threads: Boolean(small.threads) });
   if (engine && loadedModel === id && engineContext === contextSize && engineFast === fast && (MODELS[id].runtime !== 'wllama' || engineSmall === smallKey)) return;
-  await unload();
+  await unloadEngine();
   if (MODELS[id].runtime === 'cloud') {
     engine = (await import('./engine-cloud.js')).createEngine();
     loadedModel = id; engineContext = contextSize; engineFast = fast;
@@ -449,7 +457,11 @@ export async function load(id, contextSize, { fast = true, onStage = () => {}, s
   engineContext = contextSize;
 }
 
-export async function unload() {
+export function unload() {
+  return genLock(unloadEngine);
+}
+
+async function unloadEngine() {
   if (!engine) return;
   try { await engine.delete(); } catch {}
   engine = null; loadedModel = null;

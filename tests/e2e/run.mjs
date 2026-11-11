@@ -892,7 +892,7 @@ await check('chat details sidebar: model, context window breakdown (live and sav
       seen: [...new Set(window.__sideSeen)],
     };
   });
-  assert.match(r.model, /Model.*Runs\s*this device.*Context\s*Smart/s, r.model);
+  assert.match(r.model, /Model.*Runs\s*this device.*Context\s*Compress/s, r.model);
   assert.match(r.total, /^[\d.]+k? of [\d.]+k? tokens$/);
   assert.ok(r.rows.includes('Instructions') && r.rows.includes('Free space') && r.rows.includes('Request'), JSON.stringify(r.rows));
   assert.equal(r.bar, r.rows.length - 1, 'one bar segment per part (free space is the empty track)');
@@ -1447,6 +1447,84 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
   await D.ctx.close();
 });
 
+await check('demo startup downloads the LFM3 CPU build when WebGPU has no adapter', async () => {
+  const ctx = await browser.newContext();
+  try {
+    await ctx.addInitScript(() => {
+      Object.defineProperty(navigator, 'gpu', { value: { requestAdapter: async () => null } });
+    });
+    // Keep model selection real while recording the download without fetching the 1 GB model.
+    await ctx.route(appUrl + '/src/engine-wllama.js', r => r.fulfill({ contentType: 'text/javascript', body: `
+      export const isDownloaded = async () => false;
+      export async function downloadModel(url) { window.__cpuDownload = url; throw new Error('Test download'); }
+    ` }));
+    const page = await ctx.newPage();
+    await page.goto(appUrl + '/');
+    await page.getByRole('button', { name: 'Try it without signing in' }).click();
+    await page.getByText('WebGPU is present but no GPU adapter is available.', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Download and start' }).click();
+    await page.waitForFunction(() => Boolean(window.__cpuDownload), null, { timeout: 10000 });
+    assert.match(await page.evaluate(() => window.__cpuDownload), /\/LFM3-1\.7B-QAD-Q4_0\.gguf$/);
+  } finally {
+    await ctx.close();
+  }
+});
+
+await check('demo loads the model once and can reload after a disposed GPU engine', async () => {
+  const ctx = await browser.newContext();
+  try {
+    await ctx.addInitScript(() => { window.__simulateGpuRecovery = true; });
+    const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+    await ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.stack || String(error)));
+    await page.goto(appUrl + '/');
+    await page.getByRole('button', { name: 'Try it without signing in' }).click();
+    await page.getByRole('button', { name: 'Download and start' }).click();
+    await page.waitForFunction(() => document.querySelector('#composer-note')?.textContent.includes('running on this device'));
+    assert.equal(await page.evaluate(() => window.__loads), 1);
+
+    await page.evaluate(() => { window.__disposeOnReply = true; });
+    await page.fill('#input', 'Hi');
+    await page.press('#input', 'Enter');
+    const reload = page.getByRole('button', { name: 'Reload model' });
+    await reload.waitFor();
+    assert.match(await page.textContent('#messages-inner'), /Object has already been disposed/);
+    assert.equal(await page.evaluate(async () => (await import('/src/engine.js')).engineReady()), false);
+
+    await reload.click();
+    await reload.waitFor({ state: 'hidden' });
+    await page.waitForFunction(async () => {
+      const { state } = await import('/src/ui/state.js');
+      return window.__loads === 2 && state.modelState === 'ready' && !state.busy;
+    });
+    await page.fill('#input', 'Hi again');
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    await page.waitForFunction(async () => {
+      const { state } = await import('/src/ui/state.js');
+      return !state.busy && state.current.messages.filter(m => m.role === 'assistant').length === 2;
+    }, null, { timeout: 8000 }).catch(async (error) => {
+      const snapshot = await page.evaluate(async () => {
+        const { state } = await import('/src/ui/state.js');
+        return {
+          busy: state.busy,
+          modelState: state.modelState,
+          messages: state.current.messages.map(m => [m.role, m.content]),
+          inputs: window.__engineLog.filter(e => e.type === 'respond').map(e => e.input),
+          draft: document.querySelector('#input').value,
+          banner: document.querySelector('#model-banner').textContent,
+        };
+      });
+      throw new Error(JSON.stringify({ ...snapshot, errors }), { cause: error });
+    });
+    const replies = await page.locator('#messages-inner .msg.assistant .body').allTextContents();
+    assert.match(replies.at(-1) || '', /The reloaded model answered/);
+  } finally {
+    await ctx.close();
+  }
+});
+
 await check('demo mode: try it without signing in (local storage, sample data, no git tools, no cloud), then sign in and keep what was made', async () => {
   const demoRepo = makeRepo(root, 'tester', 'demo-state', { 'README.md': '# state\n' });
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 820 } });
@@ -1470,6 +1548,9 @@ await check('demo mode: try it without signing in (local storage, sample data, n
   assert.match(await page.textContent('#sync-line'), /Demo: saved in this browser only/);
   assert.match(await page.textContent('#demo-banner'), /^Demo mode\./);
   assert.equal(await page.textContent('#chat-title'), 'New chat', 'opens on a fresh chat, with the sample chat in the list');
+  assert.match(await page.textContent('.chat-setup summary'), /Compress/, 'a fresh profile defaults to Compress');
+  assert.equal(await page.getByRole('button', { name: 'Clone one of my repos and summarize it' }).count(), 0, 'repo actions are unavailable in the demo');
+  assert.equal(await page.getByRole('button', { name: 'What is Pip written in?' }).count(), 1);
   assert.deepEqual(await page.$$eval('#session-list li', els => els.map(e => e.textContent.includes('Naming the log parser'))), [true]);
   // A "Try" chip asks a question; the model gets no git or GitHub tools and a demo workspace line.
   await page.click('#demo-banner .try button >> nth=0');
@@ -1653,9 +1734,14 @@ await check('small models: a long page comes back as a card saved in /web, grep 
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
   await D.page.click('#new-chat');
+  // Shrinking tool results is a Smart context behavior.
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-context"][value="smart"]');
   await D.page.fill('#input', 'how big is it? https://models.example.test/gemma3');
   await D.page.press('#input', 'Enter');
-  await D.page.waitForFunction(() => /242 MB/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 20000 });
+  // The new-chat model picker also contains "242 MB". Wait for the completed answer.
+  await D.page.waitForFunction(() => document.querySelector('#send').getAttribute('aria-label') === 'Send'
+    && document.querySelector('#messages-inner .msg.assistant .body')?.textContent.includes('The Q4_0 GGUF is 242 MB (from the page).'), null, { timeout: 20000 });
   const log = await D.page.evaluate(() => window.__engineLog);
   const results = log.filter(e => e.type === 'respond' && Array.isArray(e.input)).map(e => e.input[0].content[0]);
   const card = results.find(r => r.name === 'fetch_url').response;

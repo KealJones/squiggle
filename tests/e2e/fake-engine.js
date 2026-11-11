@@ -2,7 +2,7 @@
 // a user message mentioning a URL makes it call fetch_url, then remember; tool
 // results produce a final answer. Every call is recorded on window.__engineLog.
 export const MODELS = {
-  E4B: { label: 'Fake E4B', size: '3.0 GB', note: 'test', url: 'fake://e4b', phone: false, runtime: 'litert' },
+  E4B: { label: 'Fake E4B', size: '3.0 GB', note: 'test', url: 'fake://e4b', phone: false, runtime: 'litert', ...(window.__simulateGpuRecovery ? { backend: 'webllm' } : {}) },
   E2B: { label: 'Fake E2B', size: '2.0 GB', note: 'test', url: 'fake://e2b', phone: false, runtime: 'litert' },
   G3: { label: 'Fake G3', size: '242 MB', note: 'test', url: 'fake://g3', phone: true, runtime: 'wllama' },
   SQ: { label: 'Fake SQ', size: '219 MB', note: 'test', url: 'fake://sq', phone: true, runtime: 'wllama', tools: true },
@@ -50,7 +50,9 @@ export const downloadInfo = async (id) => (window.__noE4B && id === 'E4B' ? { to
 export const download = async () => {};
 export const load = async (id, ctx, opts = {}) => {
   opts.onStage && opts.onStage('loading the model onto the GPU');
-  window.__loads++; window.__lastLoad = { id, ctx, opts: { fast: opts.fast } }; ready = true;
+  window.__loads++; window.__lastLoad = { id, ctx, opts: { fast: opts.fast } };
+  if (window.__simulateGpuRecovery) await new Promise(resolve => setTimeout(resolve, 100));
+  ready = true;
 };
 export const gpuSummary = async () => 'fake gpu, f16';
 export const setProgress = (fn) => { window.__progress = fn; };
@@ -112,6 +114,14 @@ function stepScript(conv, input, onText) {
 
 export async function respond(conv, input, { onText } = {}) {
   log.push({ type: 'respond', input, system: conv.cfg && conv.cfg.system });
+  if (window.__disposeOnReply) {
+    window.__disposeOnReply = false;
+    throw new Error('Object has already been disposed');
+  }
+  if (window.__simulateGpuRecovery && typeof input === 'string' && input.startsWith('Hi again')) {
+    if (!ready) throw new Error('Model was not reloaded');
+    return say('The reloaded model answered.', onText);
+  }
   // The script answers the person's words, not the recalled block smart context appends.
   if (typeof input === 'string') input = input.split('\n\n---\nPossibly relevant earlier messages')[0];
   // Fresh context: the first input is the result of the lookup the agent made for the model.
