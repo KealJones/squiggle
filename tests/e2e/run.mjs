@@ -892,7 +892,7 @@ await check('chat details sidebar: model, context window breakdown (live and sav
       seen: [...new Set(window.__sideSeen)],
     };
   });
-  assert.match(r.model, /Model.*Runs\s*this device.*Context\s*Smart/s, r.model);
+  assert.match(r.model, /Model.*Runs\s*this device.*Context\s*Compress/s, r.model);
   assert.match(r.total, /^[\d.]+k? of [\d.]+k? tokens$/);
   assert.ok(r.rows.includes('Instructions') && r.rows.includes('Free space') && r.rows.includes('Request'), JSON.stringify(r.rows));
   assert.equal(r.bar, r.rows.length - 1, 'one bar segment per part (free space is the empty track)');
@@ -1681,7 +1681,9 @@ await check('small models: a long page comes back as a card saved in /web, grep 
   await D.page.click('#new-chat');
   await D.page.fill('#input', 'how big is it? https://models.example.test/gemma3');
   await D.page.press('#input', 'Enter');
-  await D.page.waitForFunction(() => /242 MB/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 20000 });
+  // The new-chat model picker also contains "242 MB". Wait for the completed answer.
+  await D.page.waitForFunction(() => document.querySelector('#send').getAttribute('aria-label') === 'Send'
+    && document.querySelector('#messages-inner .msg.assistant .body')?.textContent.includes('The Q4_0 GGUF is 242 MB (from the page).'), null, { timeout: 20000 });
   const log = await D.page.evaluate(() => window.__engineLog);
   const results = log.filter(e => e.type === 'respond' && Array.isArray(e.input)).map(e => e.input[0].content[0]);
   const card = results.find(r => r.name === 'fetch_url').response;
