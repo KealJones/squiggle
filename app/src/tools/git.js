@@ -1,15 +1,24 @@
 // Git and GitHub tools: clone, status, branch, commit, push (with the push policy),
 // pull, log, show, list repos, open a pull request.
 import { git, fs, net, remoteUrl, exists, rmrf, walk, stageAll, statusLines, currentBranch, author, mkdirp } from '../git.js';
-import { gh } from '../github.js';
+import { gh, accessibleRepos } from '../github.js';
 import * as storage from '../storage.js';
-import { checkBranch, pushPolicy, touchesWorkflows, agentBranchName, parseRepo, AGENT_BRANCH_PREFIX } from '../guard.js';
+import { checkBranch, pushPolicy, touchesWorkflows, agentBranchName, parseRepo, completeRepo, AGENT_BRANCH_PREFIX } from '../guard.js';
 import * as grants from '../grants.js';
 import { wrapUntrusted } from '../untrusted.js';
 import { defineTool, params, str, num } from './registry.js';
 import { MAX_READ, REPOS, numberedLines } from './workspace.js';
 
 // ── Repo helpers ──────────────────────────────────────────────────────────
+
+/** A repo the model named, completed when it named only part of it (guard.js completeRepo): from the user's
+ *  recent messages in this line of the chat, then from the repos the app can reach. */
+export function resolveRepo(repo, ctx = {}) {
+  const said = (ctx.session ? ctx.session.messages : []).filter(m => m.role === 'user' && !m.deleted && (!ctx.threadId || m.thread === ctx.threadId || !m.thread))
+    .slice(-4).map(m => m.content || '').join('\n');
+  return completeRepo(repo, { said, reachable: async () => (await accessibleRepos()).map(r => r.full_name) });
+}
+
 async function repoDir(name) {
   const n = String(name || '').includes('/') ? parseRepo(name).name : String(name || '');
   if (!n) throw new Error('Which repo? Pass the folder name under /repos or owner/name.');
@@ -109,8 +118,9 @@ export const gitClone = defineTool({
   group: 'git and GitHub',
   description: 'Clone a GitHub repo into /repos/<name>. Pulls if it is already cloned.',
   parameters: params({ repo: str('owner/name'), branch: str('Branch to check out (default: the repo default)') }, ['repo']),
-  async run({ repo, branch }) {
-    const { owner, name } = parseRepo(repo);
+  async run({ repo, branch }, ctx = {}) {
+    const { owner, name, completed } = await resolveRepo(repo, ctx);
+    const took = completed ? { note: `"${repo}" was taken as ${owner}/${name} (from ${completed}).` } : {};
     const cfg = storage.storageConfig();
     if (cfg && owner === cfg.owner && name === cfg.name) return { model: { error: 'That is the storage repo; it is managed automatically. Use /home for your files.' } };
     const dir = `${REPOS}/${name}`;
@@ -118,7 +128,7 @@ export const gitClone = defineTool({
       const o = await originOf(dir);
       if (o && (o.owner !== owner || o.name !== name)) return { model: { error: `/repos/${name} already holds ${o.owner}/${o.name}.` } };
       await git.pull({ fs, dir, ...net(), singleBranch: true, fastForwardOnly: true, author: await author() }).catch(() => {});
-      return { model: { ok: true, already_cloned: true, path: `/repos/${name}`, branch: await currentBranch(dir) }, label: `updated ${owner}/${name}` };
+      return { model: { ok: true, ...took, already_cloned: true, path: `/repos/${name}`, branch: await currentBranch(dir) }, label: `updated ${owner}/${name}` };
     }
     await mkdirp(dir);
     try {
@@ -128,7 +138,7 @@ export const gitClone = defineTool({
       throw e;
     }
     const files = await walk(dir);
-    return { model: { ok: true, path: `/repos/${name}`, branch: await currentBranch(dir), files: files.length }, label: `cloned ${owner}/${name}` };
+    return { model: { ok: true, ...took, path: `/repos/${name}`, branch: await currentBranch(dir), files: files.length }, label: `cloned ${owner}/${name}` };
   },
 });
 

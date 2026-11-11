@@ -43,7 +43,7 @@ test('case 9 (other chats read as the user): other chats are off by default', ()
   assert.match(src('../app/src/ui/settings.js'), /if \(!saved\.noChatRecall\) \{\n\s*agent\.settings\.recallChats = false;/);
 });
 
-test('case 15 (plan mode couldn\'t ask the user): a question asks, ask_user exists, harness text stays out of the user turn', async () => {
+test('case 19 (plan mode couldn\'t ask the user): a question asks, ask_user exists, harness text stays out of the user turn', async () => {
   const t = await import('../app/src/tasks.js');
   // A step that ends on a question pauses the task instead of becoming its result.
   for (const q of ['Could you please provide the repository name and whether it should be public or private?',

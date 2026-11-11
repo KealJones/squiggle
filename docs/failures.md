@@ -195,7 +195,94 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   reply as written.
 - **Caught by:** tests/prefetch.test.js (the two messages above); e2e "Fresh context" for the pointed-at exchange.
 
-### 15. Plan mode couldn't ask the user
+### 15. Asked to pull bubbles, went looking for squiggle
+
+- **Asked:** "Can you pull GitHub.com/kealjones/bubbles"
+- **Model:** LFM2.5 1.2B Instruct on WebLLM (WLF12), Fresh context, a new chat, 2026-11-09 (Keal's screenshot).
+- **What it did:** Fresh's lookup came back with "1 saved": an old chat about Kealjones/squiggle. The model planned
+  "List the current GitHub repository details for Kealjones/squiggle" and ran `web_search("Kealjones/squiggle")`
+  twice. It never called `git_clone`.
+- **Why it's bad:** the wrong repo, and the wrong kind of action. Three harness mistakes stacked: "GitHub.com" was
+  taken as the name in the question, so any saved chat mentioning github.com matched; "pull <repo>" wasn't
+  recognised as a job for a tool (only "clone" was); and the seeded find result, unlike a real `find`, listed no
+  tools, so the only thing in front of a model with gated tools was an unrelated chat. It did what the lookup
+  suggested.
+- **Good answer:** `git_clone("https://github.com/kealjones/bubbles")`, then a line saying it's at /repos/bubbles.
+- **Fix:** a link or repo path in the question is an exact name: saved things match only if they contain that
+  path (prefetch.js `refsIn`, `rank`); a GitHub repo named outright scores as git_clone whatever the verb, a
+  deeper link (…/pull/3) stays a page to read (find.js INTENTS); Fresh's lookup lists the tools that clearly fit
+  as "Tools for this (ready to call)" and returns their names, which declares them for gated models, and tells
+  the model not to search the web for it (agent.js `prefetch`, prefetch.js `render`).
+- **Caught by:** tests/prefetch.test.js and tests/find.test.js "case 15"; e2e "Fresh context"; eval case 17.
+
+### 16. "List my GitHub repos": no small model ever listed them
+
+- **Asked:** "List my GitHub repos" and close variants ("can you list my github repos", "list my repos"), 2026-11-09.
+- **Models:** LFM2.5 1.2B (WLF12; Compress and Fresh, chats `s0mw9ng3v2000bw85c`, `s0mw9mwjpz000damii`,
+  `s0mw9o0q6d000scn4k`, `s0mw9qckwz000u38nj`), Squiggle Small (`s0mw9nsex6000wgf0m`, `s0mw9odtia0007yn1j`), Qwen3 0.6B
+  on the CPU and on WebLLM (`s0mw9oexxp000rb2ah`, `s0mw9oh9y6000107e6`), Qwen3.5 0.8B (`s0mw9p2wfg000233vy`), tiny Gemma 4
+  heal 4 (`s0mw9obewv000uown1`, `s0mw9ocnbg0006bcdl`). Gemma 4 26B on the relay (`s0mw9nyfiv00050042`) and Gemma 4 E4B
+  (`s0mvpupefy000y1mde`) did list them.
+- **What they did:** web searches for "list GitHub repositories" (and answered from a WordPress plugin page),
+  `list_files("/")` ("your repositories are in /repos/"), a made-up `https://github.com/user/repos`, `need` restating the
+  request, "I don't have access to your GitHub account", or `tool_info(github_list_repos)` followed by a promise
+  instead of the call.
+- **Why it's bad:** the tool exists and is one call. Every big model, which sees every schema, used it; every
+  small one, which sees `github_list_repos` only as a name in the "Other tools" line, didn't. Two harness causes:
+  find's intent for it (`my repos`, `list (my )?repos`) missed "my GitHub repos", so neither `find` nor Fresh's
+  lookup offered it; and outside Fresh nothing ever put a matching tool's schema in front of a gated model.
+- **Good answer:** `github_list_repos()`, then the list.
+- **Fix:** the intent covers "list/show/see … repos" and "my … repos"; every mode declares the one or two tools a
+  message clearly asks for (agent.js `fitTools`, find's score over 4, lookups aside), and names them as ready to
+  call, for the chat phase and for each plan step. The same run turned up the next failure: asked to pull
+  github.com/tester/app, LFM2.5 1.2B called `git_clone(repo="tester")`; a part of a repo name is now completed when
+  one repo fits, from the user's message and then the repos the app can reach (guard.js `completeRepo`), and the
+  result says what it was taken as.
+- **Checked on the real model:** LFM2.5 1.2B through the real app with its own LFM2 prompt format, on native
+  llama.cpp (tests/eval/run.mjs `--llm`): "List my GitHub repos" now calls `github_list_repos` in Compress, Smart
+  and Fresh; "pull github.com/tester/app" clones tester/app in Fresh (in Compress it listed the repos instead).
+- **Caught by:** tests/find.test.js, tests/tools-git-resolve.test.js "case 16", tests/guard.test.js; eval case 18.
+
+### 17. The harness called a quarter-full window full, then dropped the answer
+
+- **Asked:** "can you tell me about my github project squiggle", then "continue", then "hello?", 2026-11-10.
+- **Model:** LFM3 1.7B QAD on WebLLM, bash tool surface, Compress (chat `s0mwb2elnj0000ae4b`, PR #7 preview).
+- **What it did:** good shell work: `ls /repos`, `ls -la /repos/squiggle`, then `head -n 80 README.md` rather than
+  `cat`. The harness refused that `head` ("your context is almost full") with the real prompt at ~2,000 of 4,096
+  tokens, then stopped the turn ("Stopped: the context filled up") when the model tried one more command. On
+  "continue" it planned 4 steps that each ran fine in a fresh context, then in the final reply (no tools offered)
+  called `bash` for the workflow files and wrote nothing, so the reply was blank. "hello?" then looked unanswered
+  and it started the whole job again.
+- **Why it's bad:** not the model's choices; the harness's. It counted every round's thinking as still in the
+  window though LFM3's template resends only the latest round's, it refused calls below 2,500 characters of room
+  though every tool sizes its output to the room (and bash saves the rest to a file), it threw away three good
+  lookups instead of asking for an answer, and it let a tool call in the final reply erase four finished steps.
+- **Good answer:** a few lookups, then a short description of Squiggle from the README and package.json.
+- **Fix:** only the newest round's thinking counts against the window (chat phase and steps); a call is refused
+  only below 1,200 characters of room (agent.js `FULL_ROOM`); when full, the model gets one "answer now from what
+  you found" before the turn stops; a blank final reply gets one "no tools in this reply" nudge and then falls back
+  to the step results (tasks.js `resultsReply`).
+- **Caught by:** tests/tasks.test.js "case 17" (`resultsReply`); the window accounting is not covered.
+
+### 18. Every turn redid the same lookups, and "continue" was the user's job
+
+- **Asked:** the same chat as case 17 (`s0mwb2elnj0000ae4b`), 2026-11-10: "continue", then "hello?".
+- **Model:** LFM3 1.7B QAD on WebLLM, bash tool surface, Compress.
+- **What it did:** each turn started over with `ls /repos`, `ls -la /repos/squiggle`, `head -n 80 README.md`. On
+  "hello?" its thinking said "Earlier I asked for clarification about their GitHub project", which it never did.
+- **Why it's bad:** Compress replays the words of earlier turns, not their tool calls, and the "Tool calls you made"
+  section is off for small models (older ones read it as the user's words), so the work was invisible. The words it
+  did see were the harness's "_(Stopped: … Ask again and I'll make a plan …)_" replayed as its own turn, which it read
+  as having asked the user something. And a full context ended the turn, so the user had to type "continue".
+- **Good answer:** no repeated lookups; one reply, however many contexts it takes.
+- **Fix:** the section is on for models trained for harnesses (engine.js `agentTrained`: LFM3), with a one-line
+  gist of what each call returned (context.js `resultGist`, wrapped as untrusted); harness notices are scrubbed from
+  replayed turns; and when the chat phase is full and the model still reaches for a tool, the harness checkpoints by
+  itself (agent.js `carryOn`): a one-step task whose fresh context starts from what the reply found and the call it
+  was about to make. Squiggle Small keeps the old stop (its prompts are its training text).
+- **Caught by:** tests/context.test.js "case 18"; `carryOn` is not covered.
+
+### 19. Plan mode couldn't ask the user
 
 - **Asked:** a request whose plan needed Keal's input (a new repository: its name and settings), in plan mode.
 - **Model:** LFM3 1.7B, 2026-11-10/11 (Keal's screenshots of the whole run; chat id not in them).
@@ -214,6 +301,6 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   turns: the step and final instructions end the system prompt ("Now"), the goal is labelled as the model's own
   summary, and a nudge restarts the step with what went wrong in the system prompt (docs/harness.md "Prompt
   dialects").
-- **Caught by:** tests/failures.test.js case 15; tests/tasks.test.js "prompt dialects"; e2e "step mode through the
+- **Caught by:** tests/failures.test.js case 19; tests/tasks.test.js "prompt dialects"; e2e "step mode through the
   UI" (ASKTEST: a plain-text question pauses the task, a thinking-only step restarts, every step and final user
   turn is the request).

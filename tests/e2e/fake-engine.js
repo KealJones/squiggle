@@ -16,13 +16,29 @@ const lock = (fn) => { const r = chain.then(fn, fn); chain = r.catch(() => {}); 
 export const engineReady = () => ready;
 export const currentModel = () => 'E2B';
 export const isLite = (id) => Boolean(MODELS[id] && MODELS[id].runtime === 'wllama');
+export const agentTrained = () => false;
+// Each model's own window (the real engine: its maxContext, else 16K): the small fake models 4K, the big ones 8K, the
+// window these tests were written against.
+export const contextFor = (id) => (MODELS[id] && MODELS[id].maxContext) || (isLite(id) ? 4096 : 8192);
+// One model, several builds (the real engine's GROUPS): the fake models have none, so every id is its own build.
+export const GROUPS = {};
+export const groupOf = () => null;
+export const forDevice = (id) => id;
+export const probeGpu = async () => true;
+export const setAvoided = () => {};
+export const runsHere = (id) => Boolean(MODELS[id]);
+export const runnerLabel = (id) => (MODELS[id] && MODELS[id].runtime === 'cloud' ? 'in the cloud, through the relay' : MODELS[id] && MODELS[id].runtime === 'litert' ? 'on your GPU (WebGPU)' : 'on the CPU');
 export const chatOnly = (id) => isLite(id) && !(MODELS[id] && MODELS[id].tools);
 export const webgpuStatus = async () => ({ ok: true });
 export const suggestModel = () => 'E2B';
-export const deviceModel = () => (/iPhone|Android/.test(navigator.userAgent) ? 'G3' : 'E4B');
+// Like the real one: a phone without WebGPU gets the CPU default (the fake phone has none, so Squiggle Small).
+export const deviceModel = () => (/iPhone|Android/.test(navigator.userAgent) ? (hasWebGpu() ? DEFAULTS.phoneGpu : DEFAULTS.phoneCpu) : DEFAULTS.computer);
 export const needsGpu = (id) => Boolean(MODELS[id] && MODELS[id].runtime === 'litert');
 export const cleanupStorage = async ({ keep } = {}) => { window.__cleanup = Object.keys(MODELS).filter(id => !keep || keep(id)); return 0; };
 export const modelFitsDevice = (id) => !isMobile() || Boolean(MODELS[id] && MODELS[id].phone);
+export const DEFAULTS = { computer: 'E4B', phoneGpu: 'G3', phoneCpu: 'SQ' };
+export const listed = (id, { cloudOffered = false } = {}) => Boolean(MODELS[id]) && modelFitsDevice(id) && (!MODELS[id].needsRelay || cloudOffered);
+export const listedModels = (opts) => Object.keys(MODELS).filter(id => listed(id, opts));
 export const deleteModel = async (id) => { (window.__deleted = window.__deleted || []).push(id); };
 // The fake phone has no WebGPU, so it keeps the CPU default (Squiggle Small).
 export const hasWebGpu = () => false;
@@ -73,7 +89,7 @@ function stepScript(conv, input, onText) {
       if (/Work on step 3 now/.test(input)) return call('done', { result: /Attached for this step[\s\S]*1950[\s\S]*1960/.test(sys) ? 'Ada is 10 years older' : 'nothing attached' });
       if (/^MANAGEDTEST/.test(input)) return call('plan', { goal: 'Compare birth years', steps: [{ text: 'Find when Ada was born' }, { text: 'Find when Ben was born' }, { text: 'Compare the two years', needs: ['step:1', 'step:2'] }] });
     }
-    // ASKTEST (case 15): step 1 asks in plain text; step 2 first only thinks, then finishes on the restart.
+    // ASKTEST (case 19): step 1 asks in plain text; step 2 first only thinks, then finishes on the restart.
     if (/ASKTEST/.test(input)) {
       if (/Every step is done/.test(input)) return say('Made Gizmo, private.', onText);
       if (/Work on step 1 now/.test(input)) return /The user answered/.test(sys) ? call('done', { result: 'Name Gizmo, private' }) : say('What should the new repo be called, and should it be public or private?', onText);

@@ -295,3 +295,16 @@ test('worked: recipes are only learned from tasks that got somewhere', () => {
   assert.equal(tasks.worked({ steps: [{ status: 'done', result: 'x' }, { status: 'blocked' }], log: ok.log }), false);
   assert.equal(tasks.worked(null), false);
 });
+
+test('case 17: a blank final reply falls back to the step results', () => {
+  const task = tasks.newTask({ msg: 'm1', request: 'tell me about squiggle', goal: 'Describe the squiggle repo', steps: ['read README.md', 'read package.json', 'list .github'] });
+  tasks.finishStep(task, 'A private AI agent that runs on your own device.');
+  tasks.finishStep(task, 'name squiggle, version 0.1.0, ES modules, no build step');
+  tasks.finishStep(task, '(the step ran out of room before finishing)');
+  const text = tasks.resultsReply(task);
+  assert.match(text, /^Here's what I found for "Describe the squiggle repo"/);
+  assert.match(text, /\*\*read README\.md\*\*: A private AI agent/);
+  assert.match(text, /\*\*read package\.json\*\*: name squiggle/);
+  assert.doesNotMatch(text, /ran out of room/, 'steps without a result are left out');
+  assert.equal(tasks.resultsReply(tasks.newTask({ msg: 'm2', request: 'x', goal: 'x', steps: ['a'] })), '');
+});

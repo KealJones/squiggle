@@ -156,3 +156,29 @@ test('smart: a named attachment brings back its own extract, and attachments rep
   const h = await assembleContext({ line, session, query: 'again', budget: 4000, mode: 'compact', system: 's' });
   assert.ok(h.messages[0].content.includes('[attached: /home/attachments/s1/budget 2026.csv (2.0 KB, 40 lines)]'), h.messages[0].content);
 });
+
+test('case 18: earlier tool calls come back with what they returned (wrapped); harness notices are not replayed', async () => {
+  const { scrubFakeToolNotes, resultGist } = await import('../app/src/context.js');
+  const line = [
+    msg('user', 'can you tell me about my github project squiggle'),
+    msg('assistant', '_(Stopped: the context filled up. Ask again and I\'ll make a plan for what\'s left.)_', { tools: [
+      { name: 'find', label: 'searched: "squiggle" (nothing)', ok: true, result: JSON.stringify({ found: 'Nothing in your memory.' }) },
+      { name: 'bash', label: '$ ls /repos', ok: true, result: JSON.stringify({ exit_code: 0, stdout: '\nbubbles\nsquiggle\n\n' }) },
+      { name: 'plan', label: 'planned 2 steps', ok: true },
+    ] }),
+    msg('user', 'continue'),
+  ];
+  const session = { messages: line, threads: {}, observations: [], summaries: {} };
+  const r = await assembleContext({ line, session, query: 'continue', budget: 3000, mode: 'compact', system: 's', actionResults: true });
+  assert.match(r.system, /- \$ ls \/repos → bubbles squiggle/);
+  assert.match(r.system, /<untrusted[^>]*>[\s\S]*ls \/repos[\s\S]*<\/untrusted/, 'results are outside text, so wrapped');
+  assert.doesNotMatch(r.system, /planned 2 steps/, 'harness calls are not listed');
+  assert.ok(r.messages.every(m => !/Stopped: the context filled up/.test(m.content)), JSON.stringify(r.messages));
+  // Without results (small models that read harness text as the user's), labels only, unwrapped.
+  const plain = await assembleContext({ line, session, query: 'continue', budget: 3000, mode: 'compact', system: 's' });
+  assert.match(plain.system, /- \$ ls \/repos\n/);
+  assert.equal(scrubFakeToolNotes('Here it is.\n\n_(Paused after 6 tool calls. Say "continue" to pick up where it left off.)_').trim(), 'Here it is.');
+  assert.equal(resultGist(JSON.stringify({ error: 'no such file' })), 'error: no such file');
+  assert.equal(resultGist(''), '');
+  assert.equal(resultGist('x'.repeat(400), 50).length <= 51, true);
+});

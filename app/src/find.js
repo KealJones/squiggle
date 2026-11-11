@@ -70,15 +70,20 @@ const INTENTS = [
   [/\b(forget|unlearn|that'?s wrong|thats wrong|outdated|not true anymore)\b/, { forget: 4 }],
   [PAST_CHAT, { search_history: 4 }],
   [/\b(jot|write down|notepad|scratch ?pad|todo list|take a note|note (to self|this))\b/, { note: 4 }],
+  // A GitHub repo named outright ("can you pull github.com/kealjones/bubbles") is a job for git_clone, whatever the verb.
+  // Only the repo itself: a deeper link (…/pull/3, …/blob/…) is a page to read.
+  [/\bgithub\.com\/[\w.-]+\/[\w.-]+\/?(?![\w/-])/, { git_clone: 6 }],
   [/\b(clone|fork|download the repo|pull down the repo|check ?out the repo|pull (it |that |this |them )?down|grab (the |that |this )?(github|repo))\b/, { git_clone: 6 }],
   [/\bcommit\b/, { git_commit: 4 }],
   [/\b(push|publish|upload)\b.*\b(branch|changes|commits?|repo|github|code|origin|main)\b|\bgit push\b/, { git_push: 5 }],
   [/\b(branch|switch to|check ?out|new branch)\b/, { git_branch: 4 }],
-  [/\b(pull(?! (it |that |this |them )?down)|get (the )?latest|update the repo|fast.?forward)\b/, { git_pull: 3 }],
+  [/\b(pull(?! (it |that |this |them )?down)(?!\s+\S*github\.com\/)|get (the )?latest|update the repo|fast.?forward)\b/, { git_pull: 3 }],
   [/\b(git status|what changed|what'?s changed|modified files|uncommitted|dirty|diff)\b/, { git_status: 4 }],
   [/\b(git log|recent commits|commit history|commits)\b/, { git_log: 4 }],
   [/\b(pull request|open a pr|make a pr|pr for)\b/, { github_open_pr: 5 }],
-  [/\b(my repos|list (my )?repos|which repos|what repos|repositories)\b/, { github_list_repos: 4 }],
+  // "List my GitHub repos" fell through every one of these (a word between "my" and "repos"), and no model was
+  // handed github_list_repos (failures.md case 16).
+  [/\b((list|show|see|get|what are|which are)\b.{0,24}\brepo(s|sitories)\b|my (\w+ )?(repos|repositories)\b|which repos|what repos|repositories)\b/, { github_list_repos: 6 }],
   [/\bgit\b/, { 'git_*': 1.5 }],
   [/\b(calculate|compute|math|sum of|average|total|percent|percentage|how much (is|are|would|will|does|do)|how many days|convert|times|plus|minus|divided|multiply|split .* (ways|between))\b|\d\s*[-+*/x×÷^%]\s*\d|\$\s?\d/, { calculate: 6 }],
   [/\b(javascript|js code|run (this |some )?code|regex|parse (this|the)|sort)\b/, { run_js: 4 }],
@@ -106,7 +111,8 @@ export function rankTools(query, tools, { k = 3 } = {}) {
   const specs = (tools || []).filter(t => fnOf(t).name && !HARNESS_TOOLS.has(fnOf(t).name));
   const q = String(query || '').toLowerCase();
   // File names and URLs would only add noise words ("js", "md", "https") to the tokens; the intents still see them.
-  const qw = words(query.replace(URLISH, ' ').replace(FILEISH, ' '));
+  // (Links without a scheme too: "github.com/kealjones/bubbles" put "github" on every github_* tool.)
+  const qw = words(query.replace(URLISH, ' ').replace(/\b(?:[\w-]+\.)+[a-z]{2,}\/\S*/gi, ' ').replace(FILEISH, ' '));
   if (!specs.length || (!qw.length && !INTENTS.some(([re]) => re.test(q)))) return [];
   const docs = specs.map((t) => {
     const f = fnOf(t);

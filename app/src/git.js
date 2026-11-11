@@ -32,6 +32,13 @@ export const net = () => ({ http: authedHttp, corsProxy: corsProxy(), onAuth: gi
 
 export async function author() { return commitAuthor(); }
 
+// LightningFS keeps the file tree in memory and writes it to IndexedDB only once the filesystem has been
+// idle for 500 ms (its "deactivate"). A tab closed or reloaded inside that window loses every write since the
+// last save, which in demo mode (no remote) is the only copy. `flush` saves it now (LightningFS 4.10).
+export async function persist() {
+  if (typeof pfs.flush === 'function') await pfs.flush().catch(() => {});
+}
+
 export async function exists(path) {
   try { await pfs.stat(path); return true; } catch { return false; }
 }

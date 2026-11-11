@@ -349,3 +349,11 @@ test('a question naming someone only takes memory and chats that name them (Emma
   const mine = await find('what is my name?', { recall });
   assert.ok(mine.facts.some(f => f.fact.o === 'Keal'));
 });
+
+test('case 15: a GitHub repo named outright is a job for git_clone, whatever the verb', async () => {
+  const { readFileSync } = await import('node:fs');
+  const specs = JSON.parse(readFileSync(new URL('./fixtures/tool-specs.json', import.meta.url), 'utf8'));
+  const top = rankTools('Can you pull GitHub.com/kealjones/bubbles', specs);
+  assert.equal(top[0].name, 'git_clone', JSON.stringify(top.map(t => [t.name, t.score])));
+  assert.ok(top[0].score > 4);
+});

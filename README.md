@@ -2,180 +2,145 @@
 
 <h1 align="center">Squiggle</h1>
 
-<p align="center">A private AI agent that runs on your own device, and picks up where you left off on any other.</p>
+<p align="center">A private AI agent that runs in your browser, remembers you, and picks up where you left off on any device.</p>
 
-Squiggle runs Google's Gemma 4 model on your GPU, right in the browser. Your
-conversations, memory and the agent's files live in a **private GitHub repo you
-own**, so you can start something on your desktop and continue on your phone.
-The agent can also clone your repos, work on a branch, commit, push and open
-pull requests.
+<p align="center"><a href="https://kealjones.com/squiggle/"><b>Try it</b></a> (no account needed: pick "Try it without signing in") · <a href="docs/setup.md">Run your own</a> · <a href="docs/harness.md">How the agent loop works</a> · <a href="docs/failures.md">Failure casebook</a> · <a href="docs/evals.md">Evals</a> · <a href="docs/lab.md">Lab notebook</a></p>
 
-There's no backend to run. The app is static files (GitHub Pages works), and
-the only server piece is a tiny Cloudflare Worker (free tier) that relays the
-few GitHub requests browsers aren't allowed to make directly.
+Squiggle runs LFM3 1.7B on your phone or computer with no backend: the app is static files,
+the only server is a free Cloudflare Worker that relays the few GitHub requests a browser can't make. Your
+conversations, memory and the agent's files live in a **private GitHub repo you own**, so a chat started on a
+laptop continues on a phone. The agent can search the web, read pages, look things up on Wikidata, run code
+in a sandbox, keep a fact graph about you, search every past chat, and clone, commit, push and open pull
+requests on your repos, with the safety rules enforced in code rather than asked of the model.
 
-## What it does
+It is also a working lab for a question: **how small can the model be if the harness is good?** Squiggle's
+default model is 1.7B and runs on an iPhone, the context modes are built for a 4K window, and
+every bad answer a model gives becomes a test (the casebook) and an eval case.
 
-- **On-device model**: Gemma 4 E4B (3.0 GB, default) or E2B (2.0 GB) on computers. Phones run Squiggle Small (219 MB, experimental) on the CPU, since Gemma 4 doesn't fit a phone browser tab. It's LFM2.5 350M fine-tuned on Squiggle's own tool format, so it can use tools, but it's much less capable than Gemma 4, and the cloud model is still there for harder tasks. Gemma 3 270M (242 MB, chat only, no tools) and a few other small test models are in the model list too. Computers without WebGPU fall back to the same CPU models. Downloads once per device, then works offline.
-- **Cloud model (optional)**: Gemma 4 26B on your relay's Workers AI, for GitHub logins in `AI_USERS`. It stops at a daily cap under Cloudflare's free 10,000 neurons (resets midnight UTC) and says so, so it never bills. Chats sent to it leave your device.
-- **Sessions that follow you**: every conversation syncs through your storage repo. Two devices can chat offline in the same session; their messages merge on the next sync instead of conflicting. Archive or delete chats, delete single messages, and give a chat its own model; all of it syncs.
-- **Threads**: reply in a thread on any message. The thread knows the conversation up to that point, the main chat stays uncluttered, and a one-line outcome shows under the parent message.
-- **Git workspace**: `/home` is the agent's own synced folder; `/repos/<name>` holds clones. Tools: list, read, write, edit and delete files, grep, note, clone, status, branch, commit, push, pull, log, show, open PR, list repos.
-- **Memory**: a small graph of facts about you and your projects (`memory/facts.jsonl`), learned as you chat or added by hand, reviewable in the Memory panel. The agent can `remember`, `recall` and `forget`.
-- **Voice**: a call button for talking with it hands-free, with replies read aloud by your device's own voices (pick a Premium/Enhanced one for the best sound).
-- **Attachments**: attach files to a message (up to 10, 20 MB each). Text is read directly, PDFs have their text extracted, and images are read with OCR.
-- **Context for small models**: Settings → Context picks how the model's context is managed: Compress (rolling summary + recent messages), Smart (the default: also retrieves the most relevant earlier messages, web pages and files for each question) or AI-managed (experimental). You can also bring in other chats. "What the model saw" on any reply shows exactly what went in, and the chat details sidebar shows how full the context window is (by part, live while a reply runs), the current plan, and what the chat has used and made.
-- **Search**: search all your chats from the sidebar; the agent can search them too (`search_history`).
-- **Web and code**: `fetch_url` reads pages, `web_search` searches the web, `calculate` does maths and `run_js` runs JavaScript in an isolated sandbox.
+<!-- screenshot: docs/images/demo.png (docs/images/SHOTS.md) -->
 
-## How it keeps you safe
+## Memory and search
 
-These are enforced in code, not just asked of the model:
+The part built for people who care about retrieval.
 
-- **Pushes outside the agent's own branches need your OK.** The agent pushes `agent/…` branches freely. Pushing any other branch (like `main`) shows a card in the chat with the commits and **Allow once / Always allow / Don't allow**. "Always allow" applies to that one branch in that one repo, syncs to your devices, and can be revoked in Settings. The decision only ever comes from your click.
-- **Workflow changes always ask.** A push that changes `.github/workflows/` files asks every time, on any branch, even with "Always allow", because workflows run code with the repo's secrets.
-- **Never a force-push.** History on GitHub is never rewritten.
-- **The model never sees your GitHub token.** Model-written JavaScript runs in a sandboxed frame and worker with no access to the app's storage, token or sessions, and is killed if it runs too long.
-- **Outside content is labelled as data.** Web pages, repo files and tool output reach the model wrapped in `<untrusted key="…">` tags with a per-session random key, plus a rule never to follow instructions inside them. This makes prompt injection much less likely but can't rule it out, which is why the limits above don't depend on the model behaving.
-- **The storage repo must be private.** Setup refuses public repos.
+- **Memory is a fact graph**, not a blob: `subject → relation → object` edges, one JSON line each in
+  `memory/facts.jsonl`, learned as you chat or added by hand, reviewable and deletable in the Memory panel.
+  Lines merge by id across devices, deletes are tombstones with a TTL. ([memory.js](app/src/memory.js))
+- **Recall uses an absolute bar, not a relative one.** A fact scores by how much of it the question covers
+  (0–1), so when nothing fits, nothing comes back, instead of the least-unrelated fact scoring 1 and dragging
+  its neighbours in. Then one hop through a shared entity, at half score, never through "user" or "Squiggle",
+  which sit on most facts. ([memory-rank.js](app/src/memory-rank.js), [search.js](app/src/search.js):
+  BM25 + a light stemmer, blended with MiniLM embeddings in a worker that sleeps when idle so it fits a phone)
+- **`find` is one search across everything the agent knows**: tools, recipes from finished tasks, memory,
+  every past chat, and the current task's own results, each kind with its own relevance bar, falling through
+  to the web when nothing of yours matches. A question that names someone only takes memory that names them
+  too. ([find.js](app/src/find.js))
+- **Fresh context looks things up before the model answers.** Every message starts new: the question is made
+  to stand on its own (a follow-up borrows the names from the one before), earlier exchanges, pages, memory,
+  Wikipedia/Wikidata and the web are searched, and the result goes in as a `find` call the model already
+  made, so none of it reads as the user talking (the failure that broke Smart context on small models). Rules
+  you set for the whole chat ride along; questions about your own things stay off the web.
+  ([prefetch.js](app/src/prefetch.js), [harness.md § Fresh](docs/harness.md#fresh-context-prefetchjs))
+- **You can see all of it.** "What the model saw" on any reply shows exactly what went in and where it came
+  from, with scores; the chat details sidebar shows the context window by part, live while a reply runs.
+  Context mode (Smart, Compress, Fresh) is per chat, like the model.
 
-## Set up (about 10 minutes)
+<!-- screenshot: docs/images/context.png (docs/images/SHOTS.md) -->
 
-You need a GitHub account, a free Cloudflare account and Node 20+.
+**Measured, not asserted.** `node tests/eval/retrieval.mjs` runs the rankers on a labelled set
+([docs/evals.md](docs/evals.md)): the absolute bar returns nothing for 75% of unrelated questions against
+50% for normalized BM25, and find's named-only rule takes it to 88%. The same benchmark found a stemmer bug
+("named" never matched "name") and showed the one-hop expansion costing precision on direct questions.
 
-### 1. Create a GitHub App
+## The harness and small models
 
-Go to **GitHub → Settings → Developer settings → GitHub Apps → New GitHub App** ([direct link](https://github.com/settings/apps/new)).
+- **A turn is: resolve references → look up a recipe → chat, or plan → one fresh prompt per step → final
+  reply**, with `plan`, `done`, `need` and `find` added as tools for every model. Each step gets the goal,
+  the plan, earlier results and a fresh context; a step that won't move asks a question instead of spinning.
+  ([harness.md](docs/harness.md) is the contract for [agent.js](app/src/agent.js) and the fine-tune.)
+- **Recipes**: a finished plan is saved as how the task was solved, offered by `find` for similar requests
+  once you approve it. Slow the first time is fine; the second time should be fast.
+- **One model: LFM3 1.7B** (Liquid's first small model trained for agent harnesses), on our own WebLLM build with
+  Liquid's quantization-aware 4-bit weights, about 14 tokens a second on an iPhone. You pick the model; the device
+  picks the build (16-bit or 32-bit floats on WebGPU, else the GGUF on the CPU with every core). Its tools are one
+  `bash` over the workspace (cat, grep, pipes, plus git, gh, curl, search, wiki, node and bc wired to the same
+  approvals and URL rules) next to the harness's own `find`, `plan`, `done` and `need`. When a reply fills its 4K
+  window the harness checkpoints by itself and carries on in a fresh context, so one answer can take several windows.
+- **Context is the experiment.** Each chat picks how its context is built before its first message: Compress
+  (summary plus recent turns, the default), Smart (brings back earlier messages that fit), Fresh (nothing replayed;
+  a lookup first, handed over as a tool call) or AI-managed (the model budgets its own window). "What the model saw"
+  shows the exact prompt for any reply.
+- **Keal's own models stay as experiments**: Squiggle Small (LFM2.5-350M fine-tuned on the harness's exact text,
+  219 MB, runs on a phone CPU) and Tiny Gemma 4 (Gemma 4 E2B pruned to a 0.6B core and healed by distillation).
+  Both are honest about being often wrong; both prove the pipeline. They keep the separate tools they were trained
+  on. The engine still runs LiteRT, llama.cpp (WASM), MLC (WebGPU) and per-family tool formats, so adding a model is
+  one registry entry.
+- **The failure casebook** ([docs/failures.md](docs/failures.md)): 18 real bad answers, each with the chat id,
+  the model, why it's wrong, the fix, and the unit test that now catches it. The bad answers are never put in
+  a prompt or trained on; each pair is a preference pair for the next fine-tune. The same cases run as an
+  eval against any model (`node tests/eval/run.mjs --model WQ06 --mode fresh`).
+- **Numbers**: [docs/measurements-2026-11-04.md](docs/measurements-2026-11-04.md) has prompt-token costs
+  before and after each change, tokens/s and memory per model on a phone-class CPU, reproducible with one
+  command. [docs/lab.md](docs/lab.md) is the notebook: every experiment, what happened, what it became.
 
-- **GitHub App name**: anything, e.g. `Squiggle (yourname)`. The URL-friendly version of it is the app's *slug*.
-- **Homepage URL**: your future Worker URL (you can use `https://example.com` for now and fix it later).
-- **Callback URL**: leave empty.
-- **Enable Device Flow**: ✅ checked.
-- **Expire user authorization tokens**: leave checked (Squiggle refreshes them).
-- **Webhook → Active**: ❌ unchecked.
-- **Repository permissions**:
-  - Contents: **Read and write** (clone, commit, push)
-  - Pull requests: **Read and write** (open PRs)
-  - Actions: **Read and write** (start background jobs and read their results; used by scheduled jobs, coming soon)
-  - Workflows: **Read and write** (write the job files in `.github/workflows/`; every push that changes a workflow file still asks you first)
-  - Metadata: Read-only (set automatically)
-- **Repository creation** (if your GitHub shows this permission): **Read and write**. It lets setup create your storage repo for you; without it, setup opens a pre-filled "new private repo" page instead.
-- **Where can this GitHub App be installed?**
-  - **Only on this account** if the agent will only work on your personal repos.
-  - **Any account** if you also want it on repos in a GitHub organization. The app still isn't listed anywhere; only people with the link can install it, and an org owner has to approve installing it on the org.
+<!-- screenshot: docs/images/steps.png (docs/images/SHOTS.md) -->
 
-Create it, then note the **Client ID** and the **slug** (from the app's URL, `github.com/apps/<slug>`).
+## Safety, in code
 
-### 2. Host it
+- **Pushes outside the agent's own `agent/…` branches need your click.** A card shows the commits with
+  Allow once / Always allow / Don't allow; "Always allow" is per repo and branch, synced, revocable. A push
+  that touches `.github/workflows/` asks every time. Never a force-push. The decision only ever comes from the
+  UI; a tool can't treat model output as approval.
+- **The model never sees your GitHub token.** Tools reach it only through closures; model-written JavaScript
+  runs in an opaque-origin iframe inside a worker, with no access to storage, sessions or the token, and is
+  killed if it runs too long.
+- **Outside text is data.** Web pages, repo files, git log and tool output reach the model wrapped in
+  `<untrusted key="…">` tags with a per-session random key and a rule never to follow instructions in them.
+  It lowers the odds of injection; the limits above don't depend on it.
+- **The storage repo must be private.** Setup refuses public ones.
 
-Squiggle has two parts: the **app** (static files) and a small **relay** Worker on Cloudflare. Pick one setup.
+<!-- screenshot: docs/images/approval.png (docs/images/SHOTS.md) -->
 
-#### Option A: app on GitHub Pages, relay on Cloudflare (recommended)
+## Everything else it does
 
-**Deploy the relay** (once; again only if the relay code changes):
+Sessions that merge across devices (two phones chatting offline in the same session merge on the next sync,
+by message id); threads on any message; attachments (text read directly, PDFs extracted, images OCR'd);
+voice calls with the device's own voices; a Memory panel with the fact graph; chat search; `calculate` and
+`run_js`; an optional cloud model (Gemma 4 26B on your relay's Workers AI, capped under the free tier so it
+never bills). The full list and the data model are in [CLAUDE.md](CLAUDE.md).
 
-```bash
-git clone https://github.com/<you>/squiggle && cd squiggle
-npm install
-```
+## Try it, run it, read it
 
-Edit `wrangler.relay.toml`:
-
-```toml
-GITHUB_CLIENT_ID = "Iv23li…"                    # from step 1
-GITHUB_APP_SLUG  = "squiggle-yourname"
-ALLOWED_ORIGINS  = "https://<you>.github.io"     # or your Pages custom domain, e.g. https://example.com
-```
-
-```bash
-npx wrangler login
-npx wrangler deploy --config wrangler.relay.toml
-```
-
-Wrangler prints the relay's address, like `https://squiggle-relay.<you>.workers.dev`.
-
-To redeploy the relay on every push instead, connect the repo in Cloudflare (Workers & Pages → `squiggle-relay` → Settings → Builds) with the deploy command `npx wrangler deploy --config wrangler.relay.toml`, or set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets for the Deploy workflow. Use one or the other.
-
-Optional, for more reliable web search: add a free [LangSearch](https://langsearch.com) API key as a secret (`npx wrangler secret put LANGSEARCH_API_SECRET_KEY --config wrangler.relay.toml`). Without it, search uses DuckDuckGo, then Wikipedia when DuckDuckGo asks for a bot check.
-
-**Publish the app.** In your copy of this repo on GitHub:
-
-1. **Settings → Secrets and variables → Actions → Variables:** add `SQUIGGLE_RELAY_URL` set to the relay's address.
-2. Push to `main` (or run the **Deploy** workflow). It publishes the app to a `gh-pages` branch.
-3. **Settings → Pages → Source: Deploy from a branch**, branch `gh-pages`, folder `/ (root)`. The app appears at `https://<you>.github.io/squiggle/`, or `https://<your-domain>/squiggle/` if your Pages site has a custom domain. Use that as the GitHub App's Homepage URL.
-
-Every pull request from this repo also gets a **live preview** at `https://<you>.github.io/squiggle/pr-preview/pr-<number>/`, linked from a comment on the PR and removed when it closes (`.github/workflows/pr-preview.yml`). The preview is the app on the same origin as the deployed one, so it uses the same relay and the same sign-in and settings in your browser.
-
-GitHub Pages on a private repo needs a paid plan; the code holds no secrets, so a public repo is fine (your data lives in your private storage repo).
-
-To have pushes redeploy the relay too, add a Cloudflare API token (**Edit Cloudflare Workers** template) as the `CLOUDFLARE_API_TOKEN` secret, your account id as `CLOUDFLARE_ACCOUNT_ID`, and the variables `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_SLUG` and (for a custom domain) `SQUIGGLE_APP_ORIGINS`. See `.github/workflows/deploy.yml`.
-
-#### Option B: everything on one Cloudflare Worker
-
-The Worker can serve the app too, so there's a single deploy and a single address. Edit `wrangler.toml` (client ID and slug as above), then:
-
-```bash
-npx wrangler login
-npx wrangler deploy
-```
-
-The app is at the printed `https://squiggle.<you>.workers.dev`.
-
-### 3. Open it
-
-Open the app's address on your computer. Setup walks you through:
-
-1. **Sign in with GitHub**: enter the code it shows on github.com.
-2. **Install the app** on your account, choosing which repos the agent may use: the ones you want it to work on (you can change this later). The storage repo gets added automatically if Squiggle creates it; if you'll use an existing repo for storage, include that one too.
-3. **Choose storage**: create a new private repo (default name `squiggle-state`) or pick an existing private one. If it already has other files, Squiggle keeps its data in a `squiggle/` folder.
-4. **Download the model.**
-
-On your phone: open the same URL, sign in, and Squiggle finds your storage repo automatically. Use "Add to Home Screen" to install it as an app.
-
-### Which repos can the agent use?
-
-The same GitHub App handles everything: your storage repo and every repo the agent clones, commits to, pushes to or opens pull requests on. Its access is the overlap of two things: repos **you** can access, and repos you've **installed the app on**.
-
-- **Your repos:** pick them when installing the app. To add or remove repos later, use **Settings → Manage repo access** in Squiggle (or GitHub → Settings → Applications → Installed GitHub Apps → Configure).
-- **Organization repos:** install the app on the organization too (needs "Any account" in step 1, plus an org owner's approval).
-- **Anyone's public repos:** the agent can clone and read them without installing anything. It can't push to repos you don't have write access to.
-
-### 4. (Optional) Protect `main` on GitHub
-
-Optional backstop. In a repo where you never want direct pushes to `main` (even ones you approve in Squiggle): **Settings → Rules → Rulesets → New branch ruleset**, target the default branch, and enable **Require a pull request before merging**.
-
-## What goes where
-
-| Data | Where it lives |
-|---|---|
-| Model weights | Downloaded from Hugging Face once, stored in this browser |
-| Voice models | Downloaded once, stored in this browser |
-| Conversations, memory, `/home` files | Your private storage repo on GitHub, plus a local copy in this browser |
-| Repo clones (`/repos`) | This browser only; share work by pushing branches |
-| Settings (model, theme, context mode) | This browser only |
-| GitHub sign-in | This browser only; passes through your Worker on the way to GitHub, never stored there |
-
-Your Worker relays git traffic and (if `ENABLE_FETCH` is on) pages the agent reads. It runs on your own Cloudflare account and logs nothing. The model runtime loads from a version-pinned jsDelivr URL; the optional smart-context search model (23 MB) loads from Hugging Face. Attachments and voice also load version-pinned libraries from jsDelivr (Tesseract.js for OCR, pdf.js for PDFs, ONNX Runtime Web and a phonemizer for speech).
+- **Try it**: [kealjones.com/squiggle](https://kealjones.com/squiggle/) → "Try it without signing in". The
+  demo is the real app with storage in your browser, seeded with a sample chat and a few facts so memory and
+  search have something to find; the git and GitHub tools are off until you sign in, which carries your demo
+  data into a private repo of yours.
+- **Supported**: tested on iPhone 16 and newer in mobile Safari (iOS 26), and desktop Chrome and Safari with WebGPU.
+  Other devices may well work (without WebGPU LFM3 runs on the CPU, slowly) but haven't been tested much; an older
+  iPhone may not have the memory for a 1.7B model in a browser tab.
+- **Run your own**: [docs/setup.md](docs/setup.md), about 10 minutes: a GitHub App, a Cloudflare Worker, your
+  fork on GitHub Pages.
+- **Read it**: plain ES modules, no build step, no framework ([CLAUDE.md](CLAUDE.md) is the map).
+  [docs/extending.md](docs/extending.md) covers adding tools and context modes.
 
 ## Development
 
 ```bash
 npm run check               # lint + unit tests (what to run before a commit)
-npm run lint                # ESLint (correctness rules only; no formatter)
-npm test                    # unit tests (guards, sync merges, context, tools registry, Worker)
-npm run test:e2e            # end to end in headless Chromium: two-device sync
-                            # against a real git server, git tools, sandbox, a
-                            # full agent turn with a scripted model
+npm test                    # unit tests: guards, sync merges, context, find, prefetch, tools, Worker
+npm run test:e2e            # end to end in headless Chromium: two-device sync against a real git
+                            # server, git tools, sandbox, demo mode, full agent turns with a scripted model
 npm run test:e2e:split      # same, with app and relay on separate origins (the Pages setup)
+node tests/eval/retrieval.mjs                       # memory recall benchmark (a second, no model)
+node tests/eval/run.mjs --model WQ06 --mode fresh    # the casebook against a real model (needs WebGPU)
 npm run dev                 # local Worker + app at http://localhost:8787
-npm run vendor              # rebuild app/vendor/ after changing a library version
 ```
 
-There's also a benchmark you can run by hand: `node tests/e2e/wllama-bench.mjs` (the phone CPU models). CI (`.github/workflows/ci.yml`) runs lint, the unit tests, the e2e suite (both modes) and a Worker dry-run; pull requests also get a Pages preview (see above).
+CI runs lint, the unit tests, the e2e suite in both modes and a Worker dry-run; pull requests get a live
+preview on GitHub Pages. Built in two weeks of evenings, Oct–Nov 2026, with Claude as a pair (139 of 144 commits
+carry the co-author line); 318 unit tests and 33 end-to-end checks. [CONTRIBUTING.md](CONTRIBUTING.md) has the workflow.
 
-No build step: the app is plain ES modules in `app/`. See [CLAUDE.md](CLAUDE.md) for the architecture, [docs/extending.md](docs/extending.md) for adding tools and context modes, and [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow.
+## License
 
-## Roadmap
-
-- **Next**: skills and custom agents.
-- **Then**: scheduled jobs via GitHub Actions in your storage repo, remote MCP servers, push notifications.
+MIT ([LICENSE](LICENSE)). The model weights Squiggle downloads keep their own licenses (Gemma Terms of Use, the
+LFM Open License, Apache 2.0 for Qwen, the Llama 3.2 Community License).

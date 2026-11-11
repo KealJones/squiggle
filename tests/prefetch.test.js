@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { namesIn, isFollowUp, standalone, smallTalk, rank, exchangeCandidates, render, doRequest, pointsBack } from '../app/src/prefetch.js';
+import { namesIn, isFollowUp, standalone, smallTalk, rank, exchangeCandidates, render, doRequest, pointsBack, standingInstructions, refsIn } from '../app/src/prefetch.js';
 
 const PREV = 'What is the latest movie that Patrick Stewart was is?';
 const LINE = [
@@ -90,4 +90,43 @@ test('render: the exchange a message points back at keeps its reply as written (
   const code = 'function* odds() {\n  for (let i = 1; i <= 100; i++) if (i % 2) yield i;\n}';
   const text = render({ query: UHM, exchanges: [{ question: 'write the generator', answer: `Here it is:\n\n\`\`\`js\n${code}\n\`\`\``, full: true }] }, { small: true });
   assert.ok(text.includes(`you answered:\nHere it is:\n\n\`\`\`js\n${code}\n\`\`\``), text);
+});
+
+test('standing instructions: short user rules for the whole chat come along; one-offs, long requests and replies don\'t', () => {
+  const line = [
+    { id: 'u1', role: 'user', content: 'From now on answer in Spanish.' },
+    { id: 'a1', role: 'assistant', content: 'Claro. From now on I will always answer in Spanish.' },
+    { id: 'u2', role: 'user', content: 'Call me Kay' },
+    { id: 'u3', role: 'user', content: 'Just this once, give me a long answer.' },
+    { id: 'u4', role: 'user', content: 'What is the capital of Peru?' },
+    { id: 'u5', role: 'user', content: 'call me kay' },
+    { id: 'u6', role: 'user', content: 'Always ' + 'x'.repeat(300) },
+  ];
+  assert.deepEqual(standingInstructions(line), ['From now on answer in Spanish.', 'Call me Kay']);
+  assert.deepEqual(standingInstructions([]), []);
+  assert.deepEqual(standingInstructions(line, { max: 1 }), ['Call me Kay'], 'the last `max` rules');
+});
+
+test('render puts standing instructions first, as the user\'s own rules, and renders them alone', () => {
+  const text = render({ query: 'capital of Peru', standing: ['From now on answer in Spanish.'] });
+  assert.match(text, /Instructions the user gave earlier in this chat, still in force:\n- "From now on answer in Spanish\."/);
+  assert.match(text, /^Looked up before answering/);
+});
+
+test('case 15 (pull bubbles, got squiggle): a link or repo path only matches saved things with that exact path', () => {
+  assert.deepEqual(refsIn('Can you pull GitHub.com/kealjones/bubbles'), ['github.com/kealjones/bubbles']);
+  assert.deepEqual(refsIn('read https://example.com/a/b. Thanks'), ['example.com/a/b']);
+  assert.deepEqual(refsIn('what is 5 / 129?'), []);
+  const cands = [
+    { id: 'c1', kind: 'chat', text: 'List the repo details for github.com/kealjones/squiggle\nIt is a browser agent.' },
+    { id: 'c2', kind: 'chat', text: 'clone github.com/KealJones/bubbles please\nCloned it.' },
+  ];
+  assert.deepEqual(rank('Can you pull GitHub.com/kealjones/bubbles', cands).map(x => x.id), ['c2']);
+  assert.deepEqual(rank('Can you pull GitHub.com/kealjones/bubbles', [cands[0]]), []);
+});
+
+test('render lists the tools that fit, ready to call, and says not to search the web for it', () => {
+  const text = render({ query: 'pull github.com/kealjones/bubbles', tools: [{ name: 'git_clone', description: 'Clone a GitHub repo.', args: [{ name: 'url', required: true }, { name: 'name', required: false }] }] });
+  assert.match(text, /Tools for this \(ready to call\):\n- git_clone\(url, name\?\): Clone a GitHub repo\./);
+  assert.match(text, /Call git_clone for this; don't search the web for it\.$/);
 });

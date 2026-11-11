@@ -21,6 +21,7 @@
     "eslint": "^9.39.5",
     "globals": "^16.5.0",
     "isomorphic-git": "1.44.5",
+    "just-bash": "3.6.0",
     "marked": "18.1.2",
     "wrangler": "^4"
   },

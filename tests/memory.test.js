@@ -20,7 +20,7 @@ const FACTS = [
 test('overlap: an absolute score; words on most records count for nothing', () => {
   const cov = overlap(FACTS.map(f => ({ id: f.id, text: factText(f) })));
   assert.ok(cov.generic.has('user'), [...cov.generic].join(','));
-  assert.ok(cov.generic.has('squiggle'));
+  assert.ok(cov.generic.has('squiggl'), 'stemmed: a trailing e goes (search.js stem)');
   assert.ok(!cov.generic.has('markdown'));
   const s = cov.score('what is emma stone\'s latest movie? identify topics, start exploring');
   assert.ok([...s.values()].every(v => v < 0.2), 'one word ("exploring") out of eight scores under the bar: ' + JSON.stringify([...s]));

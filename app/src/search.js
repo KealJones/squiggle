@@ -14,12 +14,15 @@ export function tokenize(text) {
     .map(stem);
 }
 
-// Light suffix stripping so "repos"/"repo", "pushing"/"push" match.
+// Light suffix stripping so "repos"/"repo", "pushing"/"push" match. A trailing e goes too, so "named"/"name"
+// and "decided"/"decide" meet ("named" lost its e with the -ed and never matched "name": "What's my name?"
+// found no memory, tests/eval/retrieval.mjs 2026-11-09).
 function stem(w) {
-  if (w.length > 5 && w.endsWith('ing')) return w.slice(0, -3);
-  if (w.length > 4 && w.endsWith('ies')) return w.slice(0, -3) + 'y';
-  if (w.length > 4 && w.endsWith('ed')) return w.slice(0, -2);
-  if (w.length > 3 && w.endsWith('s') && !w.endsWith('ss')) return w.slice(0, -1);
+  if (w.length > 5 && w.endsWith('ing')) w = w.slice(0, -3);
+  else if (w.length > 4 && w.endsWith('ies')) w = w.slice(0, -3) + 'y';
+  else if (w.length > 4 && w.endsWith('ed')) w = w.slice(0, -2);
+  else if (w.length > 3 && w.endsWith('s') && !w.endsWith('ss')) w = w.slice(0, -1);
+  if (w.length > 3 && w.endsWith('e')) w = w.slice(0, -1);
   return w;
 }
 

@@ -33,7 +33,7 @@ export const HARNESS_SPECS = {
   done: { name: 'done', description: 'Finish the current step with the facts later steps need (paths, numbers, names, decisions), one to three lines.', parameters: S({ result: str('What this step found or did') }, ['result']) },
   need: { name: 'need', description: 'Ask for something only the user can tell you. Squiggle searches first and asks them if it finds nothing.', parameters: S({ what: str('What is missing, e.g. "which repo the site lives in"') }, ['what']) },
   // `need` renamed for every model but Squiggle Small (v3 dialect): LFM3 1.7B planned a step that needed the
-  // user's input, said "I don't have a direct 'ask' tool" and wrote its question as the step's result (case 15).
+  // user's input, said "I don't have a direct 'ask' tool" and wrote its question as the step's result (case 19).
   ask_user: { name: 'ask_user', description: 'Ask the user a question and wait for their answer: something only they can tell you (a choice, a name, a detail, a go-ahead). If memory already answers it, you get that instead; call it again to ask anyway.', parameters: S({ question: str('The question, as you would ask it, e.g. "Should the new repo be public or private?"') }, ['question']) },
   find: { name: 'find', description: 'Search what Squiggle knows: other tools (and how to call them), recipes from past tasks, memory, past chats, this task\'s results.', parameters: S({ query: str('What you are looking for') }, ['query']) },
 };
@@ -245,7 +245,7 @@ export const stepSystem = (base, task, sections = [], opts) => stepPrompt(base, 
 //       ("Now"), and a nudge restarts the step with what went wrong in the system prompt (agent.js). Models
 //       read every user turn as the person: a 0.8B model read the budget line as "the user said they used
 //       2,030 tokens", and LFM3 1.7B read "(Squiggle: You were repeating yourself…)" as "now the user says"
-//       and the goal as the user's first message (case 15). The chat phase still marks the few lines it adds
+//       and the goal as the user's first message (case 19). The chat phase still marks the few lines it adds
 //       to a user turn with `note`, "(Squiggle: …)".
 // A dialect is chosen per model (agent.js dialect()); tasks.js functions take it as an option and
 // default to v2, so older callers and the fine-tune's rendering are unchanged.
@@ -344,7 +344,7 @@ export function finalUser(task, { dialect = DIALECT.v2 } = {}) {
   return dialect.native ? head : `${head}\n\n${dialect.note(FINAL_NOW)}`;
 }
 
-// A step that ends on a question to the user instead of a result: "Could you tell me the repo name?" (case 15).
+// A step that ends on a question to the user instead of a result: "Could you tell me the repo name?" (case 19).
 // The last sentence decides: a question mark, or a request for something only the user can give.
 const ASKS = /\b(?:please|kindly|could you|can you|would you|let me know|tell me|i need (?:you to|to know|the|your|more)|do you want|should i)\b[^.!?]*$/i;
 export function asksUser(text) {
@@ -353,6 +353,14 @@ export function asksUser(text) {
   const last = t.split(/\n+/).pop().split(/(?<=[.!])\s+/).pop();
   if (/\?$/.test(last)) return true;
   return ASKS.test(last.replace(/[.!:]+$/, '')) && /\b(?:provide|tell|confirm|choose|pick|specify|share|let me know|which|what|want|should|need)\b/i.test(last);
+}
+
+// When the final reply comes back blank even after a nudge, the steps' own results are the reply, so the work
+// isn't lost and the next message doesn't redo the task (agent.js final).
+export function resultsReply(task) {
+  const done = (task.steps || []).filter(s => s.result && !NO_RESULT.test(s.result));
+  if (!done.length) return '';
+  return `Here's what I found for "${truncate(task.goal, 120)}":\n\n` + done.map(s => `- **${s.text}**: ${s.result.replace(/\s+/g, ' ')}`).join('\n');
 }
 
 // The task that can pick up again from the new message: only the one the

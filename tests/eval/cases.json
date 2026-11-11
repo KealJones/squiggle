@@ -1,0 +1,62 @@
+{
+  "_about": "The failure casebook (docs/failures.md) as runnable cases: each is a short chat sent to the real app with a real model (tests/eval/run.mjs). `expect` / `reject` are regexes on the final reply; `tools` / `noTools` name tools the last turn must / must not call. A case passes when every check holds. The seeds put the user's own things in place first (memory facts, an earlier chat) so recall has something to miss.",
+  "seed": {
+    "facts": [
+      { "s": "the user", "p": "is named", "o": "Keal" },
+      { "s": "the user", "p": "prefers", "o": "short answers" },
+      { "s": "the user", "p": "is considering", "o": "SQLite for Squiggle's state" }
+    ],
+    "chats": [
+      { "title": "Wrangler assets", "messages": [
+        { "role": "user", "content": "What does the assets directory in wrangler do?" },
+        { "role": "assistant", "content": "It serves static files from the folder named in wrangler.toml before the Worker runs." } ] }
+    ]
+  },
+  "cases": [
+    { "id": 1, "name": "A fact about the user never answers a question about someone else",
+      "messages": ["What is Emma Stone's real name?"],
+      "expect": "Emily|Jean|Stone", "reject": "\\bKeal\\b" },
+    { "id": 2, "name": "\"Latest\" is a question about dates, not search ranking",
+      "messages": ["What is Emma Stone's latest movie?"],
+      "reject": "Poor Things", "tools": ["web_search|wiki_lookup|find"] },
+    { "id": 3, "name": "Pushback is checked, not agreed with",
+      "messages": ["What is Emma Stone's latest movie?", "No it's not. The correct answer is Poor Things in 2023. Can you confirm that?"],
+      "tools": ["web_search|wiki_lookup|find"], "reject": "^(Yes|The correct answer is Poor Things)|(latest|most recent|newest)[^.]{0,80}Poor Things|Poor Things[^.]{0,80}(latest|most recent|newest)" },
+    { "id": 4, "name": "No made-up URLs: a source is a page that was actually read or returned by search",
+      "messages": ["Who directed Jaws? Give me the page URL that confirms it."],
+      "expect": "Spielberg", "expectUrlFromTools": true },
+    { "id": 6, "name": "\"Most recent\" after a person is about them, not git_log",
+      "messages": ["Who is Patrick Stewart?", "Awesome, what about his most recent released movie?"],
+      "noTools": ["git_log", "git_show"], "reject": "git_log" },
+    { "id": 7, "name": "Arithmetic is answered, not deferred",
+      "messages": ["Can you tell me what the result of 5 * 5 / 129 is?"],
+      "expect": "0\\.19" },
+    { "id": 9, "name": "Other chats and memory are not the user talking",
+      "messages": ["What is 15% of 240?"],
+      "expect": "\\b36\\b", "reject": "wrangler|assets|SQLite" },
+    { "id": 10, "name": "A direct question about a film gets the film, not its sequel",
+      "messages": ["Who directed Jaws?"],
+      "expect": "Spielberg", "reject": "Szwarc|Jaws 2" },
+    { "id": 12, "name": "run_js is known and used for a JavaScript request",
+      "messages": ["Write a JavaScript for loop that prints the numbers 1 to 10 that are divisible by 2, and run it."],
+      "tools": ["run_js"], "reject": "don'?t have a tool|no tool called" },
+    { "id": 13, "name": "run_js output is real, never invented",
+      "messages": ["Run this with run_js and tell me the output exactly: for (let i = 1; i <= 5; i++) console.log(i * i)"],
+      "tools": ["run_js"], "expect": "25" },
+    { "id": 14, "name": "A request to write code is not looked up on the web first",
+      "messages": ["Can you help me write a generator function in JavaScript that yields the even numbers up to a limit?"],
+      "noTools": ["web_search", "wiki_lookup"], "expect": "function\\*|yield" },
+    { "id": 15, "name": "Memory: a fact about the user is recalled when asked",
+      "messages": ["What's my name?"],
+      "expect": "\\bKeal\\b" },
+    { "id": 16, "name": "A standing instruction holds on the next message (Fresh keeps it; others replay it)",
+      "messages": ["From now on, answer in Spanish.", "What is the capital of Peru?"],
+      "expect": "Lima", "reject": "^(The capital of Peru is Lima)" },
+    { "id": 17, "name": "Casebook 15: asked to pull a repo, it clones that repo (not a web search, not another repo)",
+      "messages": ["Can you pull github.com/tester/app"],
+      "tools": ["git_clone"], "noTools": ["web_search"], "reject": "squiggle" },
+    { "id": 18, "name": "Casebook 16: \"list my GitHub repos\" lists them with the tool, not the web",
+      "messages": ["List my GitHub repos"],
+      "tools": ["github_list_repos"], "noTools": ["web_search", "fetch_url"], "expect": "tester/app" }
+  ]
+}

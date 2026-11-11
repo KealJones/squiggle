@@ -25,17 +25,18 @@ import { recallBlock } from './recall.js';
 //   recentShare  share of the budget for the most recent turns, replayed verbatim
 //   summary      include the rolling summary of older turns
 //   retrieve     smart retrieval (older messages, tool output, thread outcomes, other chats)
-//   offered      shown in Settings → Context (full is for tests and tooling)
+//   offered      offered when a chat starts (the new-chat settings; full is for tests and tooling)
 // The UI reads label/short/hint from here; registerContextMode adds a custom one.
 export const CONTEXT_MODES = {
   compact: { label: 'Compress', short: 'Compress', recentShare: 0.6, summary: true, retrieve: false, offered: true,
     hint: 'A summary of the chat so far plus the recent messages.' },
   smart: { label: 'Smart', short: 'Smart', recentShare: 0.45, summary: true, retrieve: true, offered: true,
     hint: 'Also brings back a few earlier messages that fit the question ("that", "yesterday", "what I said about…"), quoted after your message, plus relevant web pages and files from this chat. Plain chat like "hi" gets nothing extra.' },
+  fresh: { label: 'Fresh (look up first)', short: 'Fresh', recentShare: 0, summary: false, retrieve: false, fresh: true, offered: true,
+    hint: 'Every message starts new: nothing is replayed just for being recent. Before the model answers, Squiggle looks things up for it (earlier messages and pages that match, memory, Wikipedia and the web) and hands that over as a lookup it already did, so none of it reads as you talking. A follow-up like "what about his newest one?" borrows the names from your last question; instructions you gave for the whole chat ("from now on…", "always…") stay in. Best for small models and short windows.' },
+  // Experimental: no model has been trained for it yet.
   managed: { label: 'AI-managed (experimental)', short: 'AI-managed', recentShare: 0.55, summary: true, retrieve: false, offered: true,
     hint: 'The model runs its own context: it sees how much room is left, plan steps say which earlier results, files or notes they need attached, big pages get a summarize step, and when room runs low it checkpoints and carries on fresh. Experimental: models haven\'t been trained for it yet.' },
-  fresh: { label: 'Fresh (experimental)', short: 'Fresh', recentShare: 0, summary: false, retrieve: false, fresh: true, offered: true,
-    hint: 'Every message starts new: nothing is replayed just for being recent. Before the model answers, Squiggle looks things up for it (earlier messages and pages that match, memory, and the web) and hands that over as a lookup it already did, so none of it reads as you talking. A follow-up like "what about his newest one?" borrows the names from your last question. Experimental.' },
   full: { label: 'Full history', short: 'Full', recentShare: 1, summary: false, retrieve: false, offered: false,
     hint: 'As many recent turns as fit, nothing retrieved.' },
 };
@@ -57,6 +58,20 @@ const CHUNK_TOKENS = 700;
 
 const day = (ts) => new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 
+// A tool result in a line, for "Tool calls you made": the part worth keeping (a command's stdout, what find found,
+// an error) with whitespace folded, cut to `max` characters.
+export function resultGist(result, max = 220) {
+  if (!result) return '';
+  let v = result;
+  try { v = JSON.parse(result); } catch {}
+  if (v && typeof v === 'object') {
+    if (v.error) v = `error: ${v.error}`;
+    else v = v.stdout ?? v.found ?? v.text ?? v.content ?? v.result ?? v.items ?? JSON.stringify(v);
+  }
+  const s = (typeof v === 'string' ? v : JSON.stringify(v)).replace(/\s+/g, ' ').trim();
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
 // How a past message is replayed to the model.
 // Tool use is deliberately NOT written into the replayed message text: a
 // small model copies whatever format it sees in its own past turns, and
@@ -73,7 +88,11 @@ export function messageText(m, threadNotes) {
 // Small models sometimes imitate tool bookkeeping instead of calling tools;
 // drop lines like "[tools used: ...]" so they never pass as real actions.
 export function scrubFakeToolNotes(text) {
-  return String(text || '').replace(/^\s*\[(?:tools? used|tool calls?)[^\]\n]*\]\s*$/gim, '').replace(/\n{3,}/g, '\n\n');
+  return String(text || '').replace(/^\s*\[(?:tools? used|tool calls?)[^\]\n]*\]\s*$/gim, '')
+    // The harness's own notices to the user ("_(Stopped: the context filled up. Ask again …)_", "_(Paused …)_") aren't
+    // the model's words: replayed as its turn, LFM3 1.7B read "Ask again" as itself having asked the user to clarify.
+    .replace(/_\((?:Stopped|Paused)\b[^\n]*?\)_/g, '')
+    .replace(/\n{3,}/g, '\n\n');
 }
 
 // Split long text into ~CHUNK_TOKENS pieces on paragraph boundaries.
@@ -158,10 +177,19 @@ export async function assembleContext(o) {
   }
 
   // What the agent actually did with tools in the replayed turns.
+  // With what each returned, in short, when the reply kept it (settings.debugTools): without it LFM3 1.7B re-ran
+  // `ls /repos` and `ls -la /repos/squiggle` every turn of a chat (2026-11-10).
+  const HARNESS_CALLS = new Set(['plan', 'done', 'tool_info', 'checkpoint']);
   const actions = recent.filter(m => m.role === 'assistant' && m.tools && m.tools.length)
-    .flatMap(m => m.tools.filter(t => t.ok !== false).map(t => t.label || t.name));
+    .flatMap(m => m.tools.filter(t => t.ok !== false && !HARNESS_CALLS.has(t.name)).map(t => {
+      const what = String(t.label || t.name).replace(/\s+/g, ' ').slice(0, 120);
+      const got = o.actionResults ? resultGist(t.result) : '';
+      return got ? `${what} → ${got}` : what;
+    }));
   if (actions.length && o.actions !== false) {
-    const body = `## Tool calls you made in the conversation above\n${actions.slice(-12).map(a => `- ${truncate(a, 160)}`).join('\n')}\n(These already happened. To do anything new, call the tool again; never just say it was done.)`;
+    const list = actions.slice(-12).map(a => `- ${a}`).join('\n');
+    // What came back is outside text (files, pages, command output), so with results the list is wrapped as untrusted.
+    const body = `## Tool calls you made in the conversation above\n${o.actionResults ? wrapUntrusted('earlier tool calls and what they returned', list) : list}\n(These already happened, and what they returned is still true unless something changed since. Use it; call a tool again only for something new; never just say it was done.)`;
     sections.push(body);
     used += estTokens(body);
     report.items.push({ kind: 'actions', label: `${actions.length} earlier tool call${actions.length === 1 ? '' : 's'}`, tokens: estTokens(body) });

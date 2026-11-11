@@ -387,12 +387,14 @@ await check('model download: progress from the first moment, one download at a t
   await page.goto(appUrl + '/');
   const r = await page.evaluate(async () => {
     const engine = await import('/src/engine.js');
+    // A single-file model (LiteRT's runtime; no shipped model uses it now, the download code stays for one that does).
+    engine.MODELS.DLTEST = { label: 'Download test', size: '40 MB', phone: false, runtime: 'litert', url: 'https://huggingface.co/test/resolve/main/model.litertlm' };
     const events = { a: [], b: [], waiting: 0 };
     // Two downloads at once, like double taps or a second tab.
-    const first = engine.download('E2B', (got, total) => events.a.push([got, total]));
-    const second = engine.download('E2B', (got, total) => events.b.push([got, total]), undefined, { onWaiting: () => events.waiting++ });
+    const first = engine.download('DLTEST', (got, total) => events.a.push([got, total]));
+    const second = engine.download('DLTEST', (got, total) => events.b.push([got, total]), undefined, { onWaiting: () => events.waiting++ });
     await Promise.all([first, second]);
-    const info = await engine.downloadInfo('E2B');
+    const info = await engine.downloadInfo('DLTEST');
     return { info, waiting: events.waiting, firstProgress: events.a[0], last: events.a[events.a.length - 1], bProgress: events.b.length, aCount: events.a.length };
   });
   assert.deepEqual(r.firstProgress, [0, 0], 'reports immediately, before the network answers');
@@ -779,7 +781,24 @@ await check('a full agent turn through the UI (scripted model): tools, untrusted
   await D.page.hover('.msg.assistant');
   await D.page.click('.msg.assistant [aria-label="What the model saw"]');
   await D.page.waitForSelector('.ctx-item');
-  if (shotsDir) await D.page.screenshot({ path: `${shotsDir}/agent-context.png` });
+  // Everything the model was sent, from the reply's own file: the system prompt, the declared tool schemas, the
+  // messages it started with and each round (the fetch_url result in, the remember call out), and a text copy.
+  await D.page.waitForSelector('.trace-conv');
+  const tr = await D.page.evaluate(async () => {
+    const S = await import('/src/sessions.js'); const st = await import('/src/storage.js');
+    const m = S.list().flatMap(s => s.messages).find(x => x.role === 'assistant' && x.trace);
+    const file = JSON.parse(await st.read(m.trace));
+    document.querySelectorAll('.trace details').forEach(d => { d.open = true; });
+    return { path: m.trace, convs: file.convs.length, phase: file.convs[0].phase, system: file.convs[0].system, declared: file.convs[0].declared, rounds: file.convs[0].rounds.length,
+      firstIn: JSON.stringify(file.convs[0].rounds[0].input).slice(0, 200), calls: file.convs[0].rounds.flatMap(r => (r.output.toolCalls || []).map(c => c.function.name)), panel: document.querySelector('.trace').innerText };
+  });
+  assert.match(tr.path, /^prompts\/s[0-9a-z]+\/t[0-9a-z]+\.json$/);
+  assert.equal(tr.phase, 'Chat');
+  assert.match(tr.system, /^You are Squiggle, a personal AI agent/);
+  assert.ok(tr.declared.includes('fetch_url') && tr.declared.includes('remember') && tr.declared.includes('find'), JSON.stringify(tr.declared));
+  assert.ok(tr.rounds >= 2 && tr.calls.includes('fetch_url'), JSON.stringify(tr));
+  for (const want of ['Everything the model was sent', 'Copy all as text', 'System prompt (about', 'Tools declared in full', 'Round 1', 'Sent', 'The model wrote', 'You are Squiggle, a personal AI agent']) assert.ok(tr.panel.includes(want), want + '\n' + tr.panel.slice(0, 600));
+  if (shotsDir) { await D.page.screenshot({ path: `${shotsDir}/agent-context.png` }); await D.page.locator('#drawer .drawer-body').screenshot({ path: `${shotsDir}/agent-context-full.png` }).catch(() => {}); }
   const errs = D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e));
   assert.deepEqual(errs, []);
 });
@@ -791,7 +810,7 @@ await check('AI-managed context: budget line, steps attach earlier results, chec
   await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
-  await D.page.evaluate(async () => { (await import('/src/agent.js')).settings.contextMode = 'managed'; });
+  await D.page.evaluate(async () => { (await import('/src/ui/settings.js')).setDefaultContextMode('managed'); });
   await D.page.click('#new-chat');
   await D.page.fill('#input', 'MANAGEDTEST who is older, Ada or Ben?');
   await D.page.press('#input', 'Enter');
@@ -836,7 +855,7 @@ await check('AI-managed context: budget line, steps attach earlier results, chec
   });
   assert.deepEqual(c.steps, [['done', 'It is 42.']]);
   assert.equal(c.sys, 2, 'step 2 of the first chat and this one carried on from a checkpoint');
-  await D.page.evaluate(async () => { (await import('/src/agent.js')).settings.contextMode = 'smart'; });
+  await D.page.evaluate(async () => { (await import('/src/ui/settings.js')).setDefaultContextMode('smart'); });
 });
 
 await check('chat details sidebar: model, context window breakdown (live and saved), progress, tools used; collapsible and remembered', async () => {
@@ -888,6 +907,25 @@ await check('chat details sidebar: model, context window breakdown (live and sav
   assert.ok(w && w.size > 0 && w.parts.instructions > 0 && w.used > 0, JSON.stringify(w));
   const total = Object.values(w.parts).reduce((a, b) => a + b, 0);
   assert.equal(w.used, total);
+  // A started chat shows its context type in the sidebar, fixed: no picker (it's chosen before the first message).
+  assert.equal(await D.page.$('#ctx-side select[aria-label="Context for this chat"]'), null);
+  assert.match(await D.page.textContent('#ctx-side'), /Context for this chat.*Set when the chat started/s);
+  // A new chat picks its model and context type in the settings above its first message.
+  await D.page.click('#new-chat');
+  await D.page.waitForSelector('.chat-setup');
+  const def = await D.page.evaluate(async () => (await import('/src/agent.js')).settings.defaultContextMode || 'compact');
+  assert.match(await D.page.textContent('.chat-setup > summary'), new RegExp(`This chat: .* · ${def === 'compact' ? 'Compress' : '\\w+'}`));
+  await D.page.click('.chat-setup > summary');
+  assert.ok((await D.page.$$('.chat-setup input[name="chat-model"]')).length >= 2, 'the models to pick from');
+  assert.deepEqual(await D.page.$$eval('.chat-setup input[name="chat-context"]', els => els.map(e => e.value)), ['compact', 'smart', 'fresh', 'managed']);
+  await D.page.check('.chat-setup input[name="chat-context"][value="fresh"]');
+  assert.deepEqual(await D.page.evaluate(async () => { const a = await import('/src/agent.js'); return [a.settings.contextMode, (await import('/src/ui/state.js')).state.current.contextMode]; }), ['fresh', 'fresh']);
+  assert.match(await D.page.textContent('.chat-setup > summary'), /· Fresh/);
+  assert.match(await D.page.textContent('#ctx-side'), /Context for this chat\s*Fresh/);
+  // The next new chat starts on the default again.
+  await D.page.click('#new-chat');
+  await D.page.waitForSelector('.chat-setup');
+  assert.equal(await D.page.evaluate(async () => (await import('/src/agent.js')).settings.contextMode), def, 'a new chat gets the default back');
   // Collapse a section and hide the sidebar: both are remembered.
   await D.page.click('#ctx-side [data-sec="used"] summary');
   await D.page.click('#close-side');
@@ -974,7 +1012,7 @@ await check('Fresh context: nothing replayed; a lookup (earlier exchange, web) g
   await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
-  await D.page.evaluate(async () => { const a = await import('/src/agent.js'); a.settings.contextMode = 'fresh'; a.settings.semantic = false; });
+  await D.page.evaluate(async () => { const a = await import('/src/agent.js'); (await import('/src/ui/settings.js')).setDefaultContextMode('fresh'); a.settings.semantic = false; });
   // Wikipedia and Wikidata, as their APIs answer (formatversion=2 search; SPARQL JSON).
   const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' };
   const wikiAsked = [];
@@ -1047,6 +1085,13 @@ await check('Fresh context: nothing replayed; a lookup (earlier exchange, web) g
   assert.ok(wikiAsked.includes('Patrick Stewart freshtest his one'), JSON.stringify(wikiAsked));
   assert.doesNotMatch(r.system, /Looked up before/);
   assert.match(r.reply, /^From the lookup: Looked up before answering/);
+  // A job for a tool (case 15): the lookup names the tool, ready to call, and doesn't search the web.
+  await ask('freshtest can you pull github.com/tester/app', 4);
+  r = await last();
+  const res = r.input[0].content[0].response;
+  assert.match(res.found, /Tools for this \(ready to call\):\n- git_clone\(/);
+  assert.deepEqual(res.tools, ['git_clone']);
+  assert.doesNotMatch(res.found, /Web search for|Wikipedia/);
   assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
 });
 
@@ -1254,6 +1299,16 @@ await check('attachments: a PDF is read with pdf.js from the pinned CDN URL', as
   assert.equal(a.error, undefined);
 });
 
+// A tab killed for memory gets no pagehide; a reload does, and Squiggle reads that as "left, not crashed". So a
+// simulated crash takes back the note the page writes on the way out.
+const crashReload = async (page) => {
+  await page.evaluate(() => {
+    const forget = () => localStorage.removeItem('squiggle-page-left');
+    window.addEventListener('pagehide', forget);
+    document.addEventListener('visibilitychange', forget);   // fires after pagehide on the way out
+  });
+  await page.reload();
+};
 await check('a crash while loading the model is caught on the next open; phones without WebGPU default to Squiggle Small', async () => {
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
   const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1';
@@ -1275,7 +1330,7 @@ await check('a crash while loading the model is caught on the next open; phones 
       // The previous load never finished: the tab was killed.
       localStorage.setItem('squiggle-model-loading', JSON.stringify({ model: 'E4B', contextSize: 8192, fast: true, at: Date.now(), stage: 'loading the model onto the GPU', gpu: 'apple common-3, f16' }));
     }, CFG);
-    await page.reload();
+    await crashReload(page);
     if (phone) {
       // Phones without WebGPU run Squiggle Small on the CPU (with it, Qwen3 0.6B on WebLLM): the old Gemma 4 crash doesn't block it, and it loads right away.
       await page.waitForFunction(() => window.__loads === 1);
@@ -1284,9 +1339,10 @@ await check('a crash while loading the model is caught on the next open; phones 
       assert.equal(r.saved.model, 'SQ');
       assert.equal(r.marker, null);
       assert.deepEqual(r.cleanup, ['G3', 'SQ', 'cloud'], 'only phone models are kept; old Gemma 4 downloads are freed');
-      await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
-      await page.waitForSelector('#drawer .model-option');
-      assert.deepEqual(await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model)), ['G3', 'SQ', 'cloud']);
+      // The models a new chat offers (its settings, above the first message).
+      await page.evaluate(() => document.querySelector('#new-chat').click());
+      await page.waitForSelector('.chat-setup');
+      assert.deepEqual(await page.$$eval('.chat-setup input[name="chat-model"]', els => els.map(e => e.value)), ['G3', 'SQ', 'cloud']);
       if (shotsDir) await page.screenshot({ path: `${shotsDir}/phone-model-picker.png` });
     } else {
       await page.waitForSelector('#model-banner:not([hidden])');
@@ -1298,7 +1354,7 @@ await check('a crash while loading the model is caught on the next open; phones 
       await page.click('#model-banner button:has-text("Use lighter settings")');
       await page.waitForFunction(() => window.__loads === 1);
       const r = await page.evaluate(() => ({ last: window.__lastLoad, marker: localStorage.getItem('squiggle-model-loading'), cleanup: window.__cleanup }));
-      assert.deepEqual(r.last, { id: 'E2B', ctx: 4096, opts: { fast: false } });
+      assert.deepEqual(r.last, { id: 'E2B', ctx: 8192, opts: { fast: false } });
       assert.equal(r.marker, null, 'marker cleared after a good load');
       assert.deepEqual(r.cleanup, ['E4B', 'E2B', 'G3', 'SQ', 'cloud']);
       // Replies are tracked too: progress writes the marker, idle clears it.
@@ -1309,16 +1365,158 @@ await check('a crash while loading the model is caught on the next open; phones 
       assert.equal(await page.evaluate(() => localStorage.getItem('squiggle-model-loading')), null);
       // A crash mid-reply says so on the next open.
       await page.evaluate(() => window.__progress('writing the reply'));
-      await page.reload();
+      await crashReload(page);
       await page.waitForSelector('#model-banner:not([hidden])');
       assert.match(await page.textContent('#model-banner'), /Fake E2B crashed this tab while answering, while writing the reply\./);
-      await page.evaluate(() => document.querySelector('.side-nav [data-panel="settings"]').click());
-      await page.waitForSelector('#drawer .model-option');
-      assert.deepEqual(await page.$$eval('#drawer .model-option', els => els.map(e => e.dataset.model)), ['E4B', 'E2B', 'G3', 'SQ', 'cloud']);
+      // A first crash may be a one-off: "Try again" comes first.
+      assert.match(await page.textContent('#model-banner .row button.primary'), /^(Try again|Load model)$/);
+      // Leaving mid-reply (a refresh, closing the tab, iOS backgrounding it) isn't a crash: no banner, it just loads.
+      await page.click('#model-banner .row button.primary');
+      await page.waitForFunction(() => window.__loads === 1);
+      await page.evaluate(() => window.__progress('writing the reply'));
+      await page.reload();
+      await page.waitForFunction(() => window.__loads === 1);
+      assert.equal(await page.evaluate(() => localStorage.getItem('squiggle-page-left')), null, 'the note is used up');
+      assert.ok(await page.$eval('#model-banner', el => el.hidden || !/crashed/.test(el.textContent)), 'no crash banner after a refresh');
+      // The models a new chat offers (its settings, above the first message).
+      await page.evaluate(() => document.querySelector('#new-chat').click());
+      await page.waitForSelector('.chat-setup');
+      assert.deepEqual(await page.$$eval('.chat-setup input[name="chat-model"]', els => els.map(e => e.value)), ['E4B', 'E2B', 'G3', 'SQ', 'cloud']);
     }
     assert.deepEqual(page.errors, []);
     await ctx.close();
   }
+});
+
+await check('bash tool (lab): just-bash on the workspace; /home writes sync; git, curl, bc, help; .git out of reach', async () => {
+  const D = await device('bash');
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  const run = (command, room = 20000) => D.page.evaluate(async ([command, room]) => {
+    const { runTool } = await import('/src/tools.js');
+    // One chat's session across calls, like a real turn: its /tmp lives as long as the chat does.
+    const session = (window.__bashSession = window.__bashSession || { messages: [] });
+    const r = await runTool({ function: { name: 'bash', arguments: { command } } }, { session, room, approve: async () => 'deny' });
+    const strip = (s) => String(s || '').replace(/<\/?untrusted[^>]*>\n?/g, '');
+    return { code: r.model.exit_code, out: strip(r.model.stdout), err: strip(r.model.stderr), error: r.model.error, label: r.label, saved: r.model.saved_to };
+  }, [command, room]);
+  let r = await run('ls /');
+  assert.match(r.out, /home[\s\S]*repos[\s\S]*tmp/, JSON.stringify(r));
+  r = await run('mkdir -p /home/notes && echo "buy milk" > /home/notes/todo.md && echo "call Dana" >> /home/notes/todo.md && cat /home/notes/todo.md | wc -l');
+  assert.equal(r.out.trim(), '2', JSON.stringify(r));
+  // Through storage.js, so it syncs.
+  await D.page.evaluate(() => T.storage.sync());
+  assert.equal(git(stateRepo, 'show', 'main:home/notes/todo.md'), 'buy milk\ncall Dana');
+  r = await run('git clone tester/app && cd /repos/app && ls && grep -rn console src | head -3 && git status');
+  assert.equal(r.code, 0, JSON.stringify(r));
+  assert.match(r.out, /README\.md[\s\S]*src[\s\S]*src\/index\.js:1:console\.log/);
+  r = await run('cat /repos/app/.git/config');
+  assert.notEqual(r.code, 0, '.git stays out of reach: ' + JSON.stringify(r));
+  r = await run('cd /repos/app && echo "# changed" >> README.md && git checkout -b fix-readme && git add . && git commit -m "Update README" && git push');
+  assert.equal(r.code, 0, JSON.stringify(r));
+  assert.match(r.out, /agent\/fix-readme/);
+  assert.match(git(appRepo, 'show', 'agent/fix-readme:README.md'), /# changed/, 'the agent branch was pushed to the real git server');
+  r = await run('cd /repos/app && git checkout main && echo x >> README.md && git commit -m "on main" && git push');
+  assert.notEqual(r.code, 0, 'a push to main needs the user; the test says no: ' + JSON.stringify(r));
+  r = await run(`curl ${appUrl}/test-pages/injection.html | grep -i assets`);
+  assert.match(r.out, /assets directory serves static files/i, JSON.stringify(r));
+  r = await run('echo "5*5/129" | bc -l');
+  assert.match(r.out, /^0\.19/, JSON.stringify(r));
+  r = await run('echo $((17*23))');
+  assert.equal(r.out.trim(), '391');
+  r = await run('man');
+  assert.match(r.out, /gh repo list/);
+  r = await run('man gh');
+  assert.match(r.out, /gh pr create/);
+  r = await run('git --help | head -3');
+  assert.match(r.out, /git clone/);
+  r = await run('cat /etc/passwd');
+  assert.notEqual(r.code, 0);
+  r = await run('echo scratch > /tmp/a && cat /tmp/a');
+  assert.equal(r.out.trim(), 'scratch');
+  // Output too big for the window is kept whole in /tmp/out-N.txt; the model sees the start and where the rest is.
+  r = await run('seq 1 20000', 2000);
+  assert.ok(r.saved && /^\/tmp\/out-\d+\.txt$/.test(r.saved), JSON.stringify(r).slice(0, 300));
+  assert.match(r.out, /^1\n2\n/);
+  assert.match(r.out, /20000 lines[\s\S]*the whole output is in \/tmp\/out-\d+\.txt/);
+  assert.ok(r.out.length < 2000, 'the preview fits the room');
+  r = await run(`wc -l < ${r.saved} && tail -1 ${r.saved}`);
+  assert.match(r.out, /20000\n20000/, 'nothing was thrown away: ' + JSON.stringify(r));
+  r = await run('');
+  assert.match(r.error || '', /e\.g\. gh repo list/, 'an empty command gets an example back');
+  assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+  await D.ctx.close();
+});
+
+await check('demo mode: try it without signing in (local storage, sample data, no git tools, no cloud), then sign in and keep what was made', async () => {
+  const demoRepo = makeRepo(root, 'tester', 'demo-state', { 'README.md': '# state\n' });
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 820 } });
+  await ctx.route('https://api.github.com/**', r => r.fulfill({ status: 200, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*' }, contentType: 'application/json', body: JSON.stringify({ login: 'tester', id: 42, name: 'Test Er' }) }));
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', e => errors.push(String(e)));
+  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  // The relay offers the cloud model, but the demo can't use it (it checks the GitHub login).
+  const hadAi = workerEnv.AI_USERS; workerEnv.AI_USERS = 'tester';
+  await page.goto(appUrl + '/');
+  await page.waitForSelector('#setup:not([hidden]) button');
+  await page.click('button:has-text("Try it without signing in")');
+  await page.waitForSelector('#setup-body button:has-text("Download and start")');
+  assert.equal(await page.locator('#setup-steps').isVisible(), false, 'the demo has one step');
+  assert.deepEqual(await page.$$eval('#setup-body .model-option', els => els.map(e => e.dataset.model)), ['E4B', 'E2B', 'G3', 'SQ'], 'no cloud model in the demo');
+  await page.click('button:has-text("Download and start")');
+  await page.waitForSelector('#app:not([hidden])');
+  assert.match(await page.textContent('#sync-line'), /Demo: saved in this browser only/);
+  assert.match(await page.textContent('#demo-banner'), /^Demo mode\./);
+  assert.equal(await page.textContent('#chat-title'), 'New chat', 'opens on a fresh chat, with the sample chat in the list');
+  assert.deepEqual(await page.$$eval('#session-list li', els => els.map(e => e.textContent.includes('Naming the log parser'))), [true]);
+  // A "Try" chip asks a question; the model gets no git or GitHub tools and a demo workspace line.
+  await page.click('#demo-banner .try button >> nth=0');
+  await page.waitForFunction(() => (window.__engineLog || []).some(e => e.type === 'conversation'));
+  const conv = await page.evaluate(() => window.__engineLog.filter(e => e.type === 'conversation').at(-1));
+  assert.ok(conv.tools.includes('web_search') && conv.tools.includes('recall') && conv.tools.includes('find'), JSON.stringify(conv.tools));
+  assert.ok(!conv.tools.some(t => /^git_|^github_/.test(t)), 'no git or GitHub tools: ' + JSON.stringify(conv.tools));
+  assert.match(conv.system, /demo mode: no GitHub account is connected/);
+  await page.waitForFunction(() => !document.querySelector('#send[disabled]'));
+  if (shotsDir) await page.screenshot({ path: `${shotsDir}/demo.png` });
+  // Memory has the samples; the person adds a fact of their own.
+  await page.evaluate(async () => { const m = await import('/src/memory.js'); m.add({ s: 'the user', p: 'likes', o: 'demo-made facts' }); });
+  await page.click('.side-nav [data-panel="memory"]');
+  assert.match(await page.textContent('#drawer'), /Pip/);
+  await page.click('#close-drawer');
+  // Settings: the account section offers sign-in and removing the samples; no repo link.
+  await page.click('.side-nav [data-panel="settings"]');
+  assert.equal(await page.locator('#drawer button:has-text("Sign in with GitHub")').count(), 1);
+  assert.equal(await page.locator('#drawer button:has-text("Leave the demo")').count(), 1);
+  await page.click('#close-drawer');
+  // Reload (after what the tab does when it's hidden or closed: pending saves, then the file tree to IndexedDB;
+  // LightningFS otherwise writes it only after half a second idle): still the demo, everything still there.
+  await page.evaluate(async () => (await import('/src/ui/app.js')).settle());
+  await page.reload();
+  await page.waitForSelector('#app:not([hidden])');
+  assert.match(await page.textContent('#sync-line'), /Demo/);
+  assert.equal(await page.$$eval('#session-list li', els => els.length), 2, 'the sample chat and the one the chip started');
+  // Sign in (the device flow is GitHub's; here the token is set directly) and pick a storage repo: the demo's
+  // chats, facts and file go into it.
+  await page.evaluate(async (cfg) => {
+    const util = await import('/src/util.js'); await util.kv.set('auth', { access_token: 'ghu_test' });
+    const gh = await import('/src/github.js'); await gh.loadAuth();
+    await (await import('/src/storage.js')).useStorage(cfg);
+  }, { owner: 'tester', name: 'demo-state', branch: 'main', root: '' });
+  const files = git(demoRepo, 'ls-tree', '-r', '--name-only', 'main');
+  assert.match(files, /memory\/facts\.jsonl/);
+  assert.match(files, /home\/pip\/README\.md/);
+  assert.equal((files.match(/sessions\/.*\.json/g) || []).length, 2, files);
+  assert.match(git(demoRepo, 'show', 'main:memory/facts.jsonl'), /demo-made facts/);
+  await page.reload();
+  await page.waitForSelector('#app:not([hidden])');
+  assert.doesNotMatch(await page.textContent('#sync-line'), /Demo/);
+  assert.equal(await page.locator('#demo-banner').isVisible(), false);
+  assert.equal(await page.$$eval('#session-list li', els => els.length), 2);
+  workerEnv.AI_USERS = hadAi;
+  assert.deepEqual(errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+  await ctx.close();
 });
 
 // UI screenshots: reload into the app with seeded data.
@@ -1405,14 +1603,17 @@ await check('Squiggle Small (fine-tuned) gets the harness: system prompt and too
   assert.equal(await D.page.evaluate(() => window.__engineLog.filter(e => e.type === 'complete').length), 0, 'no titles, facts or summaries from a small model');
 });
 
-await check('small-model mode is a per-model switch: off gives E2B the full prompt, on gives it the find-first one; Squiggle Small is always on', async () => {
+await check('the prompt follows the model, with no switches: a big model gets the full prompt, Squiggle Small its find-first one', async () => {
   const D = await device('smallmode');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
   await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
   await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
-  await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'E2B'; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
+  // Whatever an older version saved for the removed switches goes (settings.js `simplified`).
+  await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'E2B'; s.lab = true; s.smallMode = { E2B: true }; s.noPrompt = { E2B: true }; delete s.simplified; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
+  const saved = await D.page.evaluate(() => JSON.parse(localStorage.getItem('squiggle-settings')));
+  assert.ok(saved.simplified && !('lab' in saved) && !('smallMode' in saved) && !('noPrompt' in saved), JSON.stringify(saved));
   const send = async (text) => {
     const before = await D.page.evaluate(() => (window.__engineLog || []).filter(e => e.type === 'conversation').length);
     await D.page.click('#new-chat');
@@ -1421,44 +1622,20 @@ await check('small-model mode is a per-model switch: off gives E2B the full prom
     await D.page.waitForFunction(n => (window.__engineLog || []).filter(e => e.type === 'conversation').length > n, before);
     return D.page.evaluate(() => window.__engineLog.filter(e => e.type === 'conversation').at(-1));
   };
-  const off = await send('hi');
-  assert.match(off.system, /^You are Squiggle, a personal AI agent/, 'off by default: the full prompt');
+  const big = await send('hi');
+  assert.match(big.system, /^You are Squiggle, a personal AI agent/, 'a big model: the full prompt');
+  // Settings has none of the old model switches.
   await D.page.click('button[data-panel="settings"]');
-  const box = D.page.locator('#drawer label.toggle:has-text("Small-model mode") input');
-  assert.equal(await box.isChecked(), false);
-  await box.check();
-  assert.deepEqual(await D.page.evaluate(() => JSON.parse(localStorage.getItem('squiggle-settings')).smallMode), { E2B: true });
+  for (const name of ['Small-model mode', 'No prompt', 'Context window', 'Use the GPU', 'Use all CPU cores', 'Lab mode', 'One bash tool']) {
+    assert.equal(await D.page.locator(`#drawer :text("${name}")`).count(), 0, `no "${name}" in Settings`);
+  }
   await D.page.click('#close-drawer');
-  await D.page.waitForTimeout(500);
-  const on = await send('hello again');
-  assert.match(on.system, /^You are Squiggle, an assistant that figures things out\./);
-  assert.match(on.system, /ask_user\(question\) asks the user something only they know and waits/);
-  assert.doesNotMatch(on.system, /```tool_call/, 'native tool formats don\'t get the fenced-block line');
-  assert.ok(on.tools.includes('find') && on.tools.includes('plan'), JSON.stringify(on.tools));
-  // No prompt (experimental): no system prompt at all, tools unchanged; saved per model; off again restores it.
-  await D.page.click('button[data-panel="settings"]');
-  const none = D.page.locator('#drawer label.toggle:has-text("No prompt") input');
-  assert.equal(await none.isChecked(), false);
-  await none.check();
-  assert.deepEqual(await D.page.evaluate(() => JSON.parse(localStorage.getItem('squiggle-settings')).noPrompt), { E2B: true });
-  await D.page.click('#close-drawer');
-  await D.page.waitForTimeout(500);
-  const bare = await send('hello with no prompt');
-  assert.equal(bare.system, '', 'no system prompt');
-  assert.deepEqual(bare.tools, on.tools, 'the same tools');
-  await D.page.click('button[data-panel="settings"]');
-  await none.uncheck();
-  await D.page.click('#close-drawer');
-  await D.page.waitForTimeout(500);
-  assert.match((await send('and back')).system, /^You are Squiggle, an assistant that figures things out\./);
-  // Squiggle Small: shown as always on, no switch.
+  // Squiggle Small: always its find-first prompt.
   await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'SQ'; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
-  await D.page.click('button[data-panel="settings"]');
-  await D.page.waitForSelector('#drawer .field:has-text("Small-model mode")');
-  assert.equal(await D.page.locator('#drawer label.toggle:has-text("Small-model mode")').count(), 0);
-  assert.match(await D.page.locator('#drawer .field:has-text("Small-model mode")').textContent(), /Always on for Fake SQ/);
+  const small = await send('hello again');
+  assert.doesNotMatch(small.system || '', /^You are Squiggle, a personal AI agent/, 'Squiggle Small never gets the full prompt');
 });
 
 await check('small models: a long page comes back as a card saved in /web, grep finds the answer, and used results shrink to what the model took', async () => {

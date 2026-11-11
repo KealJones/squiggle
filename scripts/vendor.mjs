@@ -25,6 +25,10 @@ const entries = {
     export { marked } from 'marked';
     export { default as DOMPurify } from 'dompurify';
   `,
+  // The bash tool's shell (tools/bash.js, lab). Loaded only when the shell first runs.
+  'just-bash.js': `
+    export { Bash, InMemoryFs, defineCommand } from 'just-bash/browser';
+  `,
 };
 
 for (const [file, contents] of Object.entries(entries)) {
@@ -38,6 +42,8 @@ for (const [file, contents] of Object.entries(entries)) {
     legalComments: 'eof',
     outfile: out + file,
     define: { 'process.env.NODE_ENV': '"production"', global: 'globalThis' },
+    // just-bash's gzip support needs Node; the rest of the shell runs in a browser.
+    alias: { 'node:zlib': new URL('./stubs/zlib.js', import.meta.url).pathname },
   });
   console.log('built vendor/' + file);
 }
