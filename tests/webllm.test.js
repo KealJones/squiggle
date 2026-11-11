@@ -144,6 +144,86 @@ test('a GPU lost again right after the reload: one retry only, and the error say
   assert.equal(made, 1);
 });
 
+// A stand-in for the device watcher: which device is in use, and a way to lose it.
+function fakeWatch() {
+  let n = 0, cur = { id: n };
+  const fns = new Set();
+  return {
+    current: () => cur,
+    onLost(fn) { fns.add(fn); return () => fns.delete(fn); },
+    newDevice() { cur = { id: ++n }; },
+    lose(notes = cur, reason = 'destroyed') { notes.lost = { reason }; for (const fn of fns) fn(notes); },
+  };
+}
+const NO_GPU = 'Unable to find a compatible GPU. This issue might be because your computer doesn\'t have a GPU';
+const tick = (ms) => new Promise((r) => setTimeout(r, ms));
+async function reply(w) {
+  const conv = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 64 } });
+  let content = '';
+  for await (const x of conv.sendMessageStreaming('hi')) if (x.content) content += x.content;
+  return content;
+}
+
+test('a GPU lost between messages is noticed before the next send: the dead engine is never asked', async () => {
+  const watch = fakeWatch();
+  const dead = disposedEngine();
+  const fresh = fakeEngine('Back again.');
+  let made = 0;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, { engine: dead, watch, waits: [0], makeEngine: async () => { made += 1; watch.newDevice(); return fresh; } });
+  watch.lose();
+  await tick(400);                      // the page is showing, so it reloads in the background
+  assert.equal(made, 1, 'reloaded before anything was sent');
+  assert.equal(await reply(w), 'Back again.');
+  assert.equal(made, 1);
+  assert.ok(dead.seen.unloaded);
+});
+
+test('a device let go on purpose (an old engine\'s, or after a reload) does not trigger a reload', async () => {
+  const watch = fakeWatch();
+  let made = 0;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, { engine: fakeEngine('Fine.'), watch, waits: [0], makeEngine: async () => { made += 1; return fakeEngine('x'); } });
+  watch.newDevice();                    // some other engine (a download) got its own device
+  watch.lose(watch.current());
+  watch.lose({ id: 'elsewhere' });
+  await tick(400);
+  assert.equal(made, 0);
+  assert.equal(await reply(w), 'Fine.');
+});
+
+test('no GPU for a while after the loss ("Unable to find a compatible GPU"): it keeps asking, then the reply runs', async () => {
+  const watch = fakeWatch();
+  let tries = 0;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, {
+    engine: disposedEngine(), watch, waits: [0, 1, 1, 1],
+    makeEngine: async () => { tries += 1; if (tries < 3) throw new Error(NO_GPU); watch.newDevice(); return fakeEngine('Made it.'); },
+  });
+  assert.equal(await reply(w), 'Made it.');
+  assert.equal(tries, 3);
+});
+
+test('no GPU at all after the loss: a plain error, and the next message tries again instead of "Model not loaded"', async () => {
+  const watch = fakeWatch();
+  let gpu = false;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, {
+    engine: disposedEngine(), watch, waits: [0, 1],
+    makeEngine: async () => { if (!gpu) throw new Error(NO_GPU); watch.newDevice(); return fakeEngine('Second time lucky.'); },
+  });
+  await assert.rejects(() => reply(w), /The GPU went away.*hasn't given it back yet/);
+  gpu = true;
+  assert.equal(await reply(w), 'Second time lucky.');
+});
+
+test('a load that fails for another reason is not retried and says what it was', async () => {
+  const watch = fakeWatch();
+  let tries = 0;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, {
+    engine: disposedEngine(), watch, waits: [0, 1, 1],
+    makeEngine: async () => { tries += 1; throw new Error('QuotaExceededError'); },
+  });
+  await assert.rejects(() => reply(w), /QuotaExceededError/);
+  assert.equal(tries, 1);
+});
+
 test('paceGpu: smaller prompt pieces, and each waits for the GPU before the next is queued (iOS 27 Safari)', async () => {
   const order = [];
   const pipe = {
