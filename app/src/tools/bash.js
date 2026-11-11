@@ -26,6 +26,9 @@ import { REPOS, readAgentFile, listAgentDir } from './workspace.js';
 import { wrapUntrusted } from '../untrusted.js';
 import { truncate } from '../util.js';
 import { calculate as calc } from '../calc.js';
+import * as sessions from '../sessions.js';
+import * as memory from '../memory.js';
+import { squiggle as selfCommand, HELP_SELF } from './self.js';
 
 export const LIB = new URL('../../vendor/just-bash.js', import.meta.url).href;
 let lib = null;
@@ -407,14 +410,25 @@ export function commands(defineCommand, toolCtx, seen) {
     return say(out.join('\n') + '\n');
   }));
 
+  // squiggle: the agent's view of its own app (tools/self.js). `toolCtx.self` is what agent.js knows about the run
+  // (model, how it runs, context type and window, tools, storage); the rest comes from sessions and memory.
+  const self = defineCommand('squiggle', async (argv) => selfCommand(argv, {
+    session: toolCtx.session && toolCtx.session.id ? toolCtx.session : null,
+    about: toolCtx.self || null,
+    contextModes: toolCtx.self && toolCtx.self.contextModes,
+    modelLabel: toolCtx.self && toolCtx.self.modelLabel,
+    list: () => sessions.list(), get: (id) => sessions.get(id), touch: (s) => sessions.touch(s),
+    facts: () => memory.all(), factText: memory.factText, forget: (id) => memory.remove(id),
+  }));
+
   // `man` alone lists the custom commands; `man <cmd>` is that command's --help. (`help` is bash's own builtin.)
   const man = defineCommand('man', async (argv) => {
     const page = argv.filter(a => !a.startsWith('-'))[0];
-    if (page && !HELP[page] && page !== 'squiggle') return { stdout: '', stderr: `No manual entry for ${page}. Ordinary commands: try ${page} --help. Custom ones: man (no argument).\n`, exitCode: 16 };
+    if (page && !HELP[page]) return { stdout: '', stderr: `No manual entry for ${page}. Ordinary commands: try ${page} --help. Custom ones: man (no argument).\n`, exitCode: 16 };
     return { stdout: (HELP[page] || HELP.all).trim() + '\n', stderr: '', exitCode: 0 };
   });
 
-  return [git, gh, curl, search, wiki, node, bc, man];
+  return [git, gh, curl, search, wiki, node, bc, self, man];
 }
 
 // ── Help ──────────────────────────────────────────────────────────────────
@@ -428,6 +442,7 @@ export const HELP = {
   wiki     wiki NAME: Wikipedia and Wikidata facts about something
   node     node -e CODE: run JavaScript
   bc       echo "5*5/129" | bc -l: maths with decimals and %
+  squiggle about you, this chat and the user's other chats (links), renaming this chat, saved memory
 Everything else is ordinary bash: cat, ls, grep, sed, awk, find, head, tail, wc, sort, jq, pipes, loops.
 Files: /home (yours, synced to the user's devices), /repos/<name> (git clones), /web (saved pages), /tmp.`,
   git: `git (Squiggle): works on clones in /repos/<name>; cd there first or use git -C /repos/<name>.
@@ -454,6 +469,7 @@ Files: /home (yours, synced to the user's devices), /repos/<name> (git clones), 
   linked to it (films, albums, products) and their dates.   wiki "Emma Stone"`,
   node: `node -e "CODE" | node file.js | echo CODE | node: run JavaScript in a sandbox; prints console.log output
   and the value of the last expression. No network, no files.`,
+  squiggle: HELP_SELF,
   bc: `echo "EXPR" | bc -l   (or bc "EXPR"): maths with decimals; also 15% of 240, $1,200 * 3, sqrt(2).
   bash's own $((…)) is whole numbers only.`,
 };
@@ -461,7 +477,7 @@ Files: /home (yours, synced to the user's devices), /repos/<name> (git clones), 
 // ── The tool ──────────────────────────────────────────────────────────────
 
 export const BASH_DESCRIPTION = 'Run bash: pipes, cat, ls, grep, sed, awk, find, jq, the usual tools. Files: /home (yours), /repos (git clones), /web, /tmp. ' +
-  'Custom commands: git, gh, curl, search, wiki, node, bc (`man` lists them, `<command> --help` explains one).';
+  'Custom commands: git, gh, curl, search, wiki, node, bc, squiggle (`man` lists them, `<command> --help` explains one).';
 
 export const bash = defineTool({
   name: 'bash',

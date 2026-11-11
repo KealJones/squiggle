@@ -129,6 +129,7 @@ export function chunk(text, maxTokens = CHUNK_TOKENS) {
  * @param {object[]} [o.extra]     sections from the harness, shown first: [{ kind, title, text, label }]
  * @param {object[]} [o.others]    other sessions to search (smart mode)
  * @param {boolean} [o.small]     small model: tighter recall limits, memory facts in the recalled block
+ * @param {number}  [o.smallFacts] small model outside smart mode: how many memory facts go in the system prompt (0: none)
  * @param {boolean} [o.actions]    false leaves out the recap of earlier tool calls (small models)
  */
 export async function assembleContext(o) {
@@ -239,10 +240,12 @@ export async function assembleContext(o) {
     }
   }
 
-  // 4. Memory facts (all modes; they're small and about the person).
-  if (o.recall && !o.small && !M.fresh) {
-    const facts = (await o.recall(o.focus ? `${query}\n${o.focus}` : query, 10)).filter(r => r.score >= 0.2);
-    const cap = Math.floor(budget * 0.12);
+  // 4. Memory facts (all modes; they're small and about the person). Small models get them only with o.smallFacts
+  // (how many; models trained for harness text) and not in smart mode, where recall.js puts them in the recalled block.
+  const smallFacts = o.small ? (M.retrieve ? 0 : o.smallFacts || 0) : 10;
+  if (o.recall && smallFacts && !M.fresh) {
+    const facts = (await o.recall(o.focus ? `${query}\n${o.focus}` : query, smallFacts)).filter(r => r.score >= 0.2).slice(0, smallFacts);
+    const cap = Math.floor(budget * (o.small ? 0.06 : 0.12));
     const lines = [];
     let t = 0;
     for (const { fact, score } of facts) {

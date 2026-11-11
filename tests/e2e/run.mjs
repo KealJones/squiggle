@@ -1427,6 +1427,10 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
   assert.match(r.out, /gh repo list/);
   r = await run('man gh');
   assert.match(r.out, /gh pr create/);
+  r = await run('man squiggle');
+  assert.match(r.out, /squiggle rename "TITLE"/);
+  r = await run('squiggle chats | head -3');
+  assert.ok(/#chat=|No chats yet/.test(r.out), JSON.stringify(r));
   r = await run('git --help | head -3');
   assert.match(r.out, /git clone/);
   r = await run('cat /etc/passwd');
