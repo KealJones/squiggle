@@ -1493,10 +1493,15 @@ await check('demo loads the model once and can reload after a disposed GPU engin
 
     await reload.click();
     await reload.waitFor({ state: 'hidden' });
-    await page.waitForFunction(async () => window.__loads === 2 && (await import('/src/engine.js')).engineReady());
+    await page.waitForFunction(async () => {
+      const { state } = await import('/src/ui/state.js');
+      return window.__loads === 2 && state.modelState === 'ready' && !state.busy;
+    });
     await page.fill('#input', 'Hi again');
-    await page.press('#input', 'Enter');
-    await page.locator('#messages-inner .msg.assistant .body').filter({ hasText: 'Plain answer to: Hi again' }).waitFor();
+    await page.getByRole('button', { name: 'Send', exact: true }).click();
+    const replies = page.locator('#messages-inner .msg.assistant[data-mid] .body');
+    await replies.nth(1).waitFor();
+    assert.match(await replies.nth(1).textContent(), /The reloaded model answered/);
   } finally {
     await ctx.close();
   }

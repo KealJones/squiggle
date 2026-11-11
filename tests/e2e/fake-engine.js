@@ -118,6 +118,10 @@ export async function respond(conv, input, { onText } = {}) {
     window.__disposeOnReply = false;
     throw new Error('Object has already been disposed');
   }
+  if (window.__simulateGpuRecovery && typeof input === 'string' && input.startsWith('Hi again')) {
+    if (!ready) throw new Error('Model was not reloaded');
+    return say('The reloaded model answered.', onText);
+  }
   // The script answers the person's words, not the recalled block smart context appends.
   if (typeof input === 'string') input = input.split('\n\n---\nPossibly relevant earlier messages')[0];
   // Fresh context: the first input is the result of the lookup the agent made for the model.
