@@ -9,6 +9,9 @@ export function loadSettings() {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); } catch {}
   const mobile = engine.isMobile();
+  // Lab mode (research models and experimental switches): ?lab=1 / ?lab=0 in the address sets it for this
+  // device; otherwise the saved setting. Decided before the model, since it changes which ones are listed.
+  engine.setAvoided(saved.avoidBuilds);
   Object.assign(agent.settings, { model: engine.deviceModel() }, mobile ? { contextSize: 4096, fastDecode: false } : {}, saved);
   // Phones only run models that fit a phone; anything else moves to the default.
   if (!engine.MODELS[agent.settings.model] || !engine.modelFitsDevice(agent.settings.model)) {
@@ -38,6 +41,38 @@ export function loadSettings() {
     saved = { ...saved, model: agent.settings.model, phoneWQ06: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
+  // LFM2.5 1.2B on WebLLM is the phone default now (Keal, 2026-11-09): phones on Qwen3 0.6B move over once.
+  if (mobile && !saved.phoneLFM) {
+    if (engine.hasWebGpu && engine.hasWebGpu() && ['WQ06', 'SQ', 'G3'].includes(agent.settings.model)) agent.settings.model = engine.DEFAULTS.phoneGpu;
+    saved = { ...saved, model: agent.settings.model, phoneLFM: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
+  // Several CPU cores is automatic now (there's no setting): the old default saved "off" on every device, so it
+  // flips once; a crash with it on turns it off again (the crash banner).
+  if (!saved.autoThreads) {
+    agent.settings.smallThreads = true;
+    saved = { ...saved, smallThreads: true, autoThreads: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
+  // LFM3 1.7B is the model everywhere now (Keal, 2026-11-10): a device on one of the earlier defaults moves over once.
+  // A model picked on purpose (the cloud model, a lab model) stays; the old ones are still in lab mode.
+  if (!saved.lfm3Default) {
+    if (['E4B', 'E2B', 'WLF12', 'WQ06', 'SQ', 'G3', 'WLF3'].includes(agent.settings.model)) agent.settings.model = engine.deviceModel();
+    saved = { ...saved, model: agent.settings.model, lfm3Default: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
+  // Squiggle got simpler (Keal, 2026-11-10): no lab mode, no small-model / no-prompt / tool-surface / GPU switches and no
+  // context-size setting (each model gets its own maximum, engine.contextFor). Context is chosen per chat, before its
+  // first message, and Compress is the default. Whatever an older version saved for those goes, once; a model that
+  // no longer exists becomes this device's default.
+  if (!saved.simplified) {
+    for (const k of ['lab', 'smallMode', 'noPrompt', 'toolSurface', 'smallGpu', 'contextSize']) delete saved[k];
+    Object.assign(agent.settings, { smallMode: {}, noPrompt: {}, toolSurface: 'bash', smallGpu: false, contextMode: 'compact' });
+    saved = { ...saved, contextMode: 'compact', simplified: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
+  if (!engine.MODELS[agent.settings.model]) agent.settings.model = engine.deviceModel();
+  agent.settings.contextSize = engine.contextFor(agent.settings.model);
   // Search by meaning on phones too: its worker sleeps (and frees its memory) 15 s after a search (embed.js).
   if (mobile && !saved.phoneSemantic) {
     agent.settings.semantic = true;
@@ -71,18 +106,35 @@ export function loadSettings() {
     saved = { ...saved, recallChats: false, noChatRecall: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
+  // Saved tool results are on by default now (Keal, 2026-11-09): they're what the casebook and "What the model
+  // saw" are read from. Devices that saved the old default move over once; the switch stays in Settings → Lab.
+  if (!saved.debugToolsOn) {
+    agent.settings.debugTools = true;
+    saved = { ...saved, debugTools: true, debugToolsOn: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
   if (saved.tools) agent.settings.tools = new Set(saved.tools);
   // The saved model is the device default. In memory, settings.model is whatever is
   // loaded right now: a chat with its own model (session.model) changes it while
   // that chat is open, and saveSettings writes the default back, never that.
   agent.settings.defaultModel = agent.settings.model;
+  // The context mode works the same way: settings.contextMode is the mode in effect (a chat can have its own,
+  // session.contextMode; ui/model-ui.js useSessionContext), defaultContextMode the saved device default.
+  agent.settings.defaultContextMode = agent.settings.contextMode;
   applyTheme();
 }
 
 export function saveSettings() {
-  const { defaultModel, ...rest } = agent.settings;
-  const s = { ...rest, model: defaultModel || agent.settings.model, tools: agent.settings.tools ? [...agent.settings.tools] : null };
+  const { defaultModel, defaultContextMode, ...rest } = agent.settings;
+  const s = { ...rest, model: defaultModel || agent.settings.model, contextMode: defaultContextMode || agent.settings.contextMode, tools: agent.settings.tools ? [...agent.settings.tools] : null };
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+}
+
+/** Changes the device's default context mode (and the mode in effect, unless the open chat has its own). */
+export function setDefaultContextMode(mode, session = null) {
+  agent.settings.defaultContextMode = mode;
+  if (!(session && session.contextMode)) agent.settings.contextMode = mode;
+  saveSettings();
 }
 
 /** Changes the device default (and the loaded model, since the default is what loads next). */

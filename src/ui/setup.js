@@ -9,13 +9,14 @@ import { state } from './state.js';
 import { setDefaultModel } from './settings.js';
 import { startApp } from './app.js';
 import { checkCloud, ensureModel } from './model-ui.js';
+import * as demo from '../demo.js';
 
 export async function showSetup(step) {
   $('#app').hidden = true;
   $('#setup').hidden = false;
   if (!step) step = !github.isSignedIn() ? 'signin' : 'storage';
   const order = ['signin', 'install', 'storage', 'model'];
-  $('#setup-steps').hidden = false;
+  $('#setup-steps').hidden = demo.isDemo();   // the demo has one step
   $('#setup-steps').querySelectorAll('li').forEach((li, i) => {
     li.className = i < order.indexOf(step) ? 'done' : i === order.indexOf(step) ? 'now' : '';
   });
@@ -44,7 +45,12 @@ async function setupSignIn(body) {
     return;
   }
   const go = h('button', { class: 'btn primary' }, 'Sign in with GitHub');
-  body.append(go);
+  // Demo mode: the same app with storage in this browser, no account needed (demo.js).
+  const tryIt = h('button', { class: 'btn', onclick: () => startDemo(body) }, demo.isDemo() ? 'Back to the demo' : 'Try it without signing in');
+  body.append(h('div', { class: 'row' }, go, tryIt),
+    demo.isDemo()
+      ? h('p', { class: 'muted', style: 'margin-top:14px' }, 'Signing in keeps the chats, memory and files from the demo: they move into your storage repo.')
+      : h('p', { class: 'muted', style: 'margin-top:14px' }, 'The demo keeps everything in this browser and skips the git and GitHub tools. You can sign in later and keep what you made.'));
   go.onclick = async () => {
     go.disabled = true;
     const flow = await github.startDeviceFlow();
@@ -64,6 +70,19 @@ async function setupSignIn(body) {
       body.append(h('p', { class: 'error' }, e.message), h('button', { class: 'btn', onclick: () => showSetup('signin') }, 'Start over'));
     }
   };
+}
+
+// Demo mode: local storage, sample data, then the model step (no sign-in, no install, no repo).
+async function startDemo(body) {
+  if (!demo.isDemo()) {
+    body.replaceChildren(h('h2', {}, 'Setting up the demo'), h('p', { class: 'muted' }, 'Making a space in this browser…'), squiggleWait());
+    await storage.useLocalStorage();
+    const sessions = await import('../sessions.js');
+    const memory = await import('../memory.js');
+    await Promise.all([sessions.loadAll(), memory.load()]);
+    await demo.seed();
+  }
+  showSetup('model');
 }
 
 // Shown when the relay can't be reached (e.g. a GitHub Pages copy whose
@@ -200,8 +219,9 @@ async function setupModel(body) {
     // CPU (no WebGPU needed), or the cloud model when the relay offers it.
     if (!engine.modelFitsDevice(agent.settings.model) || (agent.settings.model === 'cloud' && !state.cloudOffered)) setDefaultModel(engine.deviceModel());
     const picker = modelPicker(agent.settings.model, (id) => setDefaultModel(id));
+    const pm = engine.MODELS[engine.deviceModel()];
     body.append(h('h2', {}, 'On your phone'),
-      h('p', {}, 'Phones run Gemma 3 270M right here: a 242 MB download, then it works offline. It\'s small, so it\'s quick but much less capable than Gemma 4, especially with tools.' +
+      h('p', {}, `Phones run ${pm.label} right here: a ${pm.size} download, then it works offline. It's small, so it's quick but much less capable than Gemma 4, especially with tools.` +
         (state.cloudOffered ? ' For harder tasks, pick the cloud model (Gemma 4 26B on your relay, free daily limit).' : '') + ' Your computer keeps running Gemma 4 locally.'),
       picker,
       h('button', { class: 'btn primary', onclick: async () => { await startApp(); if (agent.settings.model !== 'cloud') ensureModel(); } }, 'Start'));
@@ -216,9 +236,10 @@ async function setupModel(body) {
   }
   if (!gpu.ok) {
     // No WebGPU: the small CPU model still runs.
-    setDefaultModel('SQ');
+    setDefaultModel(engine.DEFAULTS.phoneCpu);
+    const cm = engine.MODELS[engine.DEFAULTS.phoneCpu];
     body.append(h('h2', {}, 'No WebGPU on this browser'), h('p', {}, gpu.reason),
-      h('p', {}, 'Squiggle will run Squiggle Small on the CPU instead: a 219 MB download, much less capable than Gemma 4.'),
+      h('p', {}, `Squiggle will run ${cm.label} on the CPU instead: a ${cm.size} download, much slower than on the GPU.`),
       h('button', { class: 'btn primary', onclick: async () => { await startApp(); ensureModel(); } }, 'Download and start'));
     return;
   }
@@ -236,7 +257,7 @@ async function setupModel(body) {
 
 // Models this device can run, as a list of choices with size and a note.
 export function modelPicker(value, onPick) {
-  const ids = Object.keys(engine.MODELS).filter(id => engine.modelFitsDevice(id) && (!engine.MODELS[id].needsRelay || state.cloudOffered));
+  const ids = engine.listedModels({ cloudOffered: state.cloudOffered, current: value });
   const list = h('div', { class: 'model-list', role: 'radiogroup', 'aria-label': 'Model' });
   const render = (v) => list.replaceChildren(...ids.map((id) => {
     const m = engine.MODELS[id];

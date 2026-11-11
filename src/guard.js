@@ -84,8 +84,31 @@ export function agentPath(r) {
 }
 
 // "owner/name", "https://github.com/owner/name(.git)" → { owner, name }
+/** A repo the model named in full ("owner/name", a github.com link), or only in part ("tester" for tester/app, or
+ *  just "app"): a part is completed when exactly one repo fits, first from GitHub links and owner/name in what the
+ *  user said (`said`), then from the repos the app can reach (`reachable`, async, full names). LFM2.5 1.2B called
+ *  git_clone(repo="tester") for "pull github.com/tester/app", got "use owner/name" back and repeated itself until
+ *  the repeat guard stopped it (failures.md case 16). Returns { owner, name, completed?: 'your message' |
+ *  'your repos' }; throws with the candidates when several fit. */
+export async function completeRepo(repo, { said = '', reachable = async () => [] } = {}) {
+  try { return parseRepo(repo); } catch (e) {
+    const want = String(repo || '').trim().replace(/^@/, '').toLowerCase();
+    if (!want || /[\s/]/.test(want)) throw e;
+    const fits = (full) => { const [o, n] = String(full).toLowerCase().split('/'); return o === want || n === want; };
+    const named = [...new Set([...String(said).matchAll(/\bgithub\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*?)(?:\.git)?(?=[\s/#?,;:!)]|\.?$|\.\s)/gi),
+      ...String(said).matchAll(/(?:^|\s)([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?=\s|$|[.,;:!?)])/g)].map(m => `${m[1]}/${m[2]}`))].filter(fits);
+    if (named.length === 1) return { ...parseRepo(named[0]), completed: 'your message' };
+    let found = [];
+    if (!named.length) { try { found = (await reachable()).filter(Boolean).filter(fits); } catch {} }
+    if (found.length === 1) return { ...parseRepo(found[0]), completed: 'your repos' };
+    const options = named.length ? named : found;
+    if (options.length) throw new Error(`"${repo}" could be ${options.slice(0, 6).join(', ')}. Call again with one of those (owner/name).`);
+    throw e;
+  }
+}
+
 export function parseRepo(s) {
-  const m = String(s || '').trim().match(/^(?:https?:\/\/github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/);
+  const m = String(s || '').trim().match(/^(?:(?:https?:\/\/)?(?:www\.)?github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i);
   if (!m) throw new Error(`"${s}" is not a GitHub repo. Use owner/name.`);
   return { owner: m[1], name: m[2] };
 }

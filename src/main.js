@@ -13,7 +13,8 @@ async function boot() {
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   await github.loadAuth();
   await storage.loadStorageConfig();
-  if (!github.isSignedIn() || !storage.storageConfig()) return showSetup();
+  // Demo mode (storage in this browser, no sign-in) starts the app too; see demo.js.
+  if (!storage.storageConfig() || (!storage.isLocal() && !github.isSignedIn())) return showSetup();
   await startApp();
 }
 

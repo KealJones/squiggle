@@ -12,6 +12,7 @@ import { toolFormat, PLAIN } from './toolformats/index.js';
 import { heldBack } from './toolformats/text.js';
 
 // Older names, kept for the tests and anything importing them from here.
+import { noteRendered } from './trace.js';
 export { toolSystem, toWebLLMMessages, parseQwenCalls } from './toolformats/qwen.js';
 export { gemmaArg, gemma4Prompt, parseGemmaCalls, splitGemma } from './toolformats/gemma4.js';
 export { splitRaw } from './toolformats/text.js';
@@ -53,10 +54,11 @@ async function appConfigFor(id) {
   return { ...prebuiltAppConfig, model_list: [...prebuiltAppConfig.model_list, custom.get(id)] };
 }
 
-// q4f16 needs the GPU's shader-f16 feature; the f32 build runs without it (more memory).
-// Our own builds only come in q4f16.
+// q4f16 needs the GPU's shader-f16 feature; the f32 build runs without it (more memory). One of our own builds
+// gets the f32 path only when its q4f32_1 twin is registered (engine.js mlcRecordF32).
 async function pickId(mlc) {
-  if (custom.has(mlc)) return mlc;
+  const f32 = mlc.replace('q4f16_1', 'q4f32_1');
+  if (custom.has(mlc) && !custom.has(f32)) return mlc;
   try {
     const a = navigator.gpu && await navigator.gpu.requestAdapter();
     if (a && a.features.has('shader-f16')) return mlc;
@@ -138,12 +140,14 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
         // WebLLM puts the conversation's prefix tokens (BOS) in front of a raw completion only on its manifest
         // path; a build without a manifest gets the prompt as is (web-llm 0.2.86/0.2.87 getInputData).
         prompt = (f.bos && !manifest ? f.bos : '') + f.prompt(history, tools, { thinking: Boolean(thinking), names: opts.tool_names || [] });
+        noteRendered('raw prompt', prompt);   // the exact text the model reads ("What the model saw", trace.js)
         try { await engine.resetChat(); } catch {}         // raw completions need an empty KV cache
         chunks = await engine.completions.create({ prompt, stream: true, max_tokens: opts.max_tokens, ...sampling(opts), stop: f.stop });
       } else {
         let messages = f.messages(history, tools, { thinking });
         // WebLLM can't continue an assistant turn; a prefilled retry starts the reply fresh instead.
         while (messages.length && messages[messages.length - 1].role === 'assistant') messages = messages.slice(0, -1);
+        noteRendered('chat messages (WebLLM applies the template)', messages);
         chunks = await engine.chat.completions.create({
           messages,
           stream: true,

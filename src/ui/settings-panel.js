@@ -7,13 +7,13 @@ import * as grants from '../grants.js';
 import * as engine from '../engine.js';
 import * as agent from '../agent.js';
 import * as voice from '../voice.js';
-import { CONTEXT_MODES } from '../context.js';
 import { h, icon, toast } from './dom.js';
 import { state } from './state.js';
 import { saveSettings, applyTheme } from './settings.js';
-import { modelPicker } from './setup.js';
+import { showSetup } from './setup.js';
+import * as demo from '../demo.js';
 import { openDrawer } from './panels.js';
-import { switchModel, loadModel, setIsolation, updateComposerNote, loadSemantic, sessionModel } from './model-ui.js';
+import { switchModel, loadSemantic } from './model-ui.js';
 
 // ── Building blocks ────────────────────────────────────────────────────────
 const section = (title, ...fields) => h('section', { class: 'settings-sec' }, h('h3', {}, title), ...fields.filter(Boolean));
@@ -72,56 +72,20 @@ function voiceSettingsField(S, seg) {
 }
 
 // ── Model ──────────────────────────────────────────────────────────────────
-// Small-model mode: a per-model switch for models with tools; always on (and shown as such) for Squiggle
-// Small, whose fenced tool format only works with it; not shown for plain-chat models.
-function smallModeField(S) {
-  const id = S.model;
-  if (engine.chatOnly && engine.chatOnly(id)) return '';
-  const what = 'The short "don\'t guess, find it" prompt Squiggle Small is trained on: plan, done, need and find up front, and find to pick other tools.';
-  if (!agent.smallModeSwitchable(id)) {
-    return field('Small-model mode', '', `Always on for ${engine.MODELS[id].label}: it's trained on this format. ${what}`);
-  }
-  // Saved as true or false per model (an explicit false overrides the default); unset means the model's default.
-  return switchRow('Small-model mode', `${what} Off gives ${engine.MODELS[id].label} the full prompt. ${agent.smallModeDefault(id) ? 'On by default for a small model: the full prompt and every tool took half its window.' : 'Off by default for a big model.'} Saved for this model only; applies from the next message.`, agent.smallMode(id), (e) => {
-    S.smallMode = { ...(S.smallMode || {}), [id]: e.target.checked };
-    saveSettings(); updateComposerNote();
-  });
-}
-
-// No prompt (experimental): the same models as the Small-model mode switch, saved per model.
-function noPromptField(S) {
-  const id = S.model;
-  if (!agent.smallModeSwitchable(id)) return '';
-  return switchRow('No prompt (experimental)', `Squiggle sends ${engine.MODELS[id].label} no instructions of its own: no persona, rules or tool-names line, only its tools in its own format and the conversation. For seeing how the model does on its own training. Saved for this model only; applies from the next message.`, agent.noPrompt(id), (e) => {
-    S.noPrompt = { ...(S.noPrompt || {}), [id]: e.target.checked };
-    saveSettings(); updateComposerNote();
-  });
-}
-
-// The device's default model. The main models are listed; test and experimental
-// ones fold away unless one of them is the current choice.
+// The model, as a fact rather than a menu: which one, and how it runs on this device (engine.forDevice picks the
+// build). Each chat picks its model when it starts (the new-chat settings) and can switch in the chat details. A
+// build that crashed here was stepped down from; it can be tried again.
 function modelField(S) {
-  const def = engine.MODELS[S.defaultModel] ? S.defaultModel : S.model;
-  const onPick = async (v) => {
-    if (v === def) return;
-    S.defaultModel = v; saveSettings();   // the saved model is the default
-    // The open chat follows the default unless it has its own model.
-    await switchModel(sessionModel(state.current));
-    renderSettingsPanel();
-  };
-  const all = modelPicker(def, onPick);
-  const options = [...all.querySelectorAll('.model-option')];
-  const extra = options.filter(o => engine.MODELS[o.dataset.model] && engine.MODELS[o.dataset.model].experimental);
-  let more = '';
-  if (extra.length) {
-    const list = h('div', { class: 'model-list' }, ...extra);
-    more = h('details', { class: 'model-more' }, h('summary', {}, `Experimental and test models (${extra.length})`), list);
-    more.open = extra.some(o => o.dataset.model === def);
-  }
-  const own = state.current && state.current.model && state.current.model !== def ? `This chat uses ${engine.MODELS[state.current.model] ? engine.MODELS[state.current.model].label : state.current.model} (set in the chat details); the default applies to other chats.` : '';
-  return field('Default model', h('div', {}, all, more), [engine.isMobile()
-    ? 'Phones run the small CPU models: Gemma 4 doesn\'t fit in a phone browser tab. The cloud model is the stronger option when your relay offers it.'
-    : 'Gemma 4 E4B is the smartest and best with tools. Each model downloads once per device.', own].filter(Boolean).join(' '));
+  const M = engine.MODELS[S.model];
+  const how = M ? `${M.label} runs ${engine.runnerLabel(S.model)} on this device, picked automatically.` : '';
+  const avoided = (S.avoidBuilds || []).filter(id => engine.MODELS[id]);
+  const retry = avoided.length ? h('button', { class: 'btn', onclick: async () => {
+    S.avoidBuilds = []; engine.setAvoided([]); saveSettings();
+    await switchModel(engine.forDevice(S.model)); renderSettingsPanel();
+  } }, 'Try the GPU again') : '';
+  return field('Model', h('div', {}, h('span', { class: 'value' }, how), retry ? h('div', { class: 'row' }, retry) : ''),
+    [avoided.length ? 'The GPU build crashed this tab before, so it runs on the CPU.' : '',
+      'Each chat picks its model when it starts (the settings button in a new chat) and can switch in the chat details.'].filter(Boolean).join(' '));
 }
 
 // ── The panel ──────────────────────────────────────────────────────────────
@@ -131,11 +95,6 @@ export function renderSettingsPanel() {
   const S = agent.settings;
   const seg = (options, value, onPick) => h('div', { class: 'seg' }, options.map(([v, label]) => h('button', { 'aria-pressed': String(v === value), onclick: () => { onPick(v); saveSettings(); renderSettingsPanel(); } }, label)));
   const cfg = storage.storageConfig();
-  const M = engine.MODELS[S.model];
-  const plainWllama = M.runtime === 'wllama' && !M.backend;
-  const mode = S.contextMode || 'smart';
-  const modes = Object.entries(CONTEXT_MODES).filter(([k, d]) => d.offered || k === mode);
-  const reloadIfReady = async () => { if (engine.engineReady()) await loadModel(); };
 
   // Relay: an inline editor instead of a prompt().
   const relayInput = h('input', { type: 'text', value: relayUrl(), placeholder: 'Same site as the app', spellcheck: 'false', 'aria-label': 'Relay address' });
@@ -145,30 +104,13 @@ export function renderSettingsPanel() {
   } }, 'Save and reload');
 
   body.append(
-    section('Model',
-      modelField(S),
-      smallModeField(S),
-      noPromptField(S),
-      field('Context window', seg([[4096, '4K'], [8192, '8K'], [16384, '16K']].filter(([v]) => !M.maxContext || v <= M.maxContext), S.contextSize, async (v) => { S.contextSize = v; await reloadIfReady(); }),
-        M.maxContext ? `This build was compiled for ${M.maxContext / 1024}K at most.` : 'Bigger remembers more per turn but uses more memory and is slower to start. Phones are safest at 4K.'),
-      M.runtime === 'litert' ? switchRow('Speed boost', 'Replies come noticeably faster, but it loads an extra helper model and needs more memory. Off by default on phones.', S.fastDecode, async (e) => { S.fastDecode = e.target.checked; saveSettings(); await reloadIfReady(); }) : '',
-      plainWllama ? switchRow('Use the GPU (experimental)', 'Runs this model on WebGPU instead of the CPU: could be much faster, or could crash the tab. If it crashes, Squiggle offers to turn it off.', S.smallGpu, async (e) => { S.smallGpu = e.target.checked; saveSettings(); await reloadIfReady(); }) : '',
-      plainWllama ? switchRow('Use all CPU cores (experimental)', 'Splits the work across several cores, mostly speeding up the wait before a reply starts. Reloads the page.', S.smallThreads, async (e) => {
-        S.smallThreads = e.target.checked; saveSettings();
-        const ok = await setIsolation(S.smallThreads);
-        if (!ok && S.smallThreads) { toast('Not available here: it needs the app\'s offline helper (service worker), which only runs over https.'); return; }
-        toast('Reloading to apply…', 2000); setTimeout(() => location.reload(), 600);
-      }) : '',
-    ),
+    section('Model', modelField(S)),
 
     section('Context',
-      h('div', { class: 'field' },
-        h('label', { for: 'context-mode', class: 'label' }, 'How context is managed'),
-        h('select', { id: 'context-mode', onchange: (e) => { S.contextMode = e.target.value; saveSettings(); if (['smart', 'fresh'].includes(S.contextMode) && S.semantic) loadSemantic(); updateComposerNote(); renderSettingsPanel(); } },
-          ...modes.map(([v, d]) => h('option', { value: v, selected: mode === v ? true : null }, d.label))),
-        h('span', { class: 'hint' }, `${CONTEXT_MODES[mode] ? CONTEXT_MODES[mode].hint : ''} Check "What the model saw" on any reply.`)),
-      ['smart', 'fresh'].includes(S.contextMode) ? switchRow('Bring in other chats', S.contextMode === 'fresh' ? 'The lookup before each message also searches your other chats.' : 'Smart context may also quote a message from another chat when it clearly fits.', S.recallChats === true, (e) => { S.recallChats = e.target.checked; saveSettings(); }) : '',
-      ['smart', 'fresh'].includes(S.contextMode) ? switchRow('Search by meaning', 'Also matches by meaning, not just words. Downloads a small 23 MB search model that runs on the CPU. With its runtime it takes roughly 100 MB of tab memory while a search runs, and on phones it\'s freed 15 seconds after.', S.semantic, (e) => { S.semantic = e.target.checked; saveSettings(); if (S.semantic) loadSemantic(); }) : '',
+      field('How context is managed', h('span', { class: 'value' }, 'Chosen per chat, before its first message: the settings button in a new chat. Compress unless you pick another.'),
+        'Check "What the model saw" on any reply to see exactly what each type sends.'),
+      switchRow('Bring in other chats', 'Smart and Fresh chats may also bring in a message from another chat when it clearly fits.', S.recallChats === true, (e) => { S.recallChats = e.target.checked; saveSettings(); }),
+      switchRow('Search by meaning', 'Also matches by meaning, not just words. Downloads a small 23 MB search model that runs on the CPU. With its runtime it takes roughly 100 MB of tab memory while a search runs, and on phones it\'s freed 15 seconds after.', S.semantic, (e) => { S.semantic = e.target.checked; saveSettings(); if (S.semantic) loadSemantic(); }),
       switchRow('Learn from conversations', 'After each reply, Squiggle saves lasting facts to Memory. Review them in the Memory panel.', S.learn, (e) => { S.learn = e.target.checked; saveSettings(); }),
     ),
 
@@ -178,7 +120,13 @@ export function renderSettingsPanel() {
 
     voice.support(window).synthesis ? section('Voice', voiceSettingsField(S, seg)) : '',
 
-    section('Account',
+    storage.isLocal() ? section('Account',
+      field('Demo mode', h('span', { class: 'value' }, 'Chats, memory and files stay in this browser. Nothing syncs; the git and GitHub tools are off.'),
+        'Sign in with GitHub to sync through a private repo of yours and work on your repos. What you made in the demo comes along.'),
+      actions('',
+        h('button', { class: 'btn primary', onclick: () => showSetup('signin') }, 'Sign in with GitHub'),
+        h('button', { class: 'btn', onclick: async () => { await demo.clearSamples(); toast('Sample chat, facts and file removed.'); renderSettingsPanel(); } }, 'Remove the sample data')),
+    ) : section('Account',
       field('Storage repo',
         h('span', { class: 'value' }, cfg ? h('a', { href: `https://github.com/${cfg.owner}/${cfg.name}${cfg.root ? '/tree/' + cfg.branch + '/' + cfg.root : ''}`, target: '_blank', rel: 'noopener' }, `${cfg.owner}/${cfg.name}${cfg.root ? '/' + cfg.root.replace(/\/$/, '') : ''}`) : 'None'),
         'Your chats, memory and files live here and sync to every device you sign in on.'),
@@ -199,13 +147,15 @@ export function renderSettingsPanel() {
     ),
 
     section('Debug',
-      switchRow('Save tool results', 'Keeps what each tool returned (search results, pages, find) with the reply, under "Result" in its tool list. Saved in your storage repo with the chat; long results are cut at 12,000 characters. Applies from the next message.', S.debugTools, (e) => { S.debugTools = e.target.checked; saveSettings(); }),
+      switchRow('Save tool results and prompts', 'Keeps what each tool returned (under "Result" in a reply\'s tool list) and everything the model was sent: system prompt, tool schemas, messages and each round, in "What the model saw". On by default: it\'s the evidence the failure casebook is written from. Saved in your storage repo (the full context in its own file per reply, prompts/); long results are cut. Applies from the next message.', S.debugTools, (e) => { S.debugTools = e.target.checked; saveSettings(); }),
     ),
 
     section('This device',
       actions('Downloaded models and your sign-in live only in this browser.',
         h('button', { class: 'btn', onclick: async () => { await engine.unload(); await engine.deleteModel(S.model); location.reload(); } }, icon('i-trash'), 'Delete downloaded model'),
-        h('button', { class: 'btn danger', onclick: async () => { await sessions.flush(); await github.signOut(); location.reload(); } }, 'Sign out')),
+        storage.isLocal()
+          ? h('button', { class: 'btn danger', onclick: async () => { if (!confirm('Leave the demo? The chats, memory and files made here are deleted from this browser.')) return; await sessions.flush({ sync: false }); await storage.forgetStorage(); location.reload(); } }, 'Leave the demo')
+          : h('button', { class: 'btn danger', onclick: async () => { await sessions.flush(); await github.signOut(); location.reload(); } }, 'Sign out')),
     ),
   );
   c.append(body);

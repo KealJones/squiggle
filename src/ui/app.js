@@ -13,6 +13,8 @@ import { setSideOpen, sideOpenPref, sideOverlay } from './side.js';
 import { startCall, endCall } from './voice-ui.js';
 import { checkCloud, initModel } from './model-ui.js';
 import { requestedChat, showChatInUrl } from './links.js';
+import * as demo from '../demo.js';
+import { showSetup } from './setup.js';
 
 export async function startApp() {
   // Load everything before showing the app, so nothing tapped during startup
@@ -31,16 +33,46 @@ export async function startApp() {
   const asked = requestedChat();
   const linked = openable(asked);
   pendingChat = asked && !linked ? asked : '';
-  openSession(linked || sessions.list()[0] || sessions.newSession(), null, { url: pendingChat ? 'none' : 'replace' });
+  // The demo opens on a new chat while only the sample chat exists, so the first question has to find it.
+  const usual = demo.isDemo() && sessions.list().every(s => s.demo) ? sessions.newSession() : sessions.list()[0];
+  openSession(linked || usual || sessions.newSession(), null, { url: pendingChat ? 'none' : 'replace' });
   setup.hidden = true;
   $('#app').hidden = false;
+  renderDemoBanner();
   storage.sync();
   setInterval(() => { if (document.visibilityState === 'visible') storage.sync(); }, 60000);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') storage.sync();
-    else sessions.flush();
+    else settle();
   });
+  // Closing or reloading the tab: write what's pending (chats, memory) and save the in-memory file tree
+  // (git.js persist), so a chat or fact from the last second isn't lost; the IndexedDB write usually completes
+  // even as the page goes away. In demo mode this browser is the only copy.
+  addEventListener('pagehide', settle);
   checkCloud().finally(() => initModel());
+}
+
+// Demo mode's strip: what's different, things to try (sent as messages), and the way out (demo.js).
+export function renderDemoBanner() {
+  const b = $('#demo-banner');
+  if (!b) return;
+  if (!demo.isDemo()) { b.hidden = true; b.replaceChildren(); return; }
+  const hidden = localStorage.getItem('squiggle-demo-banner') === 'hidden';
+  b.hidden = hidden;
+  if (hidden) return;
+  b.replaceChildren(
+    h('span', {}, h('strong', {}, 'Demo mode. '), 'This is the real Squiggle with its storage in this browser instead of a private GitHub repo: nothing syncs, the git and GitHub tools are off, and the cloud model needs a sign-in. The chat, memory and file about "Pip" are samples to search.'),
+    h('button', { class: 'btn primary small', onclick: () => showSetup('signin') }, 'Sign in to sync'),
+    h('button', { class: 'btn ghost small', onclick: () => { localStorage.setItem('squiggle-demo-banner', 'hidden'); renderDemoBanner(); } }, 'Hide'),
+    // Each one starts a new chat, so the answer has to come from memory, the sample chat or the file, not from the thread.
+    h('div', { class: 'try' }, h('span', { class: 'muted' }, 'Try:'), ...demo.TRY.map(t => h('button', { type: 'button', onclick: () => { if (state.busy) return; if (state.current.messages.length) openSession(sessions.newSession()); send(t, null, []); } }, t))),
+  );
+}
+
+// Pending saves to disk, then the file tree to IndexedDB (storage.persistNow).
+export async function settle() {
+  await Promise.all([sessions.flush({ sync: false }), memory.flush()]);
+  await storage.persistNow();
 }
 
 // A chat a link may open: this account's, not deleted (archived is fine).

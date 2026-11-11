@@ -12,13 +12,14 @@ import * as tasks from './tasks.js';
 import { find as findAll, renderFind, PAST_CHAT, PUSHBACK, checkQuery, rerankWeb, urlLedger, rankTools } from './find.js';
 import * as prefetchLib from './prefetch.js';
 import { buildEntities, resolve as resolveRefs, renderRefs } from './refs.js';
-import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes, chunk } from './context.js';
+import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes, chunk, resultGist } from './context.js';
 export { scrubFakeToolNotes };
 import { toolSpecs, listTools, runTool } from './tools.js';
 import { UNTRUSTED_RULES, wrapUntrusted } from './untrusted.js';
 import { embed, embedReady } from './embed.js';
 import { bm25, tokenize } from './search.js';
-import { estTokens, truncate } from './util.js';
+import { estTokens, truncate, uid } from './util.js';
+import { createTrace, openConv, addRound, takeRendered } from './trace.js';
 import { parseJsonl } from './merge.js';
 import { attachmentPrompt, saveAttachments, toRecord } from './attachments.js';
 
@@ -27,18 +28,23 @@ export const settings = {
   contextSize: 8192,
   fastDecode: true,         // multi-token prediction: faster, uses more memory
   smallGpu: false,          // small models (wllama): run on WebGPU (experimental)
-  smallThreads: false,      // small models (wllama): use several CPU cores; needs an isolated page (sw.js)
-  contextMode: 'smart',     // 'smart' (default) | 'compact' | 'full'
+  smallThreads: true,       // CPU builds (wllama): use several cores; automatic (needs an isolated page, sw.js), off only after a crash with it
+  contextMode: 'compact',   // chosen per chat before its first message (session.contextMode); Compress by default
   semantic: true,           // MiniLM embeddings for retrieval (its worker sleeps when idle, so phones too)
   recallChats: false,       // smart mode may recall messages from other chats too (off: old answers, right or wrong, leaked into unrelated chats)
   learn: true,              // extract memory facts after turns
   tools: null,              // Set of enabled tool names, or null for all
-  debugTools: false,        // save each tool's full result on the reply (Settings → Debug), synced with the chat
+  debugTools: true,         // save each tool's full result on the reply (Settings → Lab), synced with the chat; on by default since 2026-11-09
   smallMode: {},            // model id → true/false: small-model mode for a model that can switch (smallModeSwitchable); unset = the model's default (smallMode)
   noPrompt: {},             // model id → true: no system prompt from Squiggle, just the tools in the model's own format (experimental)
+  toolSurface: 'bash',      // models that can (agent.bashSurface): one bash tool in place of the file, web, git and maths tools (tools/bash.js)
 };
 
 const MAX_OUTPUT = 1536;
+// A tool call is refused only below this much free room (characters, after the reply's reserve): every tool sizes
+// its output to the room it's given, and bash saves what doesn't fit to /tmp/out-N.txt. It was 2,500, which
+// refused LFM3 1.7B's `head -n 80 README.md` with ~1,600 tokens free (2026-11-10).
+const FULL_ROOM = 1200;
 const CHAT_PLAN_NUDGE = 6;  // tool calls without a plan before the model is reminded it can make one
 const LITE_CHAT_NUDGE = 3;  // small models: nudged to answer after this many, no more lookups after twice this
 
@@ -68,10 +74,20 @@ export const LITE_SYSTEM_NATIVE = [
   'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
 ].join('\n');
 
+// The same for the bash surface (tools/bash.js): the lookups are commands in the shell.
+export const LITE_SYSTEM_BASH = [
+  ...LITE_SYSTEM.split('\n').slice(0, 3),
+  'Use bash for files, the web, GitHub and maths: search WORDS, curl URL | grep -i WORD, git, gh, bc; `man` lists',
+  'the custom commands. find(query) searches recipes, memory and past chats; ask_user(question) asks the user something only they know and waits.',
+  'Your context window is small: never cat a whole file or curl a whole page. Pipe into grep, head, tail, sed -n or wc,',
+  'or save it to a file (> /tmp/page.txt) and work on the file in small pieces.',
+  'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
+].join('\n');
+
 // Which prompt dialect this model gets (tasks.js DIALECT): the frozen fenced one for Squiggle Small, v3
 // (harness text in a user turn marked as Squiggle's) for everyone else.
 export const dialect = () => (fencedSmall() ? tasks.DIALECT.v2 : tasks.DIALECT.v3);
-// The tool that asks the user: `need` in Squiggle Small's frozen format, `ask_user` for everyone else (case 15).
+// The tool that asks the user: `need` in Squiggle Small's frozen format, `ask_user` for everyone else (case 19).
 const askName = () => (dialect().frozen ? 'need' : 'ask_user');
 const ASKING = new Set(['need', 'ask_user']);
 
@@ -137,15 +153,23 @@ function toolNamesLine(phase, known = []) {
 function systemPrompt(threadId, session, phase = 'chat', known = []) {
   if (plain() || noPrompt()) return '';
   const names = toolNamesLine(phase, known);
-  if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : LITE_SYSTEM_NATIVE}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
+  if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : bashSurface() ? LITE_SYSTEM_BASH : LITE_SYSTEM_NATIVE}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
   const thread = threadId && session.threads[threadId];
   // Kept short on purpose: with every tool schema this prompt was 99% of a 4K window (2026-11-04), and
   // a phone CPU reads it at ~13 tokens/s before the first reply token.
   return [
     `You are Squiggle, a personal AI agent running privately on the user's own device. Today is ${new Date().toDateString()}.`,
-    `Workspace: /home is your own folder (synced to the user's devices); /repos/<name> holds clones of their GitHub repos. For code: git_clone, git_branch (an agent/ branch; those push freely, any other branch asks the user first, and a refused push is final), edit, git_commit, git_push, then github_open_pr if they want a review.`,
-    `Don't guess. For current information or anything you're unsure of: web_search, then fetch_url the best results, and say which sites you used. Maths goes through calculate. find(query) searches your tools, recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`,
-    `Save lasting facts about the user or their projects (preferences, decisions, names) with remember; search_history finds past conversations. Your context window is ${settings.contextSize} tokens and every tool result says how much is left: prefer grep and read_file line ranges, and keep notes with note on longer work without a plan.`,
+    storage.isLocal()
+      ? `Workspace: /home is your own folder, kept in this browser (demo mode: no GitHub account is connected, so there are no repo tools; if asked to clone, push or open a pull request, say that signing in with GitHub turns those on).`
+      : bashSurface()
+        ? `Workspace, through bash: /home is your own folder (synced to the user's devices); /repos/<name> holds clones of their GitHub repos. For code: git clone, git checkout -b (an agent/ branch; those push freely, any other branch asks the user first, and a refused push is final), edit the files, git commit -m, git push, then gh pr create if they want a review.`
+        : `Workspace: /home is your own folder (synced to the user's devices); /repos/<name> holds clones of their GitHub repos. For code: git_clone, git_branch (an agent/ branch; those push freely, any other branch asks the user first, and a refused push is final), edit, git_commit, git_push, then github_open_pr if they want a review.`,
+    bashSurface()
+      ? `Don't guess. For current information or anything you're unsure of: search WORDS, then curl the best links (pipe into grep for the part you need), and say which sites you used. Maths: echo "…" | bc -l. find(query) searches recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`
+      : `Don't guess. For current information or anything you're unsure of: web_search, then fetch_url the best results, and say which sites you used. Maths goes through calculate. find(query) searches your tools, recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`,
+    bashSurface()
+      ? `Save lasting facts about the user or their projects (preferences, decisions, names) with remember. Your context window is only ${settings.contextSize} tokens and every result says how much is left, so be careful with anything that could be long (files, web pages, command output): never cat a whole file or curl a whole page into your view. Pipe it through grep, head, tail, sed -n, wc or jq, or save it to a file (curl URL > /tmp/page.txt) and work on that file in small pieces.`
+      : `Save lasting facts about the user or their projects (preferences, decisions, names) with remember; search_history finds past conversations. Your context window is ${settings.contextSize} tokens and every tool result says how much is left: prefer grep and read_file line ranges, and keep notes with note on longer work without a plan.`,
     managed() ? UPFRONT : '',
     names,
     `Use tools when they help; answer directly when they don't. Be concise. Never invent file contents or tool results, and never say you saved, remembered, changed or pushed something unless you called the tool for it in this reply.`,
@@ -160,6 +184,16 @@ function systemPrompt(threadId, session, phase = 'chat', known = []) {
 const PRELOADED = ['web_search', 'fetch_url'];
 // Tools for looking things up: a strong match for one of these doesn't stop find or Fresh from searching.
 const LOOKUP_TOOLS = ['web_search', 'fetch_url', 'wiki_lookup'];
+// Tools a message clearly asks for: named, or an intent phrase (find.js rankTools over 4), lookups aside (they're
+// declared already). The best one, and a second only when it scores close: a small model takes a list as a to-do.
+// Every mode hands these over up front, declared and named as ready to call: with them only listed by name, no
+// small model asked to "list my GitHub repos" ever called github_list_repos (failures.md case 16), and Fresh's
+// lookup, which already listed them, was the only mode that worked (case 15).
+export function fitTools(text, tools) {
+  const ranked = rankTools(String(text || ''), tools).filter(t => !LOOKUP_TOOLS.includes(t.name) && t.score > 4);
+  return ranked.filter(t => t.score >= ranked[0].score * 0.8).slice(0, 2);
+}
+
 function preloaded(tools) {
   if (!lite() || plain() || native()) return [];
   const names = new Set(tools.map(t => t.name));
@@ -170,12 +204,23 @@ function preloaded(tools) {
 // remember and calculate are in: a 0.8B model told "save it with remember" called need instead of looking
 // remember up first (2026-11-04), and nearly every phone chat wants one of the two.
 // wiki_lookup is in too: names, dates and filmographies are most of what phone questions ask (2026-11-04).
-const GATE = ['plan', 'done', 'need', 'ask_user', 'find', 'checkpoint', 'tool_info', ...PRELOADED, 'wiki_lookup', 'remember', 'calculate'];
+const GATE = ['plan', 'done', 'need', 'ask_user', 'find', 'checkpoint', 'tool_info', ...PRELOADED, 'wiki_lookup', 'remember', 'calculate', 'bash'];
 
 // The tools this model may have: every enabled one, minus the ones only big models can use (wikidata_query: a
 // 0.6B model's SPARQL didn't run or asked about the wrong item; docs/measurements-2026-11-04.md).
 const BIG_ONLY = ['wikidata_query'];
-const modelTools = () => toolSpecs(settings.tools).filter(t => !(lite() && BIG_ONLY.includes(t.name)));
+// The bash surface (settings.toolSurface 'bash', lab): the shell does files, the web, git and maths through commands
+// it already knows (tools/bash.js); memory keeps its own tool. Otherwise the shell isn't offered.
+// One bash tool in place of the file, web, git and maths tools, for the models that can take it (Keal, 2026-11-10:
+// "we don't need those tools anymore"): LFM3, trained for agent harnesses, and the cloud model. Squiggle Small and
+// Tiny Gemma 4 keep the separate tools: those, and Squiggle Small's fenced prompt, are what they were trained on.
+export const bashSurface = () => settings.toolSurface === 'bash'
+  && (engine.agentTrained(settings.model) || Boolean(engine.MODELS[settings.model] && engine.MODELS[settings.model].runtime === 'cloud'));
+const BASH_SURFACE = new Set(['bash', 'remember']);
+const onSurface = (name) => (bashSurface() ? BASH_SURFACE.has(name) : name !== 'bash');
+// Demo mode (storage.isLocal: no GitHub sign-in) leaves out the tools that need one: git and GitHub.
+const NEEDS_GITHUB = new Set(listTools().filter(t => t.group === 'git and GitHub').map(t => t.spec.name));
+const modelTools = () => toolSpecs(settings.tools).filter(t => onSurface(t.name) && !(lite() && BIG_ONLY.includes(t.name)) && !(storage.isLocal() && NEEDS_GITHUB.has(t.name)));
 
 function phaseTools(step) {
   if (plain()) return [];
@@ -285,6 +330,14 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
     if (turn.thinking) reply.thinking = turn.thinking.slice(-20000); // shown in the UI only; never replayed to the model
     if (turn.task) reply.task = turn.task.id;
     if (signal?.aborted && !reply.content) reply.content = '_(stopped)_';
+    // The whole context, exactly as sent, in its own file (it's big: system prompts, every schema, every result),
+    // read by "What the model saw". Kept with "Save tool results and prompts" on (the default).
+    if (settings.debugTools && turn.trace.convs.length) {
+      reply.trace = `prompts/${session.id}/${uid('t')}.json`;
+      // Not awaited: the write queues behind the storage lock, and a turn that waited on it could stall behind a
+      // sync (the next message never sent, e2e 2026-11-09). The panel retries while the file lands.
+      storage.write(reply.trace, JSON.stringify(turn.trace)).catch(e => console.warn('trace', e));
+    }
     const saved = sessions.addMessage(session, reply);
     ui.onDone && ui.onDone(saved);
     if (session.title === 'New chat' && !threadId) nameSession(session);
@@ -308,6 +361,8 @@ class Turn {
   constructor({ session, threadId, shown, attachments, ui, signal, userMsg }) {
     Object.assign(this, { session, threadId, shown, attachments, ui, signal, userMsg });
     this.reply = { role: 'assistant', content: '', thread: threadId, tools: [], context: null };
+    this.trace = createTrace();   // the whole context, exactly as sent (trace.js); saved with the reply
+    this.pendingAdded = [];
     this.prefix = '';        // the reply text so far
     this.thinking = '';      // thinking + step narration (UI only)
     this.calls = 0;          // tool calls this turn (check-ins every CHECK_IN_EVERY)
@@ -384,13 +439,33 @@ class Turn {
     return saved;
   }
 
+  // Opens the model conversation for a phase and records it in the trace: the system prompt, the tools given to
+  // the engine and which of them the model sees in full (gated small models: the GATE set and what's known; the
+  // fenced format: names only, details through find), and the messages it starts with.
+  async open(phase, cfg) {
+    const names = (cfg.tools || []).map(t => t.name);
+    const declared = !(cfg.tools || []).length ? [] : lite() && !native() ? [] : cfg.gate ? names.filter(n => cfg.gate.includes(n) || (cfg.known || []).includes(n)) : null;
+    openConv(this.trace, { phase, system: cfg.system, tools: cfg.tools || [], declared, messages: cfg.messages || [], model: (engine.MODELS[settings.model] || {}).label || settings.model });
+    takeRendered();
+    this.conv = await engine.conversation(cfg);
+    return this.conv;
+  }
+
   async respond(input, { show = true } = {}) {
     const base = this.thinking;
-    const r = await engine.respond(this.conv, input, {
-      signal: this.signal,
-      onText: (t) => { if (show) this.ui.onText && this.ui.onText(this.prefix + t); },
-      onThinking: (t) => this.ui.onThinking && this.ui.onThinking((base ? base + '\n\n' : '') + t),
-    });
+    const added = this.pendingAdded; this.pendingAdded = [];
+    let r;
+    try {
+      r = await engine.respond(this.conv, input, {
+        signal: this.signal,
+        onText: (t) => { if (show) this.ui.onText && this.ui.onText(this.prefix + t); },
+        onThinking: (t) => this.ui.onThinking && this.ui.onThinking((base ? base + '\n\n' : '') + t),
+      });
+    } catch (e) {
+      addRound(this.trace, { input, output: { text: `(failed: ${e && e.message || e})` }, rendered: takeRendered(), added });
+      throw e;
+    }
+    addRound(this.trace, { input, output: r, rendered: takeRendered(), added });
     if (r.thinking && r.thinking.trim()) this.thinking = (base ? base + '\n\n' : '') + r.thinking.trim();
     r.saved = this.trimJunk(input, r);
     return r;
@@ -418,7 +493,7 @@ class Turn {
     const { session, threadId, shown } = this;
     return assembleContext({
       line, session, threadId, query: shown, budget, mode: settings.contextMode,
-      system: systemPrompt(threadId, session), extra, focus,
+      system: systemPrompt(threadId, session, 'chat', this.fitNames()), extra, focus,
       // Smart mode recalls a few earlier messages (this chat's and, with the setting
       // on, other chats') and, for small models, memory facts into a labelled block
       // after the request (recall.js); only on a real question and above a bar.
@@ -426,17 +501,27 @@ class Turn {
       small: lite(),
       // No prompt means nothing from Squiggle in the system turn, memory notes included.
       recall: noPrompt() ? null : (q, k) => memory.recall(q, k), factText: memory.factText, factsTitle: dialect().memoryTitle,
-      actions: !lite(),   // "Tool calls you made" read to small models as things the user said
+      // "Tool calls you made" read to small models as things the user said; LFM3 is trained for harness text, and
+      // without it re-ran the same commands every turn. Results ride along when replies keep them (debugTools).
+      actions: !lite() || engine.agentTrained(settings.model),
+      actionResults: (!lite() || engine.agentTrained(settings.model)) && !fencedSmall(),
       embed: settings.contextMode === 'smart' && settings.semantic ? embed : null,
     });
   }
 
   // ── Chat phase: answer directly, or make a plan ─────────────────────────
+  // The tools this message clearly asks for, by name (fitTools), for the chat phase's `known`.
+  fitNames() {
+    if (this.fit === undefined) this.fit = fitTools(this.shown, phaseTools(false)).map(t => t.name);
+    return this.fit;
+  }
+
   async chat() {
     const tools = phaseTools(false);
-    const toolTokens = toolCost(tools);
-    checkOverhead(systemPrompt(this.threadId, this.session), toolTokens);
-    this.declaredNames = new Set(tools.map(t => t.name).filter(n => !gated() || GATE.includes(n)));
+    const fit = this.fitNames();
+    const toolTokens = toolCost(tools, fit);
+    checkOverhead(systemPrompt(this.threadId, this.session, 'chat', fit), toolTokens);
+    this.declaredNames = new Set(tools.map(t => t.name).filter(n => !gated() || GATE.includes(n) || fit.includes(n)));
     // History gets about half the window; the rest stays free for this turn's
     // tool results and the reply (a full window made turns fail at the start).
     // Small models get less: on a 4K phone window half left too little room for a lookup. (A quarter was
@@ -473,14 +558,17 @@ class Turn {
     const reserve = Math.min(MAX_OUTPUT, 700);
     if (managed()) pending += `\n\n${tasks.budgetLine(used, settings.contextSize, reserve, dialect())}`;
     this.setWindow(windowOf(ctx.report, { system: plain() ? 0 : estTokens(ctx.system), tools: toolTokens, message: estTokens(this.shown) + estTokens(att.text) }), used);
-    let chatCalls = 0, full = false, askedForAnswer = false;
+    let chatCalls = 0, full = false, askedForAnswer = false, lastThink = 0;
     this.seenCalls = new Map();
     let messages = ctx.messages;
     if (seed) {
       // The question is the only user turn; the lookup is the model's own find call and its result.
       const call = { id: 'lookup1', type: 'function', function: { name: 'find', arguments: { query: seed.query } } };
       messages = [{ role: 'user', content: pending }, { role: 'model', content: '', tool_calls: [{ id: call.id, type: 'function', function: { name: 'find', arguments: JSON.stringify({ query: seed.query }) } }] }];
-      pending = [toolResult(call, { found: seed.text })];
+      // `tools`: the names the lookup found, which declares them for gated models (as a real find result does).
+      const found = { found: seed.text, ...(seed.tools.length ? { tools: seed.tools } : {}) };
+      pending = [toolResult(call, found)];
+      used += this.declare(tools, call, found);
       this.seenCalls.set(`find:${JSON.stringify({ query: seed.query })}`, 1);
     }
     if (fresh()) {
@@ -488,7 +576,7 @@ class Turn {
       for (const k of (this.prefetchedCalls || [])) this.seenCalls.set(k, 1);
     }
     if (seed) chatCalls = 1;   // the lookup counts as a call (an empty reply after it gets the nudge)
-    this.conv = await engine.conversation({ system: ctx.system, messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: preloaded(tools), gate: gated() ? GATE : null });
+    await this.open('Chat', { system: ctx.system, messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: [...new Set([...preloaded(tools), ...fit])], gate: gated() ? GATE : null });
     // "No, it's X" / "can you confirm that?": small models just agree. Search first and hand them the results.
     // (Fresh does this in its lookup.)
     const checked = fresh() ? '' : await this.checkClaim();
@@ -497,7 +585,12 @@ class Turn {
     for (;;) {
       const r = await this.respond(pending);
       if (r.text) this.prefix += r.text + (r.toolCalls.length ? '\n\n' : '');
-      used += estTokens((r.text || '') + (r.thinking || '') + JSON.stringify(r.toolCalls || [])) - (r.saved || 0);
+      // Thinking from earlier rounds isn't sent back (the templates keep at most the latest round's), so only the
+      // newest thinking counts against the window. Counting all of it made LFM3 1.7B's turns "full" with half the
+      // window free (2026-11-10, chat s0mwb2elnj0000ae4b).
+      const think = estTokens(r.thinking || '');
+      used += estTokens((r.text || '') + JSON.stringify(r.toolCalls || [])) + think - lastThink - (r.saved || 0);
+      lastThink = think;
       this.grow(used);
       if (this.aborted) return null;
       if (!r.toolCalls.length) {
@@ -517,10 +610,18 @@ class Turn {
       // A checkpoint in the chat phase turns the turn into a task, so its summary survives like a step result.
       const cp = managed() && r.toolCalls.find(c => c.function && c.function.name === 'checkpoint');
       if (cp) return this.checkpointTask(cp.function.arguments || {});
-      if (full) { this.prefix += '\n\n_(Stopped: the context filled up. Ask again and I\'ll make a plan for what\'s left.)_'; return null; }
+      if (full) {
+        // Full, told so ("Not run: … answer now or call plan"), and it reached for another tool anyway: carry on by
+        // itself in a fresh context (a one-step task that starts from what this reply found) instead of stopping and
+        // waiting for "continue" (Keal, 2026-11-10; stopping threw away three good lookups by LFM3 1.7B). Squiggle
+        // Small keeps the stop: its prompts are its training text.
+        if (!fencedSmall()) return this.carryOn(r.toolCalls);
+        this.prefix += '\n\n_(Stopped: the context filled up. Ask again and I\'ll make a plan for what\'s left.)_';
+        return null;
+      }
       const results = [];
       for (const call of r.toolCalls) {
-        if (room() < 2500) {
+        if (room() < FULL_ROOM) {
           results.push(toolResult(call, { error: managed()
             ? 'Not run: your context is almost full. Call checkpoint (summary, needs, next) to carry on fresh, or answer now with what you have.'
             : 'Not run: your context is almost full. Call plan with the work that is left (you get a fresh context for each step), or answer now with what you have.' }));
@@ -564,14 +665,31 @@ class Turn {
     return task;
   }
 
+  // Out of room in the chat phase with more to do: the harness's own checkpoint. What this reply's tools returned
+  // (in short, wrapped as untrusted) and the call the model was about to make carry over into a fresh context.
+  carryOn(calls = []) {
+    const done = this.reply.tools.filter(t => t.ok !== false && !['plan', 'done', 'tool_info', 'checkpoint'].includes(t.name));
+    let budget = Math.floor(settings.contextSize * 0.3 * 3.2);   // characters: about 30% of a fresh window
+    const lines = [];
+    for (const t of done.slice().reverse()) {
+      const line = `- ${oneLine(t.label || t.name, 120)}${t.result ? ` → ${resultGist(t.result, 600)}` : ''}`;
+      if (line.length > budget) break;
+      lines.unshift(line); budget -= line.length;
+    }
+    const wanted = calls.map(c => { const f = c.function || {}; const a = f.arguments || {}; return f.name === 'bash' && a.command ? `$ ${oneLine(a.command, 120)}` : `${f.name}(${oneLine(JSON.stringify(a), 100)})`; }).join(', ');
+    const summary = lines.length ? wrapUntrusted('what this reply found so far', lines.join('\n')) : '(nothing found yet)';
+    return this.checkpointTask({ summary, next: `Finish the request using what you found so far${wanted ? ` (you were about to run ${wanted})` : ''}.` },
+      'out of room: carrying on in a fresh context');
+  }
+
   // checkpoint in the chat phase: a one-step task that carries on from the summary in a fresh context.
-  checkpointTask(args = {}) {
+  checkpointTask(args = {}, label = null) {
     const next = String(args.next || '').trim() || 'Finish the request';
     const task = this.startPlan({ goal: truncate(this.shown, 200), steps: [next] });
     const step = task.steps[0];
     step.checkpoint = { summary: truncate(String(args.summary || ''), 2000), needs: tasks.normSteps([{ text: 'x', needs: args.needs }])[0].needs || [], next };
     this.checkpoints++;
-    this.reply.tools.push({ name: 'checkpoint', label: `checkpointed: carrying on fresh (${truncate(next, 60)})`, ok: true });
+    this.reply.tools.push({ name: 'checkpoint', label: label || `checkpointed: carrying on fresh (${truncate(next, 60)})`, ok: true });
     sessions.saveTask(this.session, task);
     return task;
   }
@@ -633,9 +751,10 @@ class Turn {
       const facts = (await memory.recall(`${this.shown}\n${focus}`, 8)).filter(r => r.score >= 0.2);
       if (facts.length) sections.push({ title: dialect().memoryTitle, text: facts.map(f => '- ' + memory.factText(f.fact)).join('\n') });
     } catch {}
+    // A checkpoint to carry on from: the model's own (AI-managed) or the harness's when a reply ran out of room (carryOn).
+    if (step.checkpoint && step.checkpoint.summary) sections.unshift({ title: 'Your checkpoint (where you left off)', text: step.checkpoint.summary, keep: true });
     if (managed()) {
-      // The step's own choices replace the automatic retrieval: a checkpoint to carry on from, and attachments.
-      if (step.checkpoint && step.checkpoint.summary) sections.unshift({ title: 'Your checkpoint (where you left off)', text: step.checkpoint.summary, keep: true });
+      // The step's own choices replace the automatic retrieval: attachments.
       const refs = [...new Set([...(step.needs || []), ...((step.checkpoint && step.checkpoint.needs) || [])])];
       if (refs.length) {
         const got = (await Promise.all(refs.map(x => this.attachment(x, task).catch(e => ({ ref: x, text: `Couldn't attach: ${e.message || e}` }))))).filter(Boolean);
@@ -718,6 +837,7 @@ class Turn {
     const add = tools.filter(t => names.includes(t.name) && !this.declaredNames.has(t.name));
     if (!add.length) return 0;
     for (const t of add) this.declaredNames.add(t.name);
+    this.pendingAdded.push(...add.map(t => t.name));   // the trace notes them with the next input
     const n = estTokens(JSON.stringify(add));
     const w = this.reply.context && this.reply.context.window;
     if (w) w.parts.tools += n;
@@ -735,7 +855,7 @@ class Turn {
   async runStep(task, step) {
     this.seenCalls = new Map();
     const tools = phaseTools(true);
-    const known = [...new Set([...preloaded(tools), ...(task.tools || [])])];
+    const known = [...new Set([...preloaded(tools), ...(task.tools || []), ...fitTools(`${step.text}\n${task.goal}`, tools).map(t => t.name)])];
     const toolTokens = toolCost(tools, known);
     checkOverhead(systemPrompt(this.threadId, this.session, 'step', known), toolTokens);
     this.declaredNames = new Set(tools.map(t => t.name).filter(n => !gated() || GATE.includes(n) || known.includes(n)));
@@ -758,18 +878,20 @@ class Turn {
     this.reply.context = { mode: 'step', budget: settings.contextSize, used: estTokens(system),
       items: [{ kind: 'plan', label: `Step ${n}: ${truncate(step.text, 80)} (goal, plan and results)`, tokens: estTokens(tasks.stepSystem('', task)) },
         ...sections.filter(x => prompt.shown.includes(x.title)).map(x => ({ kind: 'section', label: x.title, tokens: estTokens(x.text) }))] };
-    this.conv = await engine.conversation({ system, messages: [], tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known, gate: gated() ? GATE : null });
+    await this.open(`Step ${n}: ${step.text}`, { system, messages: [], tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known, gate: gated() ? GATE : null });
     let pending = userText;
     let used = estTokens(system) + estTokens(pending) + toolTokens;
     if (managed() && !d.native) { pending = tasks.stepUser(task, { budget: tasks.budgetLine(used + 30, settings.contextSize, reserve, d), dialect: d }); used += 30; }
     const room = () => Math.max(0, (settings.contextSize - used - reserve) * 3);
     this.setWindow(windowOf(this.reply.context, { system: estTokens(system), tools: toolTokens, message: estTokens(pending) }), used);
     const label = `Step ${n}: ${step.text}`;
-    let said = '', blank = 0, idle = 0, warnedFull = false;
+    let said = '', blank = 0, idle = 0, warnedFull = false, lastThink = 0;
     try {
       for (;;) {
         const r = await this.respond(pending, { show: false });
-        used += estTokens((r.text || '') + (r.thinking || '') + JSON.stringify(r.toolCalls || []));
+        const think = estTokens(r.thinking || '');  // only the newest round's thinking is resent (see the chat phase)
+        used += estTokens((r.text || '') + JSON.stringify(r.toolCalls || [])) + think - lastThink;
+        lastThink = think;
         this.grow(used);
         const looped = LOOPED.test(r.text || '');
         const text = (r.text || '').replace(LOOPED, '').trim();
@@ -778,7 +900,7 @@ class Turn {
         if (this.aborted) return 'stop';
         if (!r.toolCalls.length) {
           // A question to the user ("Could you tell me the repo name?"): ask it and pause the task; the reply
-          // is the answer. It used to be filed as the step's result and the plan went on without one (case 15).
+          // is the answer. It used to be filed as the step's result and the plan went on without one (case 19).
           if (text && !looped && !asText && tasks.asksUser(text)) {
             this.toolEvent({ name: askName(), label: `asked you: ${truncate(text, 60)}`, ok: true });
             return this.ask(text, task);
@@ -847,7 +969,7 @@ class Turn {
             ended = 'next';
             break;
           }
-          if (room() < 2500) {
+          if (room() < FULL_ROOM) {
             // Out of room: warn once, then close the step with what it has.
             if (warnedFull) { tasks.finishStep(task, said || '(the step ran out of room before finishing)'); ended = 'next'; break; }
             warnedFull = true;
@@ -906,10 +1028,20 @@ class Turn {
     this.finishedNow = true;
     this.ui.onPlan && this.ui.onPlan(task);
     const maxTokens = Math.max(600, settings.contextSize - Math.min(MAX_OUTPUT, 1024) - 300);
-    this.conv = await engine.conversation({ system: tasks.finalSystem(systemPrompt(this.threadId, this.session, 'final'), task, { maxTokens, dialect: dialect() }), messages: [], tools: [], maxOutputTokens: MAX_OUTPUT });
+    await this.open('Final reply', { system: tasks.finalSystem(systemPrompt(this.threadId, this.session, 'final'), task, { maxTokens, dialect: dialect() }), messages: [], tools: [], maxOutputTokens: MAX_OUTPUT });
     if (this.prefix && !/\n\n$/.test(this.prefix)) this.prefix += '\n\n';
-    const r = await this.respond(tasks.finalUser(task, { dialect: dialect() }));
-    this.prefix += r.text || '';
+    let r = await this.respond(tasks.finalUser(task, { dialect: dialect() }));
+    // No tools are offered here, but a model may still call one (LFM3 1.7B went for `cat` on the workflows after a
+    // 4-step plan, 2026-11-10) and say nothing: the reply came out blank and the next message redid the whole task.
+    // Answer the call with "no tools now", once; if it's still blank, the step results are the answer.
+    if (!(r.text || '').trim()) {
+      const nudge = 'No tools in this reply. Write the answer for the user now, in plain words, from the step results above.';
+      // v3 keeps harness text out of user turns (case 19): with no tool call to answer, the step results are the reply.
+      if (r.toolCalls && r.toolCalls.length) r = await this.respond(r.toolCalls.map(c => toolResult(c, { error: nudge })));
+      else if (!dialect().native) r = await this.respond(dialect().note(nudge));
+    }
+    const text = (r.text || '').trim() ? r.text : tasks.resultsReply(task);
+    this.prefix += text || '';
     await this.close();
   }
 
@@ -1126,11 +1258,18 @@ class Turn {
       .filter(r => !asked.length || asked.some(n => memory.factText(r.fact).toLowerCase().includes(n))).slice(0, small ? 3 : 6);
     // The web, unless the message is about the user's own things or clearly a job for another tool.
     let web = null, check = '', wiki = null;
-    const own = PAST_CHAT.test(said.toLowerCase());
+    // About the user's own things (past chats, or "my …" / "about me" when memory or this chat has something): no
+    // web or Wikipedia ("What's my name?" went to the web and Wikipedia, 2026-11-09).
+    const own = PAST_CHAT.test(said.toLowerCase()) || (/\b(my|me|mine|our|i|i'm|i am|i've|i was)\b/i.test(said) && (facts.length > 0 || found.length > 0));
     // Only a question about something is looked up: a request to do or make something ("help me write a
     // generator", "run that with run_js") or a job for another tool goes to the model as is (2026-11-09: Fresh
     // threw whole requests at Wikipedia and the web and the junk sent LFM2.5 1.2B planning).
-    const toolJob = rankTools(said, modelTools()).some(t => !LOOKUP_TOOLS.includes(t.name) && t.score > 4);
+    // The tools that clearly fit (named, or an intent phrase) come back in the lookup, as the model's own find
+    // would list them: without them LFM2.5 1.2B, asked to pull a repo, saw only an unrelated old chat and went
+    // web-searching (2026-11-09).
+    // The best one, and a second only when it scores close to it: a small model takes a list as a to-do.
+    const fit = fitTools(said, modelTools());
+    const toolJob = fit.length > 0;
     const lookup = pushback || (!toolJob && !prefetchLib.doRequest(said));
     // Wikipedia and Wikidata when the question names someone or something, alongside the web search.
     const wikiP = lookup && !own && prefetchLib.namesIn(query).length && modelTools().some(t => t.name === 'wiki_lookup') ? this.wikiTop(query) : null;
@@ -1143,20 +1282,23 @@ class Turn {
     }
     if (wikiP) wiki = await wikiP;
     const pick = (k) => found.filter(x => x.kind === k);
+    // Rules the user set for the whole chat come along every time (nothing else is replayed).
+    const standing = prefetchLib.standingInstructions(line, { textOf: (m) => messageText(m) });   // line leaves out the current message
     const text = prefetchLib.render({
       query, exchanges: pick('exchange'), chats: pick('chat'), pages: pick('page'),
-      facts: facts.map(r => memory.factText(r.fact)), web, check, wiki,
-    }, { wrap: wrapUntrusted, small });
-    const counts = [found.length && `${found.length} saved`, facts.length && `${facts.length} from memory`, wiki && 'Wikipedia', web && web.items.length && `${web.items.length} from the web`].filter(Boolean);
+      facts: facts.map(r => memory.factText(r.fact)), web, check, wiki, standing, tools: fit,
+    }, { wrap: wrapUntrusted, small, bash: bashSurface() });
+    const counts = [fit.length && `tools: ${fit.map(t => t.name).join(', ')}`, found.length && `${found.length} saved`, facts.length && `${facts.length} from memory`, standing.length && `${standing.length} standing`, wiki && 'Wikipedia', web && web.items.length && `${web.items.length} from the web`].filter(Boolean);
     this.toolEvent({ name: 'find', label: `looked up before answering: "${truncate(query, 60)}"${counts.length ? ` (${counts.join(', ')})` : ' (nothing)'}`, ok: true, args: { query } }, text || '(nothing found)');
     if (!text) return null;
     const items = [
       ...found.map(x => ({ kind: x.kind === 'page' ? 'observation' : x.kind === 'chat' ? 'chat' : 'message', id: x.id, ref: x.ref, label: truncate(x.kind === 'page' ? x.label : x.question, 90), score: x.score, tokens: estTokens(x.text) })),
       ...facts.map(r => ({ kind: 'fact', id: r.fact.id, label: truncate(memory.factText(r.fact), 90), score: Math.round(r.score * 100) / 100 })),
+      ...standing.map(s => ({ kind: 'message', label: `standing: ${truncate(s, 80)}`, score: 1 })),
       ...(wiki ? [{ kind: 'web', label: 'Wikipedia and Wikidata' }] : []),
       ...(web && web.items.length ? [{ kind: 'web', label: `web search: ${truncate(web.query, 60)} (${web.items.length})` }] : []),
     ];
-    return { query, text, items };
+    return { query, text, items, tools: fit.map(t => t.name) };
   }
 
   async webFallback(query) {
@@ -1169,13 +1311,16 @@ class Turn {
       ...top.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${truncate(x.snippet || '', lite() ? 220 : 400)}`),
     ].filter(Boolean).join('\n');
     if (!body) return `Nothing in your memory, recipes or past chats, and the web had no results for "${truncate(query, 80)}". Try web_search with other words, or ${askName()} to ask the user.`;
-    return `Nothing in your memory, recipes or past chats, so this searched the web for "${truncate(w.query, 80)}":\n${wrapUntrusted('web search', body)}\nTo read one in full, call fetch_url with its link.`;
+    return `Nothing in your memory, recipes or past chats, so this searched the web for "${truncate(w.query, 80)}":\n${wrapUntrusted('web search', body)}\n${bashSurface() ? 'To read one, curl its link in bash (pipe into grep for the part you need).' : 'To read one in full, call fetch_url with its link.'}`;
   }
 }
 
 // A tool result for the debug record: its text without the untrusted-content wrappers, capped so a long
 // page doesn't bloat the synced chat file.
 const DEBUG_MAX = 12000;
+// One line, cut to max characters (truncate() adds a note on its own line).
+const oneLine = (s, max) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > max ? t.slice(0, max - 1) + '…' : t; };
+
 function debugText(result) {
   const s = (typeof result === 'string' ? result : JSON.stringify(result, null, 1)).replace(STRIP_UNTRUSTED, '');
   return s.length > DEBUG_MAX ? `${s.slice(0, DEBUG_MAX)}\n… (${s.length - DEBUG_MAX} more characters not saved)` : s;

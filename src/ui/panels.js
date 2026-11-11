@@ -7,7 +7,9 @@ import * as recipes from '../recipes.js';
 import { resolveAgentPath } from '../guard.js';
 import { pfs, walk } from '../git.js';
 import { contextMode } from '../context.js';
-import { $, h, icon, ago, iconButton, scrollDown } from './dom.js';
+import { $, h, icon, ago, iconButton, scrollDown, toast } from './dom.js';
+import { traceText } from '../trace.js';
+import { estTokens } from '../util.js';
 import { state } from './state.js';
 import { messageEl, setupComposer, send } from './chat.js';
 import { renderSettingsPanel } from './settings-panel.js';
@@ -190,6 +192,56 @@ function renderContextPanel(m) {
       h('div', { class: 'tok' }, `${it.tokens} tok`))),
     r.recalled ? h('details', {}, h('summary', {}, 'Recalled block (sent after your message)'), h('pre', { class: 'ctx-recalled' }, r.recalled)) : '',
     r.dropped ? h('p', { class: 'muted' }, `${r.dropped} older message${r.dropped === 1 ? ' was' : 's were'} left out. Pin a message to always include it.`) : '',
+    fullContext(m),
   );
   c.append(body);
+}
+
+// The whole context, exactly as sent (trace.js): every conversation of the turn with its system prompt, tool
+// schemas, starting messages and each round in and out, loaded from the reply's own file in the storage repo.
+function fullContext(m) {
+  const box = h('section', { class: 'trace' }, h('h3', {}, 'Everything the model was sent'));
+  if (!m.trace) {
+    box.append(h('p', { class: 'muted' }, 'Not saved for this reply. Turn on Settings → Lab → "Save tool results and prompts" to keep the full context of new replies.'));
+    return box;
+  }
+  const status = h('p', { class: 'muted' }, 'Loading…');
+  box.append(status);
+  // Written in the background as the reply finishes, so it may land a moment after the panel opens.
+  const readSoon = async (tries = 10) => { for (let i = 0; i < tries; i++) { const t = await storage.read(m.trace); if (t) return t; await new Promise(r => setTimeout(r, 300)); } return null; };
+  readSoon().then((text) => {
+    let t = null;
+    try { t = JSON.parse(text); } catch {}
+    if (!t || !t.convs) { status.textContent = 'The saved context isn\'t on this device yet (it syncs with the chat).'; return; }
+    const pre = (s) => h('pre', { class: 'trace-pre' }, typeof s === 'string' ? s : JSON.stringify(s, null, 1));
+    const msg = (x) => h('div', { class: 'trace-msg' }, h('div', { class: 'kind' }, `${x.role || 'message'}${x.name ? ' · ' + x.name : ''}`),
+      x.content != null && x.content !== '' ? pre(x.content) : '', x.tool_calls && x.tool_calls.length ? pre({ tool_calls: x.tool_calls }) : '');
+    const list = (input) => (Array.isArray(input) ? input : [input]).map(x => (x && typeof x === 'object' && x.role ? msg(x) : pre(x)));
+    const copy = h('button', { class: 'btn small', onclick: async () => {
+      try { await navigator.clipboard.writeText(traceText(t)); toast('Copied the whole context.'); } catch { toast('Couldn\'t copy here.'); }
+    } }, 'Copy all as text');
+    status.replaceWith(h('div', { class: 'row', style: 'margin:4px 0 10px' }, copy,
+      h('span', { class: 'muted' }, `${t.convs.length} conversation${t.convs.length === 1 ? '' : 's'}, about ${estTokens(traceText(t))} tokens in all`)));
+    t.convs.forEach((c, i) => {
+      const d = h('details', { class: 'trace-conv' }, h('summary', {}, `${i + 1}. ${c.phase}`, h('span', { class: 'muted' }, ` · ${c.rounds.length} round${c.rounds.length === 1 ? '' : 's'}${c.model ? ' · ' + c.model : ''}`)));
+      d.open = t.convs.length === 1;
+      d.append(
+        h('details', {}, h('summary', {}, `System prompt (about ${estTokens(c.system)} tokens)`), pre(c.system || '(none)')),
+        c.declared.length ? h('details', {}, h('summary', {}, `Tools declared in full (${c.declared.length}, about ${estTokens(JSON.stringify(c.declared.map(n => t.tools[n])))} tokens)`),
+          ...c.declared.map(n => h('details', { class: 'trace-tool' }, h('summary', {}, n), pre(t.tools[n] || n)))) : '',
+        c.named.length ? h('p', { class: 'trace-named' }, h('span', { class: 'kind' }, 'Listed by name only: '), c.named.join(', ')) : '',
+        c.messages && c.messages.length ? h('details', {}, h('summary', {}, `Messages it started with (${c.messages.length})`), ...c.messages.map(msg)) : '',
+        ...c.rounds.map((r, j) => h('details', { class: 'trace-round' }, h('summary', {}, `Round ${j + 1}`, h('span', { class: 'muted' }, r.output && r.output.toolCalls && r.output.toolCalls.length ? ` · called ${r.output.toolCalls.map(x => (x.function && x.function.name) || x.name).join(', ')}` : r.output && r.output.text ? ' · replied' : '')),
+          h('div', { class: 'kind' }, 'Sent'), ...list(r.input),
+          r.added ? h('p', { class: 'muted' }, `Declared with this input: ${r.added.join(', ')}`) : '',
+          r.rendered ? h('details', {}, h('summary', {}, `Exact ${r.rendered.kind}`), pre(r.rendered.text)) : '',
+          h('div', { class: 'kind' }, 'The model wrote'),
+          r.output && r.output.thinking ? h('details', {}, h('summary', {}, 'Thinking'), pre(r.output.thinking)) : '',
+          r.output && r.output.text ? pre(r.output.text) : '',
+          r.output && r.output.toolCalls && r.output.toolCalls.length ? pre(r.output.toolCalls) : '')),
+      );
+      box.append(d);
+    });
+  }).catch((e) => { status.textContent = `Couldn't load it: ${e.message || e}`; });
+  return box;
 }

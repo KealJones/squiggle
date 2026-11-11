@@ -84,31 +84,32 @@ function sideModel(lastReply) {
   }
   items.push(['Status', state.modelState === 'ready' ? (state.busy ? 'replying' : 'ready') : state.modelState]);
   items.push(['Context', contextMode(agent.settings.contextMode).short]);
-  if (agent.smallModeSwitchable() && agent.smallMode()) items.push(['Mode', 'Small-model']);
   // Replies save which model wrote them (agent.js replyModel); shown when it isn't the current one.
   const rm = lastReply && lastReply.model;
   if (rm && rm.id && rm.id !== agent.settings.model) items.push(['Last reply by', `${rm.label || rm.id}${rm.how ? ` (${rm.how})` : ''}`]);
   const kv = h('dl', { class: 'kv' }, items.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]));
-  // Which model this chat uses: the device default, or its own.
+  // Which model this chat uses: its own (picked when it started, or switched here), else the default.
   const session = state.current;
-  const ids = Object.keys(engine.MODELS).filter(id => engine.modelFitsDevice(id) && (!engine.MODELS[id].needsRelay || state.cloudOffered));
-  const def = engine.MODELS[agent.settings.defaultModel] ? agent.settings.defaultModel : agent.settings.model;
+  const ids = engine.listedModels({ cloudOffered: state.cloudOffered });
   const pick = h('select', { class: 'side-select', 'aria-label': 'Model for this chat', disabled: state.busy ? true : null, onchange: async (e) => {
-    const v = e.target.value;
-    if (v) session.model = v; else delete session.model;
+    session.model = e.target.value;
     sessions.touch(session);
     await switchModel(sessionModel(session));
     renderSide();
-  } },
-    h('option', { value: '', selected: !session.model ? true : null }, `Default (${engine.MODELS[def] ? engine.MODELS[def].label : def})`),
-    ...ids.map(id => h('option', { value: id, selected: session.model === id ? true : null }, engine.MODELS[id].label)));
+  } }, ...ids.map(id => h('option', { value: id, selected: sessionModel(session) === id ? true : null }, engine.MODELS[id].label)));
   const chooser = h('div', { class: 'side-field' }, h('label', {}, 'Model for this chat'), pick,
-    h('span', { class: 'side-hint' }, session.model ? 'This chat always uses this model; other chats keep the default.' : 'Change the default in Settings.'));
+    h('span', { class: 'side-hint' }, 'Switch any time; the next reply uses it.'));
+  // The chat's context type is picked before its first message (chat.js newChatSettings) and stays: a chat that
+  // changes how its context is built halfway isn't a clean comparison. Shown here, not changed.
+  const mode = contextMode(session.contextMode || agent.settings.defaultContextMode || 'compact');
+  const modeChooser = h('div', { class: 'side-field' }, h('label', {}, 'Context for this chat'),
+    h('span', { class: 'value' }, mode.label),
+    h('span', { class: 'side-hint' }, `${mode.hint.split('. ')[0]}. Set when the chat started.`));
   if (M && M.runtime !== 'cloud' && engine.isLite() && state.modelState === 'ready') engine.smallSpeed().then((sp) => {
     if (!sp || !kv.isConnected) return;
     kv.append(h('dt', {}, 'Last reply'), h('dd', {}, `first token ${(sp.waitMs / 1000).toFixed(1)} s${sp.perSec ? `, ${sp.perSec} tok/s` : ''}`));
   }).catch(() => {});
-  return sideSection('model', 'Model', '', kv, chooser);
+  return sideSection('model', 'Model', '', kv, chooser, modeChooser);
 }
 
 function sideContext(ctx, msg) {
