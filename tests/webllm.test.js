@@ -136,6 +136,14 @@ test('a lost GPU partway through a reply: no repeated text, a plain error, and t
   assert.equal(again, 'Second try.');
 });
 
+test('a GPU lost again right after the reload: one retry only, and the error says so', async () => {
+  let made = 0;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, { engine: disposedEngine(), makeEngine: async () => { made += 1; return disposedEngine(); } });
+  const conv = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 64 } });
+  await assert.rejects(async () => { for await (const x of conv.sendMessageStreaming('hi')) void x; }, /dropped the model again right after it was reloaded/);
+  assert.equal(made, 1);
+});
+
 test('other errors are not mistaken for a lost GPU', async () => {
   const broken = { chat: { completions: { async create() { throw new Error('Context window exceeded'); } } }, interruptGenerate() {}, async unload() {} };
   let made = 0;

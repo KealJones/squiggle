@@ -116,6 +116,38 @@ const callChunk = (calls) => ({ choices: [{ delta: { tool_calls: calls.map((c, i
 // message fails until the page is reloaded (Keal's iPhone, iOS 27.2.1, 2026-11-11).
 export const gpuGone = (e) => /already been disposed|device (was )?lost|Instance\.dispose|GPUDevice.*(lost|destroyed)/i.test(String((e && e.message) || e || ''));
 
+// Why the GPU went away. WebLLM only logs this to the console (no use on a phone), so every device it asks for is
+// watched: device.lost's reason and message, and the first WebGPU error nobody caught (an out-of-memory or a limit
+// the model breaks shows up there first). Shown in the error a user sees, and on the console.
+let gpuNotes = { lost: null, error: null };
+let watching = false;
+function watchDevices() {
+  if (watching || typeof GPUAdapter === 'undefined' || !GPUAdapter.prototype || !GPUAdapter.prototype.requestDevice) return;
+  watching = true;
+  const request = GPUAdapter.prototype.requestDevice;
+  GPUAdapter.prototype.requestDevice = async function (...args) {
+    const device = await request.apply(this, args);
+    try {
+      gpuNotes = { lost: null, error: null };
+      device.lost.then((info) => {
+        gpuNotes.lost = { reason: info && info.reason, message: info && info.message, at: Date.now() };
+        console.warn('Squiggle: GPU device lost', gpuNotes.lost);
+      });
+      device.addEventListener('uncapturederror', (ev) => {
+        if (!gpuNotes.error) gpuNotes.error = String((ev && ev.error && ev.error.message) || ev).slice(0, 300);
+      });
+    } catch {}
+    return device;
+  };
+}
+export function gpuLossDetail() {
+  const bits = [];
+  const { lost, error } = gpuNotes;
+  if (lost) bits.push(`reason "${lost.reason || 'unknown'}"${lost.message ? `, Safari said: "${String(lost.message).slice(0, 200)}"` : ''}`);
+  if (error) bits.push(`the first GPU error was: "${error}"`);
+  return bits.length ? ` (${bits.join('; ')})` : ' (the browser gave no reason)';
+}
+
 // format: a tool format id (toolformats/) for models whose tools go through their own template (native),
 // null for the fenced ```tool_call format and chat-only models (plain text both ways).
 // engine: an already-made engine with WebLLM's API (tests pass a fake). makeEngine: how to make another one
@@ -128,6 +160,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
     appConfig: await appConfigFor(id),
     initProgressCallback: (p) => stage(/fetch/i.test(p.text || '') ? 'downloading the model' : 'loading the model onto the GPU'),
   }, { context_window_size: contextSize }));
+  watchDevices();
   onStage('loading the model onto the GPU');
   let engine = given || await make();
   let reloads = 0;
@@ -152,9 +185,15 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
       for await (const c of streamOnce(opts, signal)) { shown = true; yield c; }
     } catch (e) {
       if (!gpuGone(e) || (signal && signal.aborted)) throw e;
+      const first = gpuLossDetail();
       await revive();
-      if (shown) throw new Error('The GPU dropped the model partway through this reply (the phone can do this when it locks, switches apps or runs low on memory). It has been loaded again: send the message again.');
-      yield* streamOnce(opts, signal);
+      if (shown) throw new Error(`The GPU dropped the model partway through this reply${first}. It has been loaded again: send the message again.`);
+      try {
+        yield* streamOnce(opts, signal);
+      } catch (e2) {
+        if (!gpuGone(e2)) throw e2;
+        throw new Error(`The GPU dropped the model again right after it was reloaded${gpuLossDetail()}; the first time${first}. This device may not have enough GPU memory for this model right now.`);
+      }
     }
   }
 
