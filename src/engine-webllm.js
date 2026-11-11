@@ -114,13 +114,19 @@ const callChunk = (calls) => ({ choices: [{ delta: { tool_calls: calls.map((c, i
 // phone locking, switching apps), WebLLM's TVM runtime disposes itself (Instance.dispose on device.lost) and every
 // later call throws "Object has already been disposed". The engine object still looks loaded, so without this every
 // message fails until the page is reloaded (Keal's iPhone, iOS 27.2.1, 2026-11-11).
-export const gpuGone = (e) => /already been disposed|device (was )?lost|Instance\.dispose|GPUDevice.*(lost|destroyed)/i.test(String((e && e.message) || e || ''));
+// "Model not loaded" is what an engine left unloaded by a failed reload says; it needs the same reload.
+export const gpuGone = (e) => /already been disposed|device (was )?lost|Instance\.dispose|GPUDevice.*(lost|destroyed)|Model not loaded/i.test(String((e && e.message) || e || ''));
+// Loading failed because the browser had no GPU to give: WebLLM's "Unable to find a compatible GPU" (requestAdapter
+// came back empty). Right after Safari's GPU process dies it can say this for a while (Keal's iPhone, 2026-11-11).
+export const noAdapter = (e) => /compatible GPU|requestAdapter|no (webgpu )?adapter/i.test(String((e && e.message) || e || ''));
 
 // Why the GPU went away. WebLLM only logs this to the console (no use on a phone), so every device it asks for is
 // watched: device.lost's reason and message, and the first WebGPU error nobody caught (an out-of-memory or a limit
-// the model breaks shows up there first). Shown in the error a user sees, and on the console.
+// the model breaks shows up there first). Shown in the error a user sees, and on the console. One record per device,
+// so a device that was let go on purpose (unload) can't be mistaken for the one in use; whoever listens gets the record.
 let gpuNotes = { lost: null, error: null };
 let watching = false;
+const lostListeners = new Set();
 function watchDevices() {
   if (watching || typeof GPUAdapter === 'undefined' || !GPUAdapter.prototype || !GPUAdapter.prototype.requestDevice) return;
   watching = true;
@@ -128,25 +134,41 @@ function watchDevices() {
   GPUAdapter.prototype.requestDevice = async function (...args) {
     const device = await request.apply(this, args);
     try {
-      gpuNotes = { lost: null, error: null };
+      const notes = gpuNotes = { lost: null, error: null };
       device.lost.then((info) => {
-        gpuNotes.lost = { reason: info && info.reason, message: info && info.message, at: Date.now() };
-        console.warn('Squiggle: GPU device lost', gpuNotes.lost);
+        notes.lost = { reason: info && info.reason, message: info && info.message, at: Date.now() };
+        console.warn('Squiggle: GPU device lost', notes.lost);
+        for (const fn of lostListeners) { try { fn(notes); } catch {} }
       });
       device.addEventListener('uncapturederror', (ev) => {
-        if (!gpuNotes.error) gpuNotes.error = String((ev && ev.error && ev.error.message) || ev).slice(0, 300);
+        if (!notes.error) notes.error = String((ev && ev.error && ev.error.message) || ev).slice(0, 300);
       });
     } catch {}
     return device;
   };
 }
-export function gpuLossDetail() {
+const deviceWatch = {
+  current: () => gpuNotes,
+  onLost(fn) { lostListeners.add(fn); return () => lostListeners.delete(fn); },
+};
+export function gpuLossDetail(notes = gpuNotes) {
   const bits = [];
-  const { lost, error } = gpuNotes;
+  const { lost, error } = notes || {};
   if (lost) bits.push(`reason "${lost.reason || 'unknown'}"${lost.message ? `, Safari said: "${String(lost.message).slice(0, 200)}"` : ''}`);
   if (error) bits.push(`the first GPU error was: "${error}"`);
   return bits.length ? ` (${bits.join('; ')})` : ' (the browser gave no reason)';
 }
+
+// Runs fn now if the page is showing, else once it shows again: a GPU asked for from a hidden tab is often refused.
+function whenVisible(fn, delay = 300) {
+  const doc = globalThis.document;
+  if (!doc || doc.visibilityState !== 'hidden') { setTimeout(fn, delay); return; }
+  const on = () => { if (doc.visibilityState === 'hidden') return; doc.removeEventListener('visibilitychange', on); setTimeout(fn, delay); };
+  doc.addEventListener('visibilitychange', on);
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// How long to keep asking for the GPU after it was lost, in pauses between tries (~11 s in all).
+export const REVIVE_WAITS = [0, 500, 1500, 3000, 6000];
 
 // iOS 27 Safari (WebKit 325185 "Long running command buffers can hang the system") kills its GPU process when one
 // command buffer runs, or waits in the queue, for more than about 3 seconds; the device is lost with reason
@@ -183,7 +205,8 @@ export function paceGpu(engine, chunk = PACED_CHUNK) {
 // null for the fenced ```tool_call format and chat-only models (plain text both ways).
 // engine: an already-made engine with WebLLM's API (tests pass a fake). makeEngine: how to make another one
 // when the GPU device is lost (tests pass a fake; by default the same CreateMLCEngine call, from WebLLM's cache).
-export async function createShim(mlc, contextSize, onStage = () => {}, { format = null, engine: given = null, makeEngine = null, pace = webkitGpu() } = {}) {
+// watch: which GPU device is in use and when one is lost (tests pass a fake). waits: pauses between reload tries.
+export async function createShim(mlc, contextSize, onStage = () => {}, { format = null, engine: given = null, makeEngine = null, pace = webkitGpu(), watch = deviceWatch, waits = REVIVE_WAITS } = {}) {
   const id = given ? mlc : await pickId(mlc);
   const fmt = toolFormat(format) || PLAIN;
   const manifest = Boolean((custom.get(id) || {}).model_manifest);
@@ -191,19 +214,62 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
     appConfig: await appConfigFor(id),
     initProgressCallback: (p) => stage(/fetch/i.test(p.text || '') ? 'downloading the model' : 'loading the model onto the GPU'),
   }, { context_window_size: contextSize }));
-  watchDevices();
+  if (watch === deviceWatch) watchDevices();
   onStage('loading the model onto the GPU');
   let engine = given || await make();
+  let device = watch.current();       // the device this engine runs on (WebLLM asks for one per engine)
   if (pace && !paceGpu(engine)) console.warn('Squiggle: could not pace WebLLM\'s GPU work (its internals changed); long prompts may lose the GPU on Safari.');
-  let reloads = 0;
+  let reloads = 0, reviving = null, stale = false, closed = false, lostNotes = null;
+
   // A fresh engine from the files WebLLM already cached. Not reported through onStage: that's the load screen's
-  // (and its crash marker's), and this happens mid-reply.
-  async function revive() {
-    reloads += 1;
-    console.info('Squiggle: the GPU device was lost; loading the model onto the GPU again.');
-    try { await engine.unload(); } catch {}
-    engine = await make(() => {});
-    if (pace) paceGpu(engine);
+  // (and its crash marker's), and this happens mid-reply or in the background. Right after Safari's GPU process
+  // dies it may have no GPU to give for a few seconds ("Unable to find a compatible GPU"), so it keeps asking for a
+  // while. If it never gets one, the engine stays marked stale and the next message tries again, rather than
+  // talking to the unloaded engine ("Model not loaded").
+  function revive() {
+    if (reviving) return reviving;
+    reviving = (async () => {
+      reloads += 1;
+      stale = false;
+      console.info('Squiggle: the GPU device was lost; loading the model onto the GPU again.');
+      const old = engine;
+      engine = null;
+      try { old && await old.unload(); } catch {}
+      let last = null;
+      for (const wait of waits) {
+        if (wait) await sleep(wait);
+        if (closed) return;
+        try { engine = await make(() => {}); break; } catch (e) {
+          last = e;
+          if (!noAdapter(e) && !gpuGone(e)) break;
+          console.warn('Squiggle: no GPU yet, asking again', String((e && e.message) || e));
+        }
+      }
+      if (!engine) {
+        stale = true;
+        if (!noAdapter(last) && !gpuGone(last)) throw last;
+        throw new Error(`The GPU went away${gpuLossDetail(lostNotes || device)} and the browser hasn't given it back yet. Send the message again in a moment; if it keeps happening, reload the page.`);
+      }
+      device = watch.current();
+      lostNotes = null;
+      if (pace) paceGpu(engine);
+    })().finally(() => { reviving = null; });
+    return reviving;
+  }
+
+  // Noticed before the next message: when the device goes (the phone locked, the app was switched, Safari's GPU
+  // process restarted), the model is loaded again as soon as the page shows, so it's ready by the time the user
+  // sends instead of the send finding a dead engine. A device let go on purpose (unload, a download's engine) is
+  // ignored: only the one this engine runs on counts, and not while reloading or after exit.
+  const unwatch = watch.onLost((notes) => {
+    if (notes !== device || reviving || closed) return;
+    stale = true;
+    lostNotes = notes;
+    whenVisible(() => { if (stale && !reviving && !closed) revive().catch((e) => console.warn('Squiggle: background reload failed', e)); });
+  });
+  async function ready() {
+    if (reviving) { try { await reviving; } catch {} }
+    if (stale || !engine) await revive();
   }
 
   // One reply. Chat formats go through WebLLM's chat API, raw ones send the rendered prompt as a text
@@ -213,19 +279,21 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
   // (every request carries the whole conversation, so nothing is lost). Once text is out, a retry would repeat it:
   // the engine is still brought back for the next message, and the error says what happened.
   async function* stream(opts, signal) {
+    await ready();
     let shown = false;
     try {
       for await (const c of streamOnce(opts, signal)) { shown = true; yield c; }
     } catch (e) {
       if (!gpuGone(e) || (signal && signal.aborted)) throw e;
-      const first = gpuLossDetail();
+      const first = gpuLossDetail(lostNotes || device);
       await revive();
       if (shown) throw new Error(`The GPU dropped the model partway through this reply${first}. It has been loaded again: send the message again.`);
       try {
         yield* streamOnce(opts, signal);
       } catch (e2) {
         if (!gpuGone(e2)) throw e2;
-        throw new Error(`The GPU dropped the model again right after it was reloaded${gpuLossDetail()}; the first time${first}. This device may not have enough GPU memory for this model right now.`);
+        stale = true;
+        throw new Error(`The GPU dropped the model again right after it was reloaded${gpuLossDetail(device)}; the first time${first}. This device may not have enough GPU memory for this model right now.`);
       }
     }
   }
@@ -298,7 +366,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
 
   return {
     async createChatCompletion(opts) { return stream(opts, opts.abortSignal); },
-    async exit() { try { await engine.unload(); } catch {} },
+    async exit() { closed = true; unwatch(); try { engine && await engine.unload(); } catch {} },
     info: { gpu: true, threads: 1, compat: false, webllm: true, webllmVersion: versionFor(id), toolFormat: fmt.id, toolNames: Boolean(fmt.listsNames), id },
     get reloads() { return reloads; },
     get paced() { return Boolean(pace); },
