@@ -188,6 +188,19 @@ reply keeps what it returned (`tools[].result`, untrusted wrappers stripped, cut
 under "Result" in the tool list and synced with the session file. Web searches say which provider answered
 (the relay's `source`: langsearch, tavily, tavily (past year), duckduckgo, wikipedia) in the label.
 
+## Incidents (incidents.js): read these before asking Keal what happened
+
+Problems are written to the storage repo (KealJones/squiggle-state) as they happen, one JSON line each in
+`debug/incidents.jsonl` (the last 200; app.js `saveIncident`), so a crash can be looked at without a screenshot:
+`gpu-lost` (engine-webllm `revive`: Safari's reason and message, the first uncaught GPU error, GPU memory held at
+the loss, whether the reload got a GPU back, how many tries), `reply-error` (agent.js: the message the user saw,
+chat and reply ids, the trace file with the exact prompt, the context window), `tab-killed` (model-ui.js, on the
+next open: the crash marker, i.e. the stage, chat, window and GPU memory when the reply started, plus the last
+prompt sent, saved as `debug/incidents/<id>.txt`) and `load-failed`, and `sync-failed` (storage.js, once per new error; it arrives with the first sync that works). Every line has the user agent, uptime and
+`gpu: { bytes, peak, atLoss }`, the WebGPU buffer bytes this page holds (`trackBuffers`): Safari has no API for a
+tab's memory, and the GPU shares the iPhone tab's ~1.9 GB, so that's the level to compare against. Lines reach
+GitHub with the next sync.
+
 ## Voice (voice.js)
 
 - Speech-to-text is the Web Speech API; text-to-speech is the browser's own speech synthesis

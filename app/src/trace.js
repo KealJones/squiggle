@@ -66,7 +66,12 @@ export function addRound(trace, { input, output, rendered = null, added = [] }) 
 
 let lastRendered = null;
 /** Engines call this with the prompt they're about to send (kind: 'raw prompt' or 'chat messages'). */
-export function noteRendered(kind, text) { lastRendered = { kind, text: typeof text === 'string' ? text : JSON.stringify(text, null, 1) }; }
+export function noteRendered(kind, text) {
+  lastRendered = { kind, text: typeof text === 'string' ? text : JSON.stringify(text, null, 1) };
+  // Kept across a crash too: a tab killed while reading this prompt can't save its trace (incidents.js, model-ui.js).
+  try { localStorage.setItem(LAST_PROMPT_KEY, lastRendered.text.slice(-200000)); } catch {}
+}
+export const LAST_PROMPT_KEY = 'squiggle-last-prompt';
 /** The agent takes it after each reply; null when the engine rendered nothing itself. */
 export function takeRendered() { const r = lastRendered; lastRendered = null; return r; }
 
