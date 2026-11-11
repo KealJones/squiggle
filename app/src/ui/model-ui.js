@@ -12,6 +12,8 @@ import { state } from './state.js';
 import { saveSettings, setDefaultModel } from './settings.js';
 import { renderSide } from './side.js';
 
+let loadingModel = null;
+
 export async function initModel() {
   // Which build of the model this device runs (LFM3 on the GPU, or on the CPU without WebGPU or 16-bit floats):
   // the GPU is asked once, then a saved build that can't run here becomes the one that can.
@@ -41,7 +43,10 @@ export async function initModel() {
       return initModel();
     }
   }
-  const info = await engine.downloadInfo(agent.settings.model);
+  const model = agent.settings.model;
+  const info = await engine.downloadInfo(model);
+  // A send or the setup button can start loading while the cache check is pending.
+  if (model !== agent.settings.model || state.modelPromise || loadingModel || state.modelState === 'ready') return;
   if (!info.complete) { state.modelState = 'missing'; showDownloadBanner(info); return; }
   let crashed = loadCrashMarker();
   // Left mid-load or mid-reply (refresh, closed, backgrounded), not crashed: load again without asking.
@@ -188,6 +193,7 @@ function showDownloadBanner(info) {
 export function ensureModel() {
   if (state.modelState === 'ready') return Promise.resolve(true);
   if (state.modelState === 'unsupported') return Promise.resolve(false);
+  if (loadingModel) return loadingModel.then(() => state.modelState === 'ready');
   state.modelPromise = state.modelPromise || (async () => {
     try {
       const id = agent.settings.model;
@@ -243,6 +249,8 @@ export function ensureModel() {
 
 /** Loads a different model (the Settings picker, or a chat with its own model). */
 export async function switchModel(id) {
+  await (state.modelPromise || loadingModel);
+  if (state.busy) return;
   if (!engine.MODELS[id] || id === agent.settings.model) return;
   agent.settings.model = id;
   state.modelState = 'unknown';
@@ -318,7 +326,12 @@ export async function setIsolation(on) {
   } catch { return false; }
 }
 
-export async function loadModel() {
+export function loadModel() {
+  loadingModel ||= loadCurrentModel().finally(() => { loadingModel = null; });
+  return loadingModel;
+}
+
+async function loadCurrentModel() {
   state.modelState = 'loading';
   const S = agent.settings;
   // A build compiled for a smaller window (MODELS maxContext, e.g. a community MLC build at 4K) can't take
@@ -352,6 +365,17 @@ export async function loadModel() {
     state.modelState = 'error';
     banner(h('span', { class: 'error' }, 'Could not start the model: ' + e.message), h('button', { class: 'btn', onclick: () => loadModel() }, 'Try again'));
   }
+}
+
+// WebLLM can dispose its pipeline after losing the GPU device. The turn has
+// already ended here, so drop the stale engine and let the user reload it.
+export async function recoverGpuModel(error) {
+  if (engine.MODELS[agent.settings.model]?.backend !== 'webllm') return;
+  if (!/object has already been disposed|device (?:was )?lost|model .*not loaded/i.test(error?.message || String(error))) return;
+  state.modelState = 'error';
+  await engine.unload();
+  banner(h('span', { class: 'error' }, 'The GPU model stopped. Reload it, then send your message again.'),
+    h('button', { class: 'btn primary', onclick: (e) => { e.currentTarget.disabled = true; ensureModel(); } }, 'Reload model'));
 }
 
 // Semantic search (MiniLM on the CPU) for smart context, memory and recipes.

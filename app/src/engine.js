@@ -65,7 +65,7 @@ let lib = null;
 let engine = null;
 let loadedModel = null;
 let engineContext = 0;
-const genLock = mutex();          // one generation at a time
+const genLock = mutex();          // generations and model lifecycle share the engine
 let activeConv = null;
 let bgBusy = false;
 
@@ -403,10 +403,14 @@ let engineSmall = '';
 // Small models (wllama): how the last load ran ({ gpu, threads, compat }) and the last reply's speed.
 export const smallInfo = () => (engine && engine.info) || null;
 export const smallSpeed = async () => (isLite() ? (await import('./engine-wllama.js')).lastSpeed() : null);
-export async function load(id, contextSize, { fast = true, onStage = () => {}, small = {} } = {}) {
+export function load(id, contextSize, options) {
+  return genLock(() => loadEngine(id, contextSize, options));
+}
+
+async function loadEngine(id, contextSize, { fast = true, onStage = () => {}, small = {} } = {}) {
   const smallKey = JSON.stringify({ gpu: Boolean(small.gpu), threads: Boolean(small.threads) });
   if (engine && loadedModel === id && engineContext === contextSize && engineFast === fast && (MODELS[id].runtime !== 'wllama' || engineSmall === smallKey)) return;
-  await unload();
+  await unloadEngine();
   if (MODELS[id].runtime === 'cloud') {
     engine = (await import('./engine-cloud.js')).createEngine();
     loadedModel = id; engineContext = contextSize; engineFast = fast;
@@ -453,7 +457,11 @@ export async function load(id, contextSize, { fast = true, onStage = () => {}, s
   engineContext = contextSize;
 }
 
-export async function unload() {
+export function unload() {
+  return genLock(unloadEngine);
+}
+
+async function unloadEngine() {
   if (!engine) return;
   try { await engine.delete(); } catch {}
   engine = null; loadedModel = null;

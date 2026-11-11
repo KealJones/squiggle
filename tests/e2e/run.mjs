@@ -1470,6 +1470,38 @@ await check('demo startup downloads the LFM3 CPU build when WebGPU has no adapte
   }
 });
 
+await check('demo loads the model once and can reload after a disposed GPU engine', async () => {
+  const ctx = await browser.newContext();
+  try {
+    await ctx.addInitScript(() => { window.__simulateGpuRecovery = true; });
+    const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+    await ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+    const page = await ctx.newPage();
+    await page.goto(appUrl + '/');
+    await page.getByRole('button', { name: 'Try it without signing in' }).click();
+    await page.getByRole('button', { name: 'Download and start' }).click();
+    await page.waitForFunction(() => document.querySelector('#composer-note')?.textContent.includes('running on this device'));
+    assert.equal(await page.evaluate(() => window.__loads), 1);
+
+    await page.evaluate(() => { window.__disposeOnReply = true; });
+    await page.fill('#input', 'Hi');
+    await page.press('#input', 'Enter');
+    const reload = page.getByRole('button', { name: 'Reload model' });
+    await reload.waitFor();
+    assert.match(await page.textContent('#messages-inner'), /Object has already been disposed/);
+    assert.equal(await page.evaluate(async () => (await import('/src/engine.js')).engineReady()), false);
+
+    await reload.click();
+    await reload.waitFor({ state: 'hidden' });
+    await page.waitForFunction(async () => window.__loads === 2 && (await import('/src/engine.js')).engineReady());
+    await page.fill('#input', 'Hi again');
+    await page.press('#input', 'Enter');
+    await page.locator('#messages-inner .msg.assistant .body').filter({ hasText: 'Plain answer to: Hi again' }).waitFor();
+  } finally {
+    await ctx.close();
+  }
+});
+
 await check('demo mode: try it without signing in (local storage, sample data, no git tools, no cloud), then sign in and keep what was made', async () => {
   const demoRepo = makeRepo(root, 'tester', 'demo-state', { 'README.md': '# state\n' });
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 820 } });
