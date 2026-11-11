@@ -16,7 +16,7 @@ export const BARS = {
 };
 
 // Always available to the model, so find never offers them as results.
-const HARNESS_TOOLS = new Set(['plan', 'done', 'need', 'find', 'find_tools']);
+const HARNESS_TOOLS = new Set(['plan', 'done', 'need', 'ask_user', 'find', 'find_tools']);
 
 // Words that are noise in a spoken or rambling query (search.js drops the usual stop words).
 const CHATTER = new Set(('hey hi uh uhh um umm like yeah gonna wanna kinda thing things stuff basically actually really ' +

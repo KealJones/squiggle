@@ -64,13 +64,16 @@ export const LITE_SYSTEM = [
 export const LITE_SYSTEM_NATIVE = [
   ...LITE_SYSTEM.split('\n').slice(0, 3),
   'Look things up with web_search and fetch_url. find(query) searches your other tools, recipes, memory and',
-  'past chats when you need one of them; need(what) asks the user for something only they know.',
+  'past chats when you need one of them; ask_user(question) asks the user something only they know and waits.',
   'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
 ].join('\n');
 
 // Which prompt dialect this model gets (tasks.js DIALECT): the frozen fenced one for Squiggle Small, v3
 // (harness text in a user turn marked as Squiggle's) for everyone else.
 export const dialect = () => (fencedSmall() ? tasks.DIALECT.v2 : tasks.DIALECT.v3);
+// The tool that asks the user: `need` in Squiggle Small's frozen format, `ask_user` for everyone else (case 15).
+const askName = () => (dialect().frozen ? 'need' : 'ask_user');
+const ASKING = new Set(['need', 'ask_user']);
 
 const lite = () => engine.isLite(settings.model);
 // A small (wllama) model that speaks Gemma 4's own tool format (engine nativeTools): it gets the full prompt
@@ -141,7 +144,7 @@ function systemPrompt(threadId, session, phase = 'chat', known = []) {
   return [
     `You are Squiggle, a personal AI agent running privately on the user's own device. Today is ${new Date().toDateString()}.`,
     `Workspace: /home is your own folder (synced to the user's devices); /repos/<name> holds clones of their GitHub repos. For code: git_clone, git_branch (an agent/ branch; those push freely, any other branch asks the user first, and a refused push is final), edit, git_commit, git_push, then github_open_pr if they want a review.`,
-    `Don't guess. For current information or anything you're unsure of: web_search, then fetch_url the best results, and say which sites you used. Maths goes through calculate. find(query) searches your tools, recipes from past tasks, memory and past chats; need(what) asks the user for something only they know. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`,
+    `Don't guess. For current information or anything you're unsure of: web_search, then fetch_url the best results, and say which sites you used. Maths goes through calculate. find(query) searches your tools, recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`,
     `Save lasting facts about the user or their projects (preferences, decisions, names) with remember; search_history finds past conversations. Your context window is ${settings.contextSize} tokens and every tool result says how much is left: prefer grep and read_file line ranges, and keep notes with note on longer work without a plan.`,
     managed() ? UPFRONT : '',
     names,
@@ -167,7 +170,7 @@ function preloaded(tools) {
 // remember and calculate are in: a 0.8B model told "save it with remember" called need instead of looking
 // remember up first (2026-11-04), and nearly every phone chat wants one of the two.
 // wiki_lookup is in too: names, dates and filmographies are most of what phone questions ask (2026-11-04).
-const GATE = ['plan', 'done', 'need', 'find', 'checkpoint', 'tool_info', ...PRELOADED, 'wiki_lookup', 'remember', 'calculate'];
+const GATE = ['plan', 'done', 'need', 'ask_user', 'find', 'checkpoint', 'tool_info', ...PRELOADED, 'wiki_lookup', 'remember', 'calculate'];
 
 // The tools this model may have: every enabled one, minus the ones only big models can use (wikidata_query: a
 // 0.6B model's SPARQL didn't run or asked about the wrong item; docs/measurements-2026-11-04.md).
@@ -179,8 +182,9 @@ function phaseTools(step) {
   const base = modelTools().filter(t => !(step && t.name === 'note'));
   const h = tasks.HARNESS_SPECS;
   const info = gated() ? [tasks.TOOL_INFO_SPEC] : [];
-  if (managed()) return [...base, tasks.MANAGED_SPECS.plan, ...(step ? [h.done] : []), h.need, h.find, ...info, tasks.MANAGED_SPECS.checkpoint];
-  return [...base, h.plan, ...(step ? [h.done] : []), h.need, h.find, ...info];
+  const ask = h[askName()];
+  if (managed()) return [...base, tasks.MANAGED_SPECS.plan, ...(step ? [h.done] : []), ask, h.find, ...info, tasks.MANAGED_SPECS.checkpoint];
+  return [...base, h.plan, ...(step ? [h.done] : []), ask, h.find, ...info];
 }
 
 // Tokens the tool definitions take: fenced small models see only names and looked-up one-liners (~300);
@@ -605,6 +609,7 @@ class Turn {
       sessions.saveTask(this.session, task);
       this.ui.onPlan && this.ui.onPlan(task);
       const outcome = await this.runStep(task, step);
+      if (outcome !== 'again') this.stepRetry = null;
       sessions.saveTask(this.session, task);
       this.ui.onPlan && this.ui.onPlan(task);
       if (outcome === 'ask' || outcome === 'stop') break;
@@ -678,7 +683,7 @@ class Turn {
   // steps): not run again; the earlier result comes back instead, since a new step doesn't show it.
   ranInTask(task, step, call) {
     const fn = (call && call.function) || {};
-    if (!task || ['plan', 'done', 'checkpoint', 'need', 'tool_info'].includes(fn.name)) return null;
+    if (!task || ['plan', 'done', 'checkpoint', 'need', 'ask_user', 'tool_info'].includes(fn.name)) return null;
     const args = JSON.stringify(fn.arguments || {});
     const prev = [...(task.log || [])].reverse().find(l => l.step !== (step && step.id) && l.name === fn.name && JSON.stringify(l.args || {}) === args);
     if (!prev) return null;
@@ -688,13 +693,23 @@ class Turn {
 
   repeated(call) {
     const fn = (call && call.function) || {};
-    if (['plan', 'done', 'checkpoint', 'need'].includes(fn.name)) return null;
+    if (['plan', 'done', 'checkpoint', 'need', 'ask_user'].includes(fn.name)) return null;
     const key = `${fn.name}:${JSON.stringify(fn.arguments || {})}`;
     const n = (this.seenCalls.get(key) || 0) + 1;
     this.seenCalls.set(key, n);
     if (n === 1) return null;
     this.toolEvent({ name: fn.name, label: `${fn.name} repeated with the same arguments (not run again)`, ok: false });
     return { error: `You already called ${fn.name} with exactly these arguments in this turn; its result is above. Use that result, change the arguments, or answer now.` };
+  }
+
+  // What the last try at this step did, for the step's restart (v3): why it stopped, its calls and results so far
+  // (tool output stays wrapped as untrusted), and what it said.
+  retryText(task, step, retry) {
+    const calls = (task.log || []).filter(l => l.step === step.id && !tasks.HARNESS.has(l.name))
+      .map(l => `- ${l.label}${l.text ? `\n${wrapUntrusted('tool output', truncate(String(l.text).replace(STRIP_UNTRUSTED, ''), 600))}` : ''}`);
+    return [`It ended without calling a tool. ${retry.why}`,
+      calls.length ? `Tool calls it made (their results are below; don't repeat them):\n${calls.join('\n')}` : 'It made no tool calls.',
+      retry.said ? `What it wrote: ${truncate(retry.said, 400)}` : ''].filter(Boolean).join('\n');
   }
 
   declare(tools, call, response) {
@@ -728,18 +743,25 @@ class Turn {
     // own tool calls and output (a phone has 4096 tokens in all).
     const maxTokens = Math.max(600, Math.floor(settings.contextSize * 0.45) - toolTokens);
     const sections = await this.stepSections(task, step);
-    const prompt = tasks.stepPrompt(systemPrompt(this.threadId, this.session, 'step', known), task, sections, { maxTokens });
-    const system = prompt.text;
+    const d = dialect();
     const n = tasks.stepIndex(task, step) + 1;
+    // v3: a nudge restarts the step with what went wrong at the end of the system prompt (never a user turn).
+    const retry = d.native && this.stepRetry && this.stepRetry.id === step.id ? this.stepRetry : null;
+    if (retry) sections.push({ title: 'Your last try at this step (from Squiggle, not the user)', text: this.retryText(task, step, retry), keep: true });
+    const reserve = Math.min(MAX_OUTPUT, 700);
+    const userText = tasks.stepUser(task, { dialect: d });
+    // AI-managed: the budget line goes with the instruction (v3: in the system prompt; v2: in the user turn).
+    const budgetFor = (system, user) => managed() ? tasks.budgetText(estTokens(system) + estTokens(user) + toolTokens + 30, settings.contextSize, reserve) : '';
+    let prompt = tasks.stepPrompt(systemPrompt(this.threadId, this.session, 'step', known), task, sections, { maxTokens, dialect: d, now: tasks.stepNow(task, { dialect: d }) });
+    if (d.native && managed()) prompt = tasks.stepPrompt(systemPrompt(this.threadId, this.session, 'step', known), task, sections, { maxTokens, dialect: d, now: tasks.stepNow(task, { dialect: d, budget: budgetFor(prompt.text, userText) }) });
+    const system = prompt.text;
     this.reply.context = { mode: 'step', budget: settings.contextSize, used: estTokens(system),
       items: [{ kind: 'plan', label: `Step ${n}: ${truncate(step.text, 80)} (goal, plan and results)`, tokens: estTokens(tasks.stepSystem('', task)) },
         ...sections.filter(x => prompt.shown.includes(x.title)).map(x => ({ kind: 'section', label: x.title, tokens: estTokens(x.text) }))] };
     this.conv = await engine.conversation({ system, messages: [], tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known, gate: gated() ? GATE : null });
-    const reserve = Math.min(MAX_OUTPUT, 700);
-    const d = dialect();
-    let pending = tasks.stepUser(task, { dialect: d });
+    let pending = userText;
     let used = estTokens(system) + estTokens(pending) + toolTokens;
-    if (managed()) { pending = tasks.stepUser(task, { budget: tasks.budgetLine(used + 30, settings.contextSize, reserve, d), dialect: d }); used += 30; }
+    if (managed() && !d.native) { pending = tasks.stepUser(task, { budget: tasks.budgetLine(used + 30, settings.contextSize, reserve, d), dialect: d }); used += 30; }
     const room = () => Math.max(0, (settings.contextSize - used - reserve) * 3);
     this.setWindow(windowOf(this.reply.context, { system: estTokens(system), tools: toolTokens, message: estTokens(pending) }), used);
     const label = `Step ${n}: ${step.text}`;
@@ -755,14 +777,25 @@ class Turn {
         if (text && !asText) { said = text; this.addThinking(`${label}\n${text}`); }
         if (this.aborted) return 'stop';
         if (!r.toolCalls.length) {
+          // A question to the user ("Could you tell me the repo name?"): ask it and pause the task; the reply
+          // is the answer. It used to be filed as the step's result and the plan went on without one (case 15).
+          if (text && !looped && !asText && tasks.asksUser(text)) {
+            this.toolEvent({ name: askName(), label: `asked you: ${truncate(text, 60)}`, ok: true });
+            return this.ask(text, task);
+          }
           // Answered without calling done: what it said is the step's result.
           if (text && !looped && !asText) { tasks.finishStep(task, text); return 'next'; }
           // Only thinking, nothing at all, a loop or a typed-out call: nudge it, then ask the person.
-          if (++blank <= 2) {
-            pending = d.note(asText ? 'You wrote a tool call as text, so it did not run. Call the tool itself, or say what you found and call done.'
-              : looped ? 'You were repeating yourself. Say in one or two lines what you found, then call done, or call a tool.' : 'Finish your thought, then call a tool, or call done with what you found.');
-            continue;
+          const why = asText ? 'You wrote a tool call as text, so it did not run. Call the tool itself, or say what you found and call done.'
+            : looped ? 'You were repeating yourself. Say in one or two lines what you found, then call done, or call a tool.' : 'Finish your thought, then call a tool, or call done with what you found.';
+          if (d.native) {
+            // v3: start the step again; the system prompt says what happened (a user turn would read as the person).
+            const tries = retry ? retry.n : 0;
+            if (tries < 2) { this.stepRetry = { id: step.id, n: tries + 1, why, said: asText ? '' : said }; return 'again'; }
+            this.stepRetry = null;
+            return this.ask(`I got stuck on step ${n} ("${truncate(step.text, 80)}"). How should I go on?`, task);
           }
+          if (++blank <= 2) { pending = d.note(why); continue; }
           return this.ask(`I got stuck on step ${n} ("${truncate(step.text, 80)}"). How should I go on?`, task);
         }
         blank = 0;
@@ -799,7 +832,7 @@ class Turn {
               if (++idle >= 3) return this.ask(`I got stuck on step ${n} ("${truncate(step.text, 80)}"). How should I go on?`, task);
               results.push(toolResult(call, tasks.samePlan(task, args.steps)
                 ? { ok: true, note: `That is the current plan. Work on step ${n} now: ${step.text}` }
-                : { error: `The plan has been revised ${task.revisions} times; it stands now. Work on step ${n}: ${step.text}, or call need if something is missing.` }));
+                : { error: `The plan has been revised ${task.revisions} times; it stands now. Work on step ${n}: ${step.text}, or call ${askName()} if something is missing.` }));
               continue;
             }
             task.revisions = (task.revisions || 0) + 1;
@@ -828,7 +861,7 @@ class Turn {
           const out = await this.exec(call, { room: Math.floor(room() / r.toolCalls.length), task, step });
           if (out.ask) return 'ask';
           let response = out.response;
-          if (step.calls === tasks.STEP_SOFT_CAP) response = { ...response, note: `This step has used ${step.calls} tool calls. Finish it now with done (what you have), or call need.` };
+          if (step.calls === tasks.STEP_SOFT_CAP) response = { ...response, note: `This step has used ${step.calls} tool calls. Finish it now with done (what you have), or call ${askName()}.` };
           used += this.declare(tools, call, response);
           used += estTokens(JSON.stringify(response)) + 10;
           this.grow(used);
@@ -873,7 +906,7 @@ class Turn {
     this.finishedNow = true;
     this.ui.onPlan && this.ui.onPlan(task);
     const maxTokens = Math.max(600, settings.contextSize - Math.min(MAX_OUTPUT, 1024) - 300);
-    this.conv = await engine.conversation({ system: tasks.finalSystem(systemPrompt(this.threadId, this.session, 'final'), task, { maxTokens }), messages: [], tools: [], maxOutputTokens: MAX_OUTPUT });
+    this.conv = await engine.conversation({ system: tasks.finalSystem(systemPrompt(this.threadId, this.session, 'final'), task, { maxTokens, dialect: dialect() }), messages: [], tools: [], maxOutputTokens: MAX_OUTPUT });
     if (this.prefix && !/\n\n$/.test(this.prefix)) this.prefix += '\n\n';
     const r = await this.respond(tasks.finalUser(task, { dialect: dialect() }));
     this.prefix += r.text || '';
@@ -899,31 +932,39 @@ class Turn {
     const args = (call.function && call.function.arguments) || {};
     this.calls++;
     this.ui.onTool && this.ui.onTool({ name, running: true });
-    if (name === 'find' || name === 'need') {
-      const query = String(args.query || args.what || args.q || '').trim();
+    if (name === 'find' || ASKING.has(name)) {
+      const asking = ASKING.has(name);
+      const query = String(args.query || args.question || args.what || args.q || '').trim();
       // Small models call need/find with nothing (or echo the request) when they mean something else;
       // an empty question must not reach the user.
       if (!query) {
-        this.toolEvent({ name, label: `${name} without a ${name === 'need' ? 'what' : 'query'}`, ok: false });
-        return { response: { error: name === 'need' ? 'need takes what: say in words what you are missing and only the user can tell you. For a calculation use calculate; to save a fact use remember.' : 'find takes query: what you are looking for (a tool, a recipe, a memory, a past chat).' } };
+        this.toolEvent({ name, label: `${name} without a ${name === 'find' ? 'query' : name === 'need' ? 'what' : 'question'}`, ok: false });
+        return { response: { error: name === 'need' ? 'need takes what: say in words what you are missing and only the user can tell you. For a calculation use calculate; to save a fact use remember.'
+          : name === 'ask_user' ? 'ask_user takes question: the question for the user, in words. For a calculation use calculate; to save a fact use remember.'
+          : 'find takes query: what you are looking for (a tool, a recipe, a memory, a past chat).' } };
       }
       // need("your dog is named Pip") right after the user said so: the model is restating, not asking.
-      if (name === 'need' && restates(query, this.shown)) {
-        this.toolEvent({ name, label: `need restated the request (not asked)`, ok: false });
+      if (asking && restates(query, this.shown)) {
+        this.toolEvent({ name, label: `${name} restated the request (not asked)`, ok: false });
         return { response: { error: 'The user just told you that; it is not missing. Use it: answer, or save it with remember if it is a lasting fact.' } };
       }
-      const { text, tools, empty, answers, web } = await this.find(query, task, { web: name === 'find' });
+      // ask_user asked a second time with the same question: memory didn't answer it, so ask.
+      const key = query.toLowerCase().replace(/\s+/g, ' ');
+      this.askedBefore = this.askedBefore || new Set();
+      const again = name === 'ask_user' && this.askedBefore.has(key);
+      const { text, tools, empty, answers, web } = again ? { text: '', tools: [], empty: true, answers: false } : await this.find(query, task, { web: name === 'find' });
       if (task && tools.length) task.tools = [...new Set([...(task.tools || []), ...tools])];
       if (task) tasks.logCall(task, step, { name, args, ok: true, label: `${name} "${truncate(query, 60)}"`, text });
-      if (name === 'need' && !answers) {
+      if (asking && !answers) {
         // Nothing outside this task answers it: ask the person. Their reply comes back as the answer.
         this.toolEvent({ name, label: `asked you: ${truncate(query, 60)}`, ok: true });
         const q = query || 'What should I do next?';
         this.ask(/\?\s*$/.test(q) ? q : `I need to know: ${q}`, task);
         return { ask: true };
       }
-      this.toolEvent({ name, label: `${name === 'need' ? 'looked for what was missing' : 'searched'}: "${truncate(query, 60)}"${web ? ' (nothing saved; searched the web)' : empty ? ' (nothing)' : ''}`, ok: true }, text);
-      return { response: { found: text, ...(tools.length ? { tools } : {}) } };
+      if (name === 'ask_user') this.askedBefore.add(key);
+      this.toolEvent({ name, label: `${asking ? 'looked for what was missing' : 'searched'}: "${truncate(query, 60)}"${web ? ' (nothing saved; searched the web)' : empty ? ' (nothing)' : ''}`, ok: true }, text);
+      return { response: { found: text, ...(tools.length ? { tools } : {}), ...(name === 'ask_user' ? { not_asked: 'This was already saved, so the user was not asked. If it answers your question, use it; if not, call ask_user again with the same question and it goes to the user.' } : {}) } };
     }
     if (name === 'tool_info') return { response: this.toolInfo(args, task, step) };
     if (name === 'done') return { response: { error: 'There is no step to finish yet. Call plan first, or just answer.' } };
@@ -1127,7 +1168,7 @@ class Turn {
       a && a.text ? `Summary (${a.source}${a.url ? ', ' + a.url : ''}): ${truncate(a.text, 400)}` : '',
       ...top.map((x, i) => `${i + 1}. ${x.title}\n   ${x.url}\n   ${truncate(x.snippet || '', lite() ? 220 : 400)}`),
     ].filter(Boolean).join('\n');
-    if (!body) return `Nothing in your memory, recipes or past chats, and the web had no results for "${truncate(query, 80)}". Try web_search with other words, or need to ask the user.`;
+    if (!body) return `Nothing in your memory, recipes or past chats, and the web had no results for "${truncate(query, 80)}". Try web_search with other words, or ${askName()} to ask the user.`;
     return `Nothing in your memory, recipes or past chats, so this searched the web for "${truncate(w.query, 80)}":\n${wrapUntrusted('web search', body)}\nTo read one in full, call fetch_url with its link.`;
   }
 }

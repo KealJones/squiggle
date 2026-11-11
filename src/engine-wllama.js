@@ -94,7 +94,7 @@ export function findTools(tools, query, k = 3) {
 }
 
 // Details of the tools the model has looked up (the harness tools are in the system prompt).
-const HARNESS = new Set(['plan', 'done', 'need', 'find']);
+const HARNESS = new Set(['plan', 'done', 'need', 'ask_user', 'find']);
 export function toolPrompt(tools, active) {
   const known = tools.filter(t => active.has(nameOf(t)) && !HARNESS.has(nameOf(t)));
   return known.length ? 'Tools you have looked up:\n' + known.map(toolLine).join('\n') : '';
