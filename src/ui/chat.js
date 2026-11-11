@@ -9,7 +9,7 @@ import * as attachments from '../attachments.js';
 import { checkFiles, fmtSize } from '../attachments.js';
 import * as voice from '../voice.js';
 import { bm25 } from '../search.js';
-import { $, h, icon, md, ago, squiggleWait, iconButton, scrollDown } from './dom.js';
+import { $, h, icon, md, ago, squiggleWait, iconButton, scrollDown, keepAwake } from './dom.js';
 import { state } from './state.js';
 import { openThread, openPanel, closeDrawer, renderThreadPanel, renderNotesPanel } from './panels.js';
 import { renderSide } from './side.js';
@@ -340,6 +340,7 @@ export function setupComposer(form, input, onSend) {
 
 function setBusy(on) {
   state.busy = on;
+  keepAwake('reply', on);   // a phone that sleeps mid-reply loses the GPU (iOS Safari)
   for (const btn of document.querySelectorAll('.composer button[type="submit"]')) {
     btn.replaceChildren(icon(on ? 'i-stop' : 'i-send'));
     btn.setAttribute('aria-label', on ? 'Stop' : 'Send');

@@ -57,6 +57,29 @@ export function toast(text, ms = 5000) {
 }
 
 // Number formatting
+// Keeps the screen on while any reason holds it (a reply, a voice call). Browsers drop the lock whenever the page is
+// hidden, so it's asked for again when the page shows. Best effort: no Wake Lock API (or refused) changes nothing.
+const awake = new Set();
+let wakeLock = null, asking = false;
+async function syncWake() {
+  if (asking) return;
+  try {
+    if (awake.size && !wakeLock && document.visibilityState === 'visible' && navigator.wakeLock) {
+      asking = true;
+      const lock = await navigator.wakeLock.request('screen');
+      wakeLock = lock;
+      lock.addEventListener('release', () => { if (wakeLock === lock) wakeLock = null; });
+    } else if (!awake.size && wakeLock) await wakeLock.release();
+  } catch {} finally {
+    if (asking) { asking = false; if (!awake.size && wakeLock) syncWake(); }   // let go while the request was pending
+  }
+}
+export function keepAwake(reason, on) {
+  if (on) awake.add(reason); else awake.delete(reason);
+  syncWake();
+}
+if (typeof document !== 'undefined') document.addEventListener('visibilitychange', syncWake);
+
 export const fmtTok = (n) => (n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)));
 export const fmtPct = (n, of) => { const p = 100 * n / (of || 1); return p > 0 && p < 1 ? '<1%' : `${Math.round(p)}%`; };
 export const gb = (n) => (n / 1e9).toFixed(2);
