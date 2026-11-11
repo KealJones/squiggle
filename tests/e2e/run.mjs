@@ -1679,6 +1679,9 @@ await check('small models: a long page comes back as a card saved in /web, grep 
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
   await D.page.click('#new-chat');
+  // Shrinking tool results is a Smart context behavior.
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-context"][value="smart"]');
   await D.page.fill('#input', 'how big is it? https://models.example.test/gemma3');
   await D.page.press('#input', 'Enter');
   // The new-chat model picker also contains "242 MB". Wait for the completed answer.
