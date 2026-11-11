@@ -1477,6 +1477,8 @@ await check('demo loads the model once and can reload after a disposed GPU engin
     const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
     await ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
     const page = await ctx.newPage();
+    const errors = [];
+    page.on('pageerror', error => errors.push(error.stack || String(error)));
     await page.goto(appUrl + '/');
     await page.getByRole('button', { name: 'Try it without signing in' }).click();
     await page.getByRole('button', { name: 'Download and start' }).click();
@@ -1499,9 +1501,25 @@ await check('demo loads the model once and can reload after a disposed GPU engin
     });
     await page.fill('#input', 'Hi again');
     await page.getByRole('button', { name: 'Send', exact: true }).click();
-    const replies = page.locator('#messages-inner .msg.assistant[data-mid] .body');
-    await replies.nth(1).waitFor();
-    assert.match(await replies.nth(1).textContent(), /The reloaded model answered/);
+    await page.waitForFunction(async () => {
+      const { state } = await import('/src/ui/state.js');
+      return !state.busy && state.current.messages.filter(m => m.role === 'assistant').length === 2;
+    }, null, { timeout: 8000 }).catch(async (error) => {
+      const snapshot = await page.evaluate(async () => {
+        const { state } = await import('/src/ui/state.js');
+        return {
+          busy: state.busy,
+          modelState: state.modelState,
+          messages: state.current.messages.map(m => [m.role, m.content]),
+          inputs: window.__engineLog.filter(e => e.type === 'respond').map(e => e.input),
+          draft: document.querySelector('#input').value,
+          banner: document.querySelector('#model-banner').textContent,
+        };
+      });
+      throw new Error(JSON.stringify({ ...snapshot, errors }), { cause: error });
+    });
+    const replies = await page.locator('#messages-inner .msg.assistant .body').allTextContents();
+    assert.match(replies.at(-1) || '', /The reloaded model answered/);
   } finally {
     await ctx.close();
   }
