@@ -194,3 +194,26 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   web or Wikipedia lookup; a message that points back ("that", "it") brings the exchange it points at, with the
   reply as written.
 - **Caught by:** tests/prefetch.test.js (the two messages above); e2e "Fresh context" for the pointed-at exchange.
+
+### 15. Plan mode couldn't ask the user
+
+- **Asked:** a request whose plan needed Keal's input (a new repository: its name and settings), in plan mode.
+- **Model:** LFM3 1.7B, 2026-11-10/11 (Keal's screenshots of the whole run; chat id not in them).
+- **What it did:** planned steps that needed answers only Keal had. In its thinking it said "I don't have a direct
+  'ask' tool" (the tool was called `need`). It wrote its questions as plain text, and each one was filed as that
+  step's result; step 3 was marked done with no git command run. When the harness nudged it with
+  "(Squiggle: You were repeating yourself…)" as a user turn, it reasoned "now the user says…", and it took the
+  goal ("Create a new repository for the user") for Keal's first message.
+- **Why it's bad:** the plan went on as if questions were answers, so it reported work it hadn't done; and harness
+  text in the user turn was read as the person, so it argued with instructions Keal never gave.
+- **Good answer:** ask the question (call the ask tool, or just ask) and wait; after the answer, run the git steps
+  and report what was actually created.
+- **Fix:** (1) a step whose text asks the user something pauses the task and asks it (`tasks.asksUser`,
+  agent.js runStep) instead of being filed as the result. (2) `need` is `ask_user(question)` for every model but
+  Squiggle Small, whose frozen format keeps `need`; both names work. (3) v3 keeps harness text out of user
+  turns: the step and final instructions end the system prompt ("Now"), the goal is labelled as the model's own
+  summary, and a nudge restarts the step with what went wrong in the system prompt (docs/harness.md "Prompt
+  dialects").
+- **Caught by:** tests/failures.test.js case 15; tests/tasks.test.js "prompt dialects"; e2e "step mode through the
+  UI" (ASKTEST: a plain-text question pauses the task, a thinking-only step restarts, every step and final user
+  turn is the request).

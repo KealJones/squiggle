@@ -32,6 +32,9 @@ export const HARNESS_SPECS = {
   plan: { name: 'plan', description: 'Plan a request that takes more than one step; you then work it one step at a time. Calling it again revises the plan.', parameters: S({ goal: str('What the user wants, in one line'), steps: { type: 'array', items: { type: 'string' }, description: 'Short imperative steps' } }, ['goal', 'steps']) },
   done: { name: 'done', description: 'Finish the current step with the facts later steps need (paths, numbers, names, decisions), one to three lines.', parameters: S({ result: str('What this step found or did') }, ['result']) },
   need: { name: 'need', description: 'Ask for something only the user can tell you. Squiggle searches first and asks them if it finds nothing.', parameters: S({ what: str('What is missing, e.g. "which repo the site lives in"') }, ['what']) },
+  // `need` renamed for every model but Squiggle Small (v3 dialect): LFM3 1.7B planned a step that needed the
+  // user's input, said "I don't have a direct 'ask' tool" and wrote its question as the step's result (case 15).
+  ask_user: { name: 'ask_user', description: 'Ask the user a question and wait for their answer: something only they can tell you (a choice, a name, a detail, a go-ahead). If memory already answers it, you get that instead; call it again to ask anyway.', parameters: S({ question: str('The question, as you would ask it, e.g. "Should the new repo be public or private?"') }, ['question']) },
   find: { name: 'find', description: 'Search what Squiggle knows: other tools (and how to call them), recipes from past tasks, memory, past chats, this task\'s results.', parameters: S({ query: str('What you are looking for') }, ['query']) },
 };
 // AI-managed context (docs/harness.md, "the model manages its own context"): plan steps can say what they
@@ -210,12 +213,15 @@ const answersText = (task, n = 3) => (task.answers || []).slice(-n).map(a => `- 
 // [{ title, text }] in priority order; empty ones are left out, and when the
 // prompt would pass `maxTokens` the lowest-priority sections go first, then
 // older step results get shorter. Returns { text, shown: [titles] }.
-export function stepPrompt(base, task, sections = [], { maxTokens = Infinity } = {}) {
+// With the v3 dialect `now` (the step instruction) is the last section and is never dropped; v2 has none.
+export function stepPrompt(base, task, sections = [], { maxTokens = Infinity, dialect = DIALECT.v2, now = '' } = {}) {
   const live = sections.filter(s => s && s.text && String(s.text).trim());
+  const h = dialect.headings || DIALECT.v2.headings;
   const build = (secs, short) => {
-    const out = [base, `## Goal\n${task.goal}`, `## Plan\n${renderPlan(task, { full: FULL_RESULTS, short })}`];
-    if (task.answers && task.answers.length) out.push('## The user answered your questions\n' + answersText(task));
+    const out = [base, `## ${h.goal}\n${task.goal}`, `## Plan\n${renderPlan(task, { full: FULL_RESULTS, short })}`];
+    if (task.answers && task.answers.length) out.push(`## ${h.answers}\n` + answersText(task));
     for (const s of secs) out.push(`## ${s.title}\n${String(s.text).trim()}`);
+    if (now) out.push(`## ${h.now}\n${now}`);
     return out.join('\n\n');
   };
   const secs = live.slice();
@@ -233,31 +239,49 @@ export const stepSystem = (base, task, sections = [], opts) => stepPrompt(base, 
 // What the harness writes into the model's prompt comes in two dialects:
 //   v2  the fenced small-model format: Squiggle Small's training text, frozen. Every string it renders
 //       must stay byte-for-byte what the fine-tune saw (lm-experiments renders episodes through this code).
-//   v3  everyone else (native small models, Gemma 4, the cloud model). Anything the harness adds to a
-//       user turn is marked as Squiggle's, "(Squiggle: …)", so a small model can't take it for the
-//       user's words: a 0.8B model read the budget line as "the user said they used 2,030 tokens" and
-//       the step instruction as the user's request. The user's own words are never paraphrased.
+//       The step and final instructions ride in the user turn after the request.
+//   v3  everyone else (native small models, Gemma 4, the cloud model). In step mode and the final reply the
+//       user turn is only the user's own words; the instruction is the last section of the system prompt
+//       ("Now"), and a nudge restarts the step with what went wrong in the system prompt (agent.js). Models
+//       read every user turn as the person: a 0.8B model read the budget line as "the user said they used
+//       2,030 tokens", and LFM3 1.7B read "(Squiggle: You were repeating yourself…)" as "now the user says"
+//       and the goal as the user's first message (case 15). The chat phase still marks the few lines it adds
+//       to a user turn with `note`, "(Squiggle: …)".
 // A dialect is chosen per model (agent.js dialect()); tasks.js functions take it as an option and
 // default to v2, so older callers and the fine-tune's rendering are unchanged.
 export const DIALECT = {
-  v2: { id: 'v2', frozen: true, note: (t) => t, memoryTitle: 'What you know about the user and their work' },
-  v3: { id: 'v3', frozen: false, note: (t) => `(Squiggle: ${t})`,
+  v2: { id: 'v2', frozen: true, native: false, note: (t) => t, memoryTitle: 'What you know about the user and their work',
+    headings: { goal: 'Goal', answers: 'The user answered your questions', now: 'Now' } },
+  v3: { id: 'v3', frozen: false, native: true, note: (t) => `(Squiggle: ${t})`,
     // Not "what you know about the user": a small model read that as things the user had just said.
-    memoryTitle: 'Notes saved from earlier chats (background only; may not fit this request)' },
+    memoryTitle: 'Notes saved from earlier chats (background only; may not fit this request)',
+    // "Goal" alone: LFM3 took the goal for the user's first message.
+    headings: { goal: 'Goal (your own one-line summary of what the user asked)', answers: 'The user answered your questions (their words)', now: 'Now' } },
 };
 
 const MAX_REQUEST = 700;
-export function stepUser(task, { budget = '', dialect = DIALECT.v2 } = {}) {
+// What to do in the current step, without the request.
+export function stepInstruction(task, { sep = ' ' } = {}) {
   const s = current(task);
   const n = stepIndex(task, s) + 1;
+  if (s.checkpoint) return `You checkpointed step ${n} (${s.text}) to carry on with a fresh context. Carry on now: ${s.checkpoint.next || s.text}${sep}When the step is finished, call done with what you found.`;
+  if (s.kind === 'summarize') return `Work on step ${n} now (a summarize step): ${s.text}${sep}Read what's attached, then call done with a short summary: only what the rest of the task needs from it.`;
+  return `Work on step ${n} now: ${s.text}${sep}When the step is finished, call done with what you found.`;
+}
+
+// The user turn of a step. v2: the request, then the instruction (and the budget line). v3: the request alone;
+// the instruction goes in the system prompt (stepNow).
+export function stepUser(task, { budget = '', dialect = DIALECT.v2 } = {}) {
   const head = truncate(task.request || task.goal, MAX_REQUEST);
+  if (dialect.native) return head;
   const tail = budget ? `\n\n${budget}` : '';
-  const sep = dialect.frozen ? '\n' : ' ';
-  let body;
-  if (s.checkpoint) body = `You checkpointed step ${n} (${s.text}) to carry on with a fresh context. Carry on now: ${s.checkpoint.next || s.text}${sep}When the step is finished, call done with what you found.`;
-  else if (s.kind === 'summarize') body = `Work on step ${n} now (a summarize step): ${s.text}${sep}Read what's attached, then call done with a short summary: only what the rest of the task needs from it.`;
-  else body = `Work on step ${n} now: ${s.text}${sep}When the step is finished, call done with what you found.`;
-  return `${head}\n\n${dialect.note(body)}${tail}`;
+  return `${head}\n\n${dialect.note(stepInstruction(task, { sep: dialect.frozen ? '\n' : ' ' }))}${tail}`;
+}
+
+// v3's "Now" section: the instruction, then (AI-managed) the budget line, plain. Empty for v2.
+export function stepNow(task, { budget = '', dialect = DIALECT.v2 } = {}) {
+  if (!dialect.native) return '';
+  return `${stepInstruction(task, { sep: '\n' })}${budget ? `\n${budget}` : ''}`;
 }
 
 // ── AI-managed context: references, the budget line, attachments ───────────
@@ -277,12 +301,14 @@ export function parseRef(ref) {
 
 // The last line before the model writes (docs/harness.md, "A budget line on every prompt").
 export const LOW_ROOM = 600;
-export function budgetLine(used, total, reserve, dialect = DIALECT.v2) {
+export function budgetText(used, total, reserve) {
   const left = Math.max(0, total - used - reserve);
   const r = (x) => Math.max(0, Math.round(x / 10) * 10).toLocaleString('en-US');
   const line = `Context: ${r(used)} of ${total.toLocaleString('en-US')} tokens used (about ${r(left)} left after room for your reply).`;
-  return dialect.note(left < LOW_ROOM ? `${line} ${lowRoomNote()}` : line);
+  return left < LOW_ROOM ? `${line} ${lowRoomNote()}` : line;
 }
+// For a user turn: marked with the dialect's note.
+export const budgetLine = (used, total, reserve, dialect = DIALECT.v2) => dialect.note(budgetText(used, total, reserve));
 export const lowRoomNote = () => 'You\'re running low on room. Finish now, or call checkpoint with what you need for the next part.';
 
 // Attachments for a step: [{ ref, text }] → fitted under maxTokens by trimming the largest (head and
@@ -302,8 +328,11 @@ export function fitAttachments(items, maxTokens) {
   return out;
 }
 
-export function finalSystem(base, task, { maxTokens = Infinity } = {}) {
-  const build = (short) => `${base}\n\n## Goal\n${task.goal}\n\n## What each step found\n${renderPlan(task, { full: 4, short })}${task.answers && task.answers.length ? '\n\n## The user answered\n' + answersText(task) : ''}`;
+const FINAL_NOW = 'Every step is done. Write the reply to this request now, using what the steps found. Don\'t call tools.';
+export function finalSystem(base, task, { maxTokens = Infinity, dialect = DIALECT.v2 } = {}) {
+  const h = dialect.headings || DIALECT.v2.headings;
+  const now = dialect.native ? `\n\n## ${h.now}\nEvery step is done. Write your reply to the user's message, using what the steps found. Don't call tools.` : '';
+  const build = (short) => `${base}\n\n## ${h.goal}\n${task.goal}\n\n## What each step found\n${renderPlan(task, { full: 4, short })}${task.answers && task.answers.length ? `\n\n## ${dialect.native ? h.answers : 'The user answered'}\n` + answersText(task) : ''}${now}`;
   let text = build(300);
   if (estTokens(text) > maxTokens) text = build(120);
   if (estTokens(text) > maxTokens) text = build(40);
@@ -311,7 +340,19 @@ export function finalSystem(base, task, { maxTokens = Infinity } = {}) {
 }
 
 export function finalUser(task, { dialect = DIALECT.v2 } = {}) {
-  return `${truncate(task.request || task.goal, MAX_REQUEST)}\n\n${dialect.note('Every step is done. Write the reply to this request now, using what the steps found. Don\'t call tools.')}`;
+  const head = truncate(task.request || task.goal, MAX_REQUEST);
+  return dialect.native ? head : `${head}\n\n${dialect.note(FINAL_NOW)}`;
+}
+
+// A step that ends on a question to the user instead of a result: "Could you tell me the repo name?" (case 15).
+// The last sentence decides: a question mark, or a request for something only the user can give.
+const ASKS = /\b(?:please|kindly|could you|can you|would you|let me know|tell me|i need (?:you to|to know|the|your|more)|do you want|should i)\b[^.!?]*$/i;
+export function asksUser(text) {
+  const t = String(text || '').replace(/[\s*_`)]+$/, '').trim();
+  if (!t || toolCallText(t)) return false;
+  const last = t.split(/\n+/).pop().split(/(?<=[.!])\s+/).pop();
+  if (/\?$/.test(last)) return true;
+  return ASKS.test(last.replace(/[.!:]+$/, '')) && /\b(?:provide|tell|confirm|choose|pick|specify|share|let me know|which|what|want|should|need)\b/i.test(last);
 }
 
 // The task that can pick up again from the new message: only the one the
@@ -344,7 +385,7 @@ export function worked(task) {
   const steps = (task && task.steps) || [];
   if (!steps.length || steps.some(s => s.status !== 'done')) return false;
   if (steps.some(s => !s.result || NO_RESULT.test(s.result) || toolCallText(s.result) || GAVE_UP.test(s.result) || JUNK.test(s.result))) return false;
-  return ((task.log) || []).some(l => l.ok !== false && !['plan', 'done', 'need', 'checkpoint', 'tool_info'].includes(l.name));
+  return ((task.log) || []).some(l => l.ok !== false && !['plan', 'done', 'need', 'ask_user', 'checkpoint', 'tool_info'].includes(l.name));
 }
 
 export function junkCheck(thinking) {

@@ -53,11 +53,14 @@ const call = (name, args) => ({ text: '', thinking: '', toolCalls: [{ type: 'fun
 const say = (t, onText, thinking = '') => { onText && onText(t); return { text: t, thinking, toolCalls: [] }; };
 
 // Step mode (docs/harness.md): PLANTEST plans two steps (find, then done; then
-// an answer without done), NEEDTEST asks the user through `need`, and the final
+// an answer without done), NEEDTEST asks the user through `ask_user` (`need` for fenced models), and the final
 // prompt gets a summary reply.
 function stepScript(conv, input, onText) {
   const sys = (conv.cfg && conv.cfg.system) || '';
   if (typeof input === 'string') {
+    // v3 step and final prompts: the user turn is the request alone and the instruction ends the system prompt.
+    const now = (sys.match(/\n## Now\n([\s\S]*)$/) || [])[1];
+    if (now) input = `${input}\n\n${now}`;
     // AI-managed context: steps that attach earlier results, a checkpoint inside a step, one in the chat phase.
     if (/MANAGEDTEST|CPCHAT/.test(input)) {
       if (/Every step is done/.test(input)) return say(/CPCHAT/.test(input) ? 'Carried on after the checkpoint: done.' : 'Ada is ten years older than Ben.', onText);
@@ -70,9 +73,16 @@ function stepScript(conv, input, onText) {
       if (/Work on step 3 now/.test(input)) return call('done', { result: /Attached for this step[\s\S]*1950[\s\S]*1960/.test(sys) ? 'Ada is 10 years older' : 'nothing attached' });
       if (/^MANAGEDTEST/.test(input)) return call('plan', { goal: 'Compare birth years', steps: [{ text: 'Find when Ada was born' }, { text: 'Find when Ben was born' }, { text: 'Compare the two years', needs: ['step:1', 'step:2'] }] });
     }
+    // ASKTEST (case 15): step 1 asks in plain text; step 2 first only thinks, then finishes on the restart.
+    if (/ASKTEST/.test(input)) {
+      if (/Every step is done/.test(input)) return say('Made Gizmo, private.', onText);
+      if (/Work on step 1 now/.test(input)) return /The user answered/.test(sys) ? call('done', { result: 'Name Gizmo, private' }) : say('What should the new repo be called, and should it be public or private?', onText);
+      if (/Work on step 2 now/.test(input)) return /Your last try at this step/.test(sys) ? call('done', { result: 'Created Gizmo' }) : { text: '', thinking: 'Creating it means…', toolCalls: [] };
+      if (/^ASKTEST/.test(input)) return call('plan', { goal: 'Make a repo', steps: ['Pick the name and visibility', 'Create the repo'] });
+    }
     if (/Every step is done/.test(input)) return say(/NEEDTEST/.test(input) ? 'Set up Wobble, as you said.' : 'Port 8080 had node (pid 4242); it is free now.', onText);
     if (/PLANTEST|NEEDTEST/.test(input) && /Work on step 1 now/.test(input)) {
-      if (/NEEDTEST/.test(input)) return /The user answered/.test(sys) ? call('done', { result: 'Call it Wobble' }) : call('need', { what: 'What should the new project be called?' });
+      if (/NEEDTEST/.test(input)) return /The user answered/.test(sys) ? call('done', { result: 'Call it Wobble' }) : (conv.cfg.tools.some(t => t.name === 'ask_user') ? call('ask_user', { question: 'What should the new project be called?' }) : call('need', { what: 'What should the new project be called?' }));
       return { ...call('find', { query: 'search the web for what uses port 8080' }), thinking: 'Look it up first.' };
     }
     if (/PLANTEST/.test(input) && /Work on step 2 now/.test(input)) return say('Stopped node (pid 4242).', onText);

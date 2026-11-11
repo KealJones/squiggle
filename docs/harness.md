@@ -31,7 +31,8 @@ user message
       └─ calls plan(goal, steps)                     → step mode
 step mode (repeat until every step is done or the user stops):
   → fresh prompt for the current step (see "Step prompt")
-  → model thinks, calls tools, ends the step with done(result) or need(what)
+  → model thinks, calls tools, ends the step with done(result) or asks the user
+    (ask_user(question); need(what) for Squiggle Small; or a plain-text question)
   → harness records the result, moves to the next step (the model may revise the plan)
 all steps done
   → final prompt: goal + step results → model writes the reply to the user
@@ -68,8 +69,13 @@ tools; the small model calls them with fenced blocks (see "Small-model format").
 | --- | --- | --- |
 | `plan` | `goal` (string), `steps` (string[]) | Start or replace the plan for this turn. Steps are short imperative lines ("Find where the login form is defined"). Calling it again mid-task revises the plan; finished steps keep their results. |
 | `done` | `result` (string) | Finish the current step. `result` is the one-to-three-line finding the rest of the task needs (paths, numbers, names, decisions), not a narration. |
-| `need` | `what` (string) | Say what is missing. The harness tries `find` with it first; if memory, a recipe, or another chat (sharing at least two words with the question) answers it, that comes back as the result. Otherwise it asks the user: the question is the reply, and the user's next message, in any form, is the answer (shown in later step prompts under "The user answered your questions"). Tools, this task's own results and this chat don't count as answers: the model already had those. |
+| `ask_user` | `question` (string) | Every model but Squiggle Small (v3 dialect). Ask the user something only they can tell you. Memory is checked first as for `need`; if it answers, that comes back with `not_asked` and the same question again goes to the user. Otherwise the question is the reply and the user's next message is the answer. `need` still works as an alias. |
+| `need` | `what` (string) | Squiggle Small (v2, frozen). Say what is missing. The harness tries `find` with it first; if memory, a recipe, or another chat (sharing at least two words with the question) answers it, that comes back as the result. Otherwise it asks the user: the question is the reply, and the user's next message, in any form, is the answer (shown in later step prompts under "The user answered your questions"). Tools, this task's own results and this chat don't count as answers: the model already had those. |
 | `find` | `query` (string) | One search across everything Squiggle knows: tools (name + how to call), recipes, memory facts, past chats (all sessions), and this task's step results and saved tool output. Returns the top few of each kind that clear a relevance bar, labelled by kind. When none of the user's own things match (see "find falls through to the web"), it runs `web_search` instead. |
+
+A step that ends in plain text which asks the user something (`tasks.asksUser`: the last sentence ends in "?",
+or asks them to provide, tell, confirm or choose something) asks it the same way: the task waits and the reply
+is the answer. It used to be filed as the step's result and the plan went on without one (docs/failures.md case 15).
 
 `find_tools` (current small-model engine) becomes the tools part of `find`.
 `note` stays for chats without a plan but is no longer advertised in step mode
@@ -86,8 +92,8 @@ isn't about a past chat, the harness runs `web_search` with the same words and `
 those results, reranked against the query (MiniLM cosine when "Search by meaning" has loaded
 it, else BM25 over title + snippet, plus a little for the engine's own order) and cut to the
 best 3 (small models) or 5. The search shows in the tool list as its own call, and a
-`web_search` with the same query afterwards counts as a repeat. `need` never falls through
-(it asks the user). When web_search is off, the empty text says to use web_search or need.
+`web_search` with the same query afterwards counts as a repeat. `ask_user`/`need` never fall through
+(they ask the user). When web_search is off, the empty text says to use web_search or ask_user (need).
 
 ### Checking claims, URLs and step results (small models)
 
@@ -151,7 +157,7 @@ system:   short system prompt (model-appropriate; see below)
           1. [done] <step> → <result>
           2. [now]  <step>
           3. [todo] <step>
-          ## The user answered your questions             (the last 3 `need` answers, if any)
+          ## The user answered your questions             (the last 3 answers to ask_user/need, if any)
           ## Files the user attached                      (paths, if any)
           ## Recipe from a similar task (if the model found one with find)
           <recipe steps + specifics>
@@ -160,16 +166,24 @@ system:   short system prompt (model-appropriate; see below)
           ## Found earlier in this task                     (retrieved step results / tool output for this step)
           ## Resolved references                             (if any)
           ## Tools                                           (big models: all; small: looked-up only)
+          ## Your last try at this step (from Squiggle, not the user)   (v3, after a nudge; see below)
+          ## Now                                                       (v3 only; never dropped to fit)
+          Work on step 2 now: <step text>
+          When the step is finished, call done with what you found.
+          <budget line, AI-managed only>
 user:     <the original request, verbatim (first 700 characters)>
 
-          Work on step 2 now: <step text>                               ← v2 (fenced, frozen)
+          Work on step 2 now: <step text>                               ← v2 only (fenced, frozen)
           When the step is finished, call done with what you found.
-
-          (Squiggle: Work on step 2 now: <step text> When the step     ← v3 (everyone else)
-          is finished, call done with what you found.)
 ```
 
-See "Prompt dialects" below for why the user turn differs.
+In v3 the goal heading reads "Goal (your own one-line summary of what the user asked)" and the answers heading
+"The user answered your questions (their words)". See "Prompt dialects" below for why the user turn differs.
+
+When a step's reply has no tool call and isn't usable (only thinking, a loop, a tool call typed out as text),
+v2 gets a nudge as the next user turn, twice, then the user is asked. v3 starts the step again instead, at most
+twice: the new system prompt has "Your last try at this step" (why it stopped, the tool calls it made with their
+results, what it wrote), so no harness text ever lands in a user turn.
 
 Within a step the model's own tool calls and results accumulate normally (that
 is short). They are saved as observations, so later steps can `find` them, but
@@ -381,10 +395,15 @@ text from the person's text when both sit in the user turn. The fix is structura
 - **v2** is the fenced small-model format above: Squiggle Small's training text, frozen. Every string it
   renders (`LITE_SYSTEM`, the step and final user turns, `Result of <tool>:\n<json>`, the section titles)
   stays byte-for-byte what the fine-tune saw; lm-experiments renders episodes through this code.
-- **v3** is every other model. Any text the harness adds to a user turn is marked as Squiggle's:
-  `(Squiggle: …)`, the way the loop note already was. The step instruction, the final-reply instruction, the
-  AI-managed budget line and the "finish your thought" nudges all go through `DIALECT.v3.note`. The
-  person's own words are never paraphrased. The memory section is titled "Notes saved from earlier chats
+- **v3** is every other model. In step mode and the final reply the user turn is only the person's words
+  (the original request); the step instruction, the final-reply instruction and the AI-managed budget line
+  are the system prompt's last section, "Now", and a nudge restarts the step (above). This replaced
+  `(Squiggle: …)` notes in the user turn (2026-11-11): LFM3 1.7B read "(Squiggle: You were repeating
+  yourself…)" as "now the user says", and the goal as the user's first message (docs/failures.md case 15).
+  Models only have system/user/assistant/tool roles, and every one of them reads a user turn as the person.
+  The chat phase still adds a few marked lines to the user turn (the claim check, the AI-managed budget line,
+  "You didn't write a reply"): next to move. The person's own words are never paraphrased. The harness's
+  ask tool is `ask_user(question)`. The memory section is titled "Notes saved from earlier chats
   (background only; may not fit this request)" instead of "What you know about the user and their work",
   which a small model read as things the person had just said.
 

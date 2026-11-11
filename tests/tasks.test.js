@@ -145,7 +145,7 @@ test('tasks merge across devices by id, newest wins', () => {
 });
 
 test('harness tool specs are well formed', () => {
-  for (const name of ['plan', 'done', 'need', 'find']) {
+  for (const name of ['plan', 'done', 'need', 'ask_user', 'find']) {
     const s = tasks.HARNESS_SPECS[name];
     assert.equal(s.name, name);
     assert.ok(s.description.length > 20);
@@ -246,17 +246,29 @@ test('tool_info spec takes a list of names and counts as harness bookkeeping', (
   assert.ok(tasks.HARNESS.has('tool_info'));
 });
 
-test('prompt dialects: v2 is the frozen fenced text; v3 marks harness text in the user turn as Squiggle\'s', async () => {
+test('prompt dialects: v2 is the frozen fenced text; v3 keeps the user turn to the user\'s words', async () => {
   const t = await import('../app/src/tasks.js');
   const task = t.newTask({ msg: 'm', thread: null, request: 'kill whatever is on 8080', goal: 'Free 8080', steps: ['Find it', 'Stop it'] });
   t.startStep(task);
-  const v2 = t.stepUser(task), v3 = t.stepUser(task, { dialect: t.DIALECT.v3 });
-  assert.equal(v2, 'kill whatever is on 8080\n\nWork on step 1 now: Find it\nWhen the step is finished, call done with what you found.');
-  assert.equal(v3, 'kill whatever is on 8080\n\n(Squiggle: Work on step 1 now: Find it When the step is finished, call done with what you found.)');
-  assert.equal(t.budgetLine(2310, 4096, 700, t.DIALECT.v3), '(Squiggle: Context: 2,310 of 4,096 tokens used (about 1,090 left after room for your reply).)');
-  assert.match(t.stepUser(task, { budget: t.budgetLine(2310, 4096, 700, t.DIALECT.v3), dialect: t.DIALECT.v3 }), /found\.\)\n\n\(Squiggle: Context: 2,310/);
+  // v2 (Squiggle Small's training text): unchanged, byte for byte.
+  assert.equal(t.stepUser(task), 'kill whatever is on 8080\n\nWork on step 1 now: Find it\nWhen the step is finished, call done with what you found.');
+  assert.equal(t.stepNow(task), '');
+  assert.equal(t.stepSystem('BASE', task), 'BASE\n\n## Goal\nFree 8080\n\n## Plan\n' + t.renderPlan(task, { full: 2, short: 120 }));
   assert.equal(t.finalUser(task), 'kill whatever is on 8080\n\nEvery step is done. Write the reply to this request now, using what the steps found. Don\'t call tools.');
-  assert.equal(t.finalUser(task, { dialect: t.DIALECT.v3 }), 'kill whatever is on 8080\n\n(Squiggle: Every step is done. Write the reply to this request now, using what the steps found. Don\'t call tools.)');
+  assert.equal(t.budgetLine(2310, 4096, 700), 'Context: 2,310 of 4,096 tokens used (about 1,090 left after room for your reply).');
+  // v3: the user turn is the request alone; the instruction (and budget line) is the system prompt's last section.
+  const v3 = t.DIALECT.v3;
+  assert.equal(t.stepUser(task, { dialect: v3, budget: 'ignored' }), 'kill whatever is on 8080');
+  const now = t.stepNow(task, { dialect: v3, budget: t.budgetText(2310, 4096, 700) });
+  assert.equal(now, 'Work on step 1 now: Find it\nWhen the step is finished, call done with what you found.\nContext: 2,310 of 4,096 tokens used (about 1,090 left after room for your reply).');
+  const sys = t.stepPrompt('BASE', task, [{ title: 'Big', text: 'x'.repeat(4000) }], { dialect: v3, now, maxTokens: 200 }).text;
+  assert.match(sys, /^BASE\n\n## Goal \(your own one-line summary of what the user asked\)\nFree 8080\n/);
+  assert.ok(sys.endsWith(`## Now\n${now}`), 'the instruction is last');
+  assert.ok(!sys.includes('## Big'), 'sections are dropped to fit, the instruction never');
+  assert.equal(t.finalUser(task, { dialect: v3 }), 'kill whatever is on 8080');
+  assert.match(t.finalSystem('BASE', task, { dialect: v3 }), /\n\n## Now\nEvery step is done\. Write your reply to the user's message, using what the steps found\. Don't call tools\.$/);
+  assert.doesNotMatch(t.finalSystem('BASE', task), /## Now/);
+  for (const s of [t.stepUser(task, { dialect: v3 }), t.finalUser(task, { dialect: v3 })]) assert.doesNotMatch(s, /Squiggle/);
   assert.equal(t.DIALECT.v2.memoryTitle, 'What you know about the user and their work');
   assert.notEqual(t.DIALECT.v3.memoryTitle, t.DIALECT.v2.memoryTitle);
   assert.ok(t.DIALECT.v2.frozen && !t.DIALECT.v3.frozen);

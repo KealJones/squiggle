@@ -1050,7 +1050,7 @@ await check('Fresh context: nothing replayed; a lookup (earlier exchange, web) g
   assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
 });
 
-await check('step mode through the UI: plan, live checklist, find, done, final reply, recipe; need asks and resumes', async () => {
+await check('step mode through the UI: plan, live checklist, find, done, final reply, recipe; need asks and resumes; a plain-text question asks too', async () => {
   const D = await device('steps');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
   await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
@@ -1080,7 +1080,7 @@ await check('step mode through the UI: plan, live checklist, find, done, final r
   });
   assert.deepEqual(r.task, { goal: 'Free port 8080', status: 'done', steps: [['done', 'node (pid 4242) is on 8080'], ['done', 'Stopped node (pid 4242).']] });
   assert.equal(r.stepSystems.length, 2, 'a fresh prompt per step');
-  assert.match(r.stepSystems[0], /## Goal\nFree port 8080\n\n## Plan\n1\. \[now\] Find what is listening on 8080\n2\. \[todo\] Stop it/);
+  assert.match(r.stepSystems[0], /## Goal \(your own one-line summary of what the user asked\)\nFree port 8080\n\n## Plan\n1\. \[now\] Find what is listening on 8080\n2\. \[todo\] Stop it/);
   assert.match(r.stepSystems[1], /1\. \[done\] Find what is listening on 8080 → node \(pid 4242\) is on 8080\n2\. \[now\] Stop it/);
   assert.ok(r.stepTools[0].includes('done') && !r.stepTools[0].includes('note'), 'steps get done, not the notepad');
   assert.deepEqual(r.finalTools, [[]], 'the final reply has no tools');
@@ -1143,7 +1143,32 @@ await check('step mode through the UI: plan, live checklist, find, done, final r
   assert.equal(n.status, 'done');
   assert.deepEqual(n.answers, [{ q: 'What should the new project be called?', a: 'call it Wobble' }]);
   assert.equal(n.result, 'Call it Wobble');
-  assert.match(n.sys, /## The user answered your questions\n- What should the new project be called\?: call it Wobble/);
+  assert.match(n.sys, /## The user answered your questions \(their words\)\n- What should the new project be called\?: call it Wobble/);
+
+  // Case 15: a step that asks in plain text pauses the task (not filed as its result); a step that only thinks
+  // restarts with what happened in the system prompt; every step and final user turn is the user's own words.
+  await D.page.click('#new-chat');
+  await D.page.fill('#input', 'ASKTEST make me a repo');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => /What should the new repo be called, and should it be public or private\?/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 15000 });
+  assert.match(await D.page.textContent('#messages .plan.chip summary'), /0\/2 steps/);
+  await D.page.fill('#input', 'Gizmo, private');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => /Made Gizmo, private\./.test(document.querySelector('#messages-inner').textContent), null, { timeout: 15000 });
+  const a = await D.page.evaluate(async () => {
+    const sessions = await import('/src/sessions.js');
+    const s = sessions.list().find(x => x.messages.some(m => /ASKTEST/.test(m.content)));
+    const t = Object.values(s.tasks)[0];
+    const steps = window.__engineLog.filter(x => x.type === 'respond' && /ASKTEST|Make a repo/.test(x.system || '') && /## Now/.test(x.system || ''));
+    return { status: t.status, answers: t.answers, results: t.steps.map(x => x.result), inputs: steps.map(x => x.input), systems: steps.map(x => x.system) };
+  });
+  assert.equal(a.status, 'done');
+  assert.deepEqual(a.results, ['Name Gizmo, private', 'Created Gizmo']);
+  assert.deepEqual(a.answers, [{ q: 'What should the new repo be called, and should it be public or private?', a: 'Gizmo, private' }]);
+  assert.ok(a.inputs.length >= 4, JSON.stringify(a.inputs));
+  for (const i of a.inputs) assert.equal(i, 'ASKTEST make me a repo');
+  assert.ok(a.systems.some(x => /## Your last try at this step \(from Squiggle, not the user\)\nIt ended without calling a tool\. Finish your thought/.test(x)));
+  assert.ok(a.systems.some(x => /## Now\nEvery step is done/.test(x)), 'the final instruction is in the system prompt');
   if (shotsDir) await D.page.screenshot({ path: `${shotsDir}/steps.png` });
   const errs = D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e));
   assert.deepEqual(errs, []);
@@ -1407,7 +1432,7 @@ await check('small-model mode is a per-model switch: off gives E2B the full prom
   await D.page.waitForTimeout(500);
   const on = await send('hello again');
   assert.match(on.system, /^You are Squiggle, an assistant that figures things out\./);
-  assert.match(on.system, /need\(what\) asks the user for something only they know/);
+  assert.match(on.system, /ask_user\(question\) asks the user something only they know and waits/);
   assert.doesNotMatch(on.system, /```tool_call/, 'native tool formats don\'t get the fenced-block line');
   assert.ok(on.tools.includes('find') && on.tools.includes('plan'), JSON.stringify(on.tools));
   // No prompt (experimental): no system prompt at all, tools unchanged; saved per model; off again restores it.
