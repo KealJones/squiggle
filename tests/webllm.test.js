@@ -91,6 +91,60 @@ test('Conversation (fenced format) over the shim passes plain text through and n
   assert.ok(fake.seen.unloaded);
 });
 
+// iOS 27 Safari takes the GPU device away with the tab still open; WebLLM's runtime then disposes itself and every
+// call throws "Object has already been disposed" (Keal's iPhone, 2026-11-11). The shim loads the model again.
+function disposedEngine({ afterChunks = 0, text = 'Hello' } = {}) {
+  const seen = { unloaded: false };
+  return {
+    seen,
+    chat: { completions: { async create() {
+      if (!afterChunks) throw new Error('Object has already been disposed');
+      return (async function* () { yield { choices: [{ delta: { content: text } }] }; throw new Error('Object has already been disposed'); })();
+    } } },
+    interruptGenerate() {},
+    async unload() { seen.unloaded = true; },
+  };
+}
+
+test('a lost GPU before the reply starts: the model is loaded again and the reply runs as if nothing happened', async () => {
+  const dead = disposedEngine();
+  const fresh = fakeEngine('Hi there!');
+  let made = 0;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, { engine: dead, makeEngine: async () => { made += 1; return fresh; } });
+  const conv = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 64 } });
+  let content = '';
+  for await (const x of conv.sendMessageStreaming('hi')) if (x.content) content += x.content;
+  assert.equal(content, 'Hi there!');
+  assert.equal(made, 1);
+  assert.equal(w.reloads, 1);
+  assert.ok(dead.seen.unloaded, 'the dead engine is let go');
+  assert.equal(fresh.seen.requests.length, 1, 'the retry sends the same request to the new engine');
+});
+
+test('a lost GPU partway through a reply: no repeated text, a plain error, and the next message works', async () => {
+  const dead = disposedEngine({ afterChunks: 1, text: 'Hel' });
+  const fresh = fakeEngine('Second try.');
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, { engine: dead, makeEngine: async () => fresh });
+  const conv = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 64 } });
+  let content = '', err = null;
+  try { for await (const x of conv.sendMessageStreaming('hi')) if (x.content) content += x.content; } catch (e) { err = e; }
+  assert.equal(content, 'Hel');
+  assert.match(String(err && err.message), /loaded again: send the message again/);
+  const conv2 = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 64 } });
+  let again = '';
+  for await (const x of conv2.sendMessageStreaming('hi')) if (x.content) again += x.content;
+  assert.equal(again, 'Second try.');
+});
+
+test('other errors are not mistaken for a lost GPU', async () => {
+  const broken = { chat: { completions: { async create() { throw new Error('Context window exceeded'); } } }, interruptGenerate() {}, async unload() {} };
+  let made = 0;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, { engine: broken, makeEngine: async () => { made += 1; return broken; } });
+  const conv = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 64 } });
+  await assert.rejects(async () => { for await (const x of conv.sendMessageStreaming('hi')) void x; }, /Context window exceeded/);
+  assert.equal(made, 0);
+});
+
 // ── Gemma 4 (tiny Gemma 4 on WebLLM) ─────────────────────────────────────
 import { gemma4Prompt, parseGemmaCalls, splitGemma, registerModel } from '../app/src/engine-webllm.js';
 import { readFileSync } from 'node:fs';

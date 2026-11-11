@@ -110,23 +110,55 @@ export function sampling(opts) {
 
 const callChunk = (calls) => ({ choices: [{ delta: { tool_calls: calls.map((c, index) => ({ index, id: '', function: { name: c.name, arguments: JSON.stringify(c.arguments) } })) } }] });
 
+// When the browser takes the GPU device away (iOS 27 Safari does it with the tab still open: memory pressure, the
+// phone locking, switching apps), WebLLM's TVM runtime disposes itself (Instance.dispose on device.lost) and every
+// later call throws "Object has already been disposed". The engine object still looks loaded, so without this every
+// message fails until the page is reloaded (Keal's iPhone, iOS 27.2.1, 2026-11-11).
+export const gpuGone = (e) => /already been disposed|device (was )?lost|Instance\.dispose|GPUDevice.*(lost|destroyed)/i.test(String((e && e.message) || e || ''));
+
 // format: a tool format id (toolformats/) for models whose tools go through their own template (native),
 // null for the fenced ```tool_call format and chat-only models (plain text both ways).
-// engine: an already-made engine with WebLLM's API (tests pass a fake).
-export async function createShim(mlc, contextSize, onStage = () => {}, { format = null, engine: given = null } = {}) {
+// engine: an already-made engine with WebLLM's API (tests pass a fake). makeEngine: how to make another one
+// when the GPU device is lost (tests pass a fake; by default the same CreateMLCEngine call, from WebLLM's cache).
+export async function createShim(mlc, contextSize, onStage = () => {}, { format = null, engine: given = null, makeEngine = null } = {}) {
   const id = given ? mlc : await pickId(mlc);
   const fmt = toolFormat(format) || PLAIN;
   const manifest = Boolean((custom.get(id) || {}).model_manifest);
-  onStage('loading the model onto the GPU');
-  const engine = given || await (await libFor(id)).CreateMLCEngine(id, {
+  const make = makeEngine || (async (stage = onStage) => (await libFor(id)).CreateMLCEngine(id, {
     appConfig: await appConfigFor(id),
-    initProgressCallback: (p) => onStage(/fetch/i.test(p.text || '') ? 'downloading the model' : 'loading the model onto the GPU'),
-  }, { context_window_size: contextSize });
+    initProgressCallback: (p) => stage(/fetch/i.test(p.text || '') ? 'downloading the model' : 'loading the model onto the GPU'),
+  }, { context_window_size: contextSize }));
+  onStage('loading the model onto the GPU');
+  let engine = given || await make();
+  let reloads = 0;
+  // A fresh engine from the files WebLLM already cached. Not reported through onStage: that's the load screen's
+  // (and its crash marker's), and this happens mid-reply.
+  async function revive() {
+    reloads += 1;
+    console.info('Squiggle: the GPU device was lost; loading the model onto the GPU again.');
+    try { await engine.unload(); } catch {}
+    engine = await make(() => {});
+  }
 
   // One reply. Chat formats go through WebLLM's chat API, raw ones send the rendered prompt as a text
   // completion. Either way the reply streams back as thinking (reasoning_content) and text, with the
   // format's call block held back and handed over as delta.tool_calls at the end.
+  // One reply; if the GPU went away before any of it was shown, the model is loaded again and the reply starts over
+  // (every request carries the whole conversation, so nothing is lost). Once text is out, a retry would repeat it:
+  // the engine is still brought back for the next message, and the error says what happened.
   async function* stream(opts, signal) {
+    let shown = false;
+    try {
+      for await (const c of streamOnce(opts, signal)) { shown = true; yield c; }
+    } catch (e) {
+      if (!gpuGone(e) || (signal && signal.aborted)) throw e;
+      await revive();
+      if (shown) throw new Error('The GPU dropped the model partway through this reply (the phone can do this when it locks, switches apps or runs low on memory). It has been loaded again: send the message again.');
+      yield* streamOnce(opts, signal);
+    }
+  }
+
+  async function* streamOnce(opts, signal) {
     // A chat format with no tools and no thinking switch (a background job) is plain text, as before.
     const f = fmt.mode === 'raw' || (fmt !== PLAIN && (opts.tools || opts.chat_template_kwargs)) ? fmt : PLAIN;
     const thinking = opts.chat_template_kwargs ? Boolean(opts.chat_template_kwargs.enable_thinking) : undefined;
@@ -196,6 +228,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
     async createChatCompletion(opts) { return stream(opts, opts.abortSignal); },
     async exit() { try { await engine.unload(); } catch {} },
     info: { gpu: true, threads: 1, compat: false, webllm: true, webllmVersion: versionFor(id), toolFormat: fmt.id, toolNames: Boolean(fmt.listsNames), id },
+    get reloads() { return reloads; },
   };
 }
 
