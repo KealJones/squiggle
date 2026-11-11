@@ -108,11 +108,16 @@ export function renderChat() {
 }
 
 function emptyState() {
-  const ideas = ['What do you remember about me?', 'Clone one of my repos and summarize it', 'Read https://example.com and tell me what it says'];
+  const local = storage.isLocal();
+  const ideas = [
+    'What do you remember about me?',
+    local ? 'What is Pip written in?' : 'Clone one of my repos and summarize it',
+    'Read https://example.com and tell me what it says',
+  ];
   return h('div', { class: 'empty' },
     icon('squiggle'),
     h('h2', {}, 'What are we working on?'),
-    h('p', {}, 'Squiggle runs on this device and picks up where you left off on any other.'),
+    h('p', {}, local ? 'Squiggle runs on this device. Demo chats stay in this browser.' : 'Squiggle runs on this device and picks up where you left off on any other.'),
     newChatSettings(),
     h('div', { class: 'suggestions' }, ideas.map(t => h('button', { onclick: () => { $('#input').value = t; $('#input').focus(); } }, t))));
 }

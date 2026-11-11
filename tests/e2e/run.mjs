@@ -1447,6 +1447,29 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
   await D.ctx.close();
 });
 
+await check('demo startup downloads the LFM3 CPU build when WebGPU has no adapter', async () => {
+  const ctx = await browser.newContext();
+  try {
+    await ctx.addInitScript(() => {
+      Object.defineProperty(navigator, 'gpu', { value: { requestAdapter: async () => null } });
+    });
+    // Keep model selection real while recording the download without fetching the 1 GB model.
+    await ctx.route(appUrl + '/src/engine-wllama.js', r => r.fulfill({ contentType: 'text/javascript', body: `
+      export const isDownloaded = async () => false;
+      export async function downloadModel(url) { window.__cpuDownload = url; throw new Error('Test download'); }
+    ` }));
+    const page = await ctx.newPage();
+    await page.goto(appUrl + '/');
+    await page.getByRole('button', { name: 'Try it without signing in' }).click();
+    await page.getByText('WebGPU is present but no GPU adapter is available.', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Download and start' }).click();
+    await page.waitForFunction(() => Boolean(window.__cpuDownload), null, { timeout: 10000 });
+    assert.match(await page.evaluate(() => window.__cpuDownload), /\/LFM3-1\.7B-QAD-Q4_0\.gguf$/);
+  } finally {
+    await ctx.close();
+  }
+});
+
 await check('demo mode: try it without signing in (local storage, sample data, no git tools, no cloud), then sign in and keep what was made', async () => {
   const demoRepo = makeRepo(root, 'tester', 'demo-state', { 'README.md': '# state\n' });
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 820 } });
@@ -1470,6 +1493,9 @@ await check('demo mode: try it without signing in (local storage, sample data, n
   assert.match(await page.textContent('#sync-line'), /Demo: saved in this browser only/);
   assert.match(await page.textContent('#demo-banner'), /^Demo mode\./);
   assert.equal(await page.textContent('#chat-title'), 'New chat', 'opens on a fresh chat, with the sample chat in the list');
+  assert.match(await page.textContent('.chat-setup summary'), /Compress/, 'a fresh profile defaults to Compress');
+  assert.equal(await page.getByRole('button', { name: 'Clone one of my repos and summarize it' }).count(), 0, 'repo actions are unavailable in the demo');
+  assert.equal(await page.getByRole('button', { name: 'What is Pip written in?' }).count(), 1);
   assert.deepEqual(await page.$$eval('#session-list li', els => els.map(e => e.textContent.includes('Naming the log parser'))), [true]);
   // A "Try" chip asks a question; the model gets no git or GitHub tools and a demo workspace line.
   await page.click('#demo-banner .try button >> nth=0');

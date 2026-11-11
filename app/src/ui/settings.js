@@ -83,13 +83,6 @@ export function loadSettings() {
     Object.assign(agent.settings, { contextSize: 4096, fastDecode: false, mobileTuned: true });
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...saved, model: agent.settings.model, contextSize: 4096, fastDecode: false, mobileTuned: true })); } catch {}
   }
-  // Harness v2: smart context is the default (BM25 alone is enough on a phone;
-  // embeddings stay optional). Move existing devices over once.
-  if (!saved.harnessV2) {
-    agent.settings.contextMode = 'smart';
-    saved = { ...saved, contextMode: 'smart', harnessV2: true };
-    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
-  }
   // The natural voice (Kokoro/KittenTTS) was removed; calls use system speech.
   // Drop its settings and crash marker.
   if ('voiceEngine' in saved || 'voiceModel' in saved || 'ttsVoices' in saved) {
