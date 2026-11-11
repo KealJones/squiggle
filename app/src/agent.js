@@ -252,8 +252,8 @@ function toolCost(tools, known = []) {
 function checkOverhead(system, toolTokens) {
   const sys = estTokens(system);
   if (sys + toolTokens + Math.min(MAX_OUTPUT, 700) <= settings.contextSize) return;
-  const fixes = ['raise the context window in Settings', ...(smallModeSwitchable() && !smallMode() ? ['turn on Small-model mode for this model'] : []), 'turn off some tools'];
-  const e = new Error(`The instructions (about ${sys} tokens) and tool definitions (about ${toolTokens}) leave no room for a reply in this model's ${settings.contextSize}-token window, so shortening the conversation won't help. To fix it, ${fixes.join(', or ')}.`);
+  // (Settings has no context-size, small-model or tool switches any more, so the fix is a model with a bigger window.)
+  const e = new Error(`The instructions (about ${sys} tokens) and tool definitions (about ${toolTokens}) leave no room for a reply in this model's ${settings.contextSize}-token window, so shortening the conversation won't help. Try a model with a bigger window for this chat.`);
   e.overhead = true;
   throw e;
 }
@@ -308,7 +308,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
       }
     } catch (e) {
       const msg = e && e.overhead ? e.message : /too many tokens|context|kv.?cache|exceed/i.test(String(e && e.message || e))
-        ? 'The conversation got too long for the model\'s context window. Start a new chat, or raise the context window in Settings.'
+        ? 'The conversation got too long for the model\'s context window. Start a new chat to keep going.'
         : (e.message || e);
       turn.prefix += `\n\n⚠️ ${msg}`;
       if (turn.task && turn.task.status === 'active' && !turn.task.waiting) { turn.task.status = 'stopped'; sessions.saveTask(session, turn.task); }

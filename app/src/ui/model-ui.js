@@ -288,7 +288,7 @@ export function updateComposerNote() {
   const cloud = engine.MODELS[agent.settings.model].runtime === 'cloud';
   const mode = agent.settings.contextMode;
   const modeNote = mode === 'compact' ? '' : `${contextMode(mode).short} context is on.`;
-  note.textContent = `${engine.MODELS[agent.settings.model].label}, ${cloud ? 'running on your Cloudflare relay (free daily limit)' : `running on this device${smallHow()}`}. ${modeNote}${agent.noPrompt() ? ' No prompt (experimental).' : agent.smallModeSwitchable() && agent.smallMode() ? ' Small-model mode is on.' : ''}`;
+  note.textContent = `${engine.MODELS[agent.settings.model].label}, ${cloud ? 'running on your Cloudflare relay (free daily limit)' : `running on this device${smallHow()}`}. ${modeNote}`.trimEnd();
   // Small models: how fast the last reply was (for comparing GPU / cores / models).
   if (!cloud && engine.isLite()) engine.smallSpeed().then((sp) => {
     if (!sp || state.modelState !== 'ready') return;
