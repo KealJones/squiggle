@@ -8,7 +8,6 @@
 // WebLLM has no chat-template engine, so each native-tool model names a tool format (toolformats/:
 // Qwen3, Qwen3.5, Gemma 4, LFM2) that renders its template and reads its calls back. WebLLM keeps its
 // files in Cache Storage (webllm/config, /model, /wasm); sw.js keeps those caches across updates.
-import { reusePrefix } from './prefix-cache.js';
 import { report, gpu, trackBuffers } from './incidents.js';
 import { toolFormat, PLAIN } from './toolformats/index.js';
 import { heldBack } from './toolformats/text.js';
@@ -210,10 +209,7 @@ export function paceGpu(engine, chunk = PACED_CHUNK) {
 // engine: an already-made engine with WebLLM's API (tests pass a fake). makeEngine: how to make another one
 // when the GPU device is lost (tests pass a fake; by default the same CreateMLCEngine call, from WebLLM's cache).
 // watch: which GPU device is in use and when one is lost (tests pass a fake). waits: pauses between reload tries.
-// reuse: keep a prompt prefix in the model's cache between calls (prefix-cache.js), for formats that say where a
-// prompt can be cut (cacheMark). ?noreuse in the page's address turns it off, to compare on a phone.
-const reuseWanted = () => !/[?&]noreuse\b/.test((globalThis.location && location.search) || '');
-export async function createShim(mlc, contextSize, onStage = () => {}, { format = null, engine: given = null, makeEngine = null, pace = webkitGpu(), watch = deviceWatch, waits = REVIVE_WAITS, reuse: wantReuse = reuseWanted() } = {}) {
+export async function createShim(mlc, contextSize, onStage = () => {}, { format = null, engine: given = null, makeEngine = null, pace = webkitGpu(), watch = deviceWatch, waits = REVIVE_WAITS } = {}) {
   const id = given ? mlc : await pickId(mlc);
   const fmt = toolFormat(format) || PLAIN;
   const manifest = Boolean((custom.get(id) || {}).model_manifest);
@@ -225,8 +221,6 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
   onStage('loading the model onto the GPU');
   let engine = given || await make();
   let device = watch.current();       // the device this engine runs on (WebLLM asks for one per engine)
-  // Before pacing: the caches are made again with the build's own prefill chunk size.
-  let reuse = wantReuse && fmt.cacheMark ? reusePrefix(engine, fmt.cacheMark) : null;
   if (pace && !paceGpu(engine)) console.warn('Squiggle: could not pace WebLLM\'s GPU work (its internals changed); long prompts may lose the GPU on Safari.');
   let reloads = 0, reviving = null, stale = false, closed = false, lostNotes = null;
 
@@ -268,7 +262,6 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
       }
       device = watch.current();
       lostNotes = null;
-      if (wantReuse && fmt.cacheMark) reuse = reusePrefix(engine, fmt.cacheMark);
       if (pace) paceGpu(engine);
     })().finally(() => { reviving = null; });
     return reviving;
@@ -330,7 +323,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
         // path; a build without a manifest gets the prompt as is (web-llm 0.2.86/0.2.87 getInputData).
         prompt = (f.bos && !manifest ? f.bos : '') + f.prompt(history, tools, { thinking: Boolean(thinking), names: opts.tool_names || [] });
         noteRendered('raw prompt', prompt);   // the exact text the model reads ("What the model saw", trace.js)
-        try { await engine.resetChat(); } catch {}         // raw completions need an empty KV cache (a kept prefix snapshot survives: prefix-cache.js)
+        try { await engine.resetChat(); } catch {}         // raw completions need an empty KV cache
         chunks = await engine.completions.create({ prompt, stream: true, max_tokens: opts.max_tokens, ...sampling(opts), stop: f.stop });
       } else {
         let messages = f.messages(history, tools, { thinking });
@@ -387,8 +380,6 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
     info: { gpu: true, threads: 1, compat: false, webllm: true, webllmVersion: versionFor(id), toolFormat: fmt.id, toolNames: Boolean(fmt.listsNames), id },
     get reloads() { return reloads; },
     get paced() { return Boolean(pace); },
-    // Prompt tokens reused from the cache vs read, last call and in all (null when reuse is off for this model).
-    get reuse() { return reuse ? { ...reuse.totals, last: reuse.last } : null; },
   };
 }
 

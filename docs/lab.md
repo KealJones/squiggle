@@ -278,20 +278,3 @@ first message (Compress by default); the context type is then fixed, the model c
 twin (lm-experiments job lfm3-mlc-9) so GPUs without 16-bit floats stay on the GPU. The runtimes and tool formats
 stay, so a model is one registry entry; the measurements and casebook entries from the removed models stay as
 history.
-
-### Reuse the prompt already in the cache — shipped
-
-**Idea.** Keal, 2026-11-11, on hearing every turn re-reads the whole prompt: "I'm more concerned about not meeting the
-cache every turn." On an iPhone 16 the prompt is read at roughly 100 tokens a second, so a reply with five tool
-steps over a 3K prompt spent most of its time re-reading the same 3K.
-
-**What happened.** Two walls: WebLLM empties the cache before every raw completion (`preparePrefillInput`, and
-`getInputData` refuses a text completion against a non-empty cache), and its KV checkpoints only take pure KV
-caches; LFM3's conv layers keep a running state that can't be rewound. Forking a sequence at its end works on both
-kinds of state, and our model library has `vm.builtin.kv_state_fork_sequence` for both. `prefix-cache.js` keeps a
-snapshot in a second sequence and starts each call from it when it's an exact token prefix. In a scripted tool
-loop (tests/prefix-cache.test.js) the prompt tokens read drop by about half; with a long system prompt and short
-tool results it's more. Each step still re-reads the step before it, since LFM3's template drops that step's
-thinking; keeping the reply's thinking until it ends (as Qwen3's template does) would make each step read only
-its own result, but that's not LFM3's template. Across turns: the system prompt changes every turn (memory facts
-picked for the message, the tool-call list), so nothing carries over yet.

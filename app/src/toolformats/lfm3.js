@@ -76,9 +76,6 @@ export const lfm3 = {
   mode: 'raw',
   prompt: (history, tools, { thinking, names } = {}) => lfm3Prompt(history, tools, { thinking: thinking !== false, names }),
   bos: '<|startoftext|>',
-  // Where a prompt can be cut for reuse on WebLLM (prefix-cache.js): an assistant turn's thinking opens with
-  // `open` and ends at `close`; only the last turn's thinking is kept, so a cut never goes past it.
-  cacheMark: { open: '<|im_start|>assistant\n<think>', close: '</think>' },
   listsNames: true,
   stop: ['<|im_end|>'],
   callStart: '<tool_call>',
