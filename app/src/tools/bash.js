@@ -15,13 +15,16 @@
 // The commands that need Squiggle (the network, GitHub, the sandbox) call the existing tools, so their rules hold:
 // git push still asks the user through the approval card, curl fetches any URL (a made-up one just fails) and goes
 // through the relay, results still come back as outside content.
-//   git clone|status|log|show|checkout|switch|branch|add|commit|push|pull     gh repo list|clone, gh pr create
+//   git (real git: tools/gitcli.js)     gh (GitHub's CLI: tools/ghcli.js)
 //   curl URL (the page as readable text)    search QUERY (web search)    wiki NAME (Wikipedia + Wikidata)
 //   node -e CODE (the run_js sandbox)
 import { defineTool, params, str, runTool } from './registry.js';
-import { pfs, writeFile as gitWriteFile, rmrf, mkdirp, walk } from '../git.js';
+import { pfs, writeFile as gitWriteFile, rmrf, mkdirp, walk, git as isoGit, fs as gitFs, net as gitNet, author as gitAuthor, writtenIn, noteWritten, exists as gitExists } from '../git.js';
+import { gh as githubApi, getUser } from '../github.js';
+import { runGit } from './gitcli.js';
+import { runGh } from './ghcli.js';
 import * as storage from '../storage.js';
-import { resolveAgentPath } from '../guard.js';
+import { resolveAgentPath, agentBranchName } from '../guard.js';
 import { REPOS, readAgentFile, listAgentDir } from './workspace.js';
 import { wrapUntrusted } from '../untrusted.js';
 import { truncate } from '../util.js';
@@ -303,67 +306,45 @@ export function commands(defineCommand, toolCtx, seen) {
   const say = (stdout, exitCode = 0) => ({ stdout, stderr: '', exitCode });
   const fail = (stderr, exitCode = 1) => ({ stdout: '', stderr: stderr.endsWith('\n') ? stderr : stderr + '\n', exitCode });
 
+  // git and gh behave like the real ones (tools/gitcli.js, tools/ghcli.js); pushes, pulls and clones still go through
+  // Squiggle's tools (push policy, approvals, never forced).
+  const gitEnv = async (ctx, name) => {
+    const dir = name && await gitExists(`${REPOS}/${name}/.git`) ? `${REPOS}/${name}` : null;
+    return {
+      git: isoGit, fs: gitFs, dir, name, cwd: normalize(ctx.cwd), author: gitAuthor, net: gitNet,
+      written: () => (dir ? writtenIn(dir) : []), noteWritten, agentBranchName,
+      call: (n, a, extra) => call(n, a, extra), stdin: ctx.stdin || '', help: HELP.git,
+      initDir: (arg) => { const p = normalize(resolve(ctx.cwd, arg || '.')); const m = /^\/repos\/([^/]+)$/.exec(p); return m ? { dir: `${REPOS}/${m[1]}`, path: p } : null; },
+    };
+  };
   const git = defineCommand('git', helped(HELP.git, async (argv, ctx) => {
     let args = [...argv], dir = null;
     while (args[0] === '-C' && args.length > 1) { dir = args[1]; args = args.slice(2); }
-    const [sub, ...rest] = args;
-    const repo = repoFrom(ctx.cwd, dir);
-    const needRepo = () => fail(`fatal: not a git repository (cd into /repos/<name>, or git -C /repos/<name> ${sub})`, 128);
-    switch (sub) {
-      case 'clone': { const f = flags(rest, ['b', 'branch', 'depth']); if (!f._[0]) return fail('usage: git clone <repo>'); return asOutput(await call('git_clone', { repo: f._[0], ...(f.b || f.branch ? { branch: f.b || f.branch } : {}) })); }
-      case 'status': return repo ? asOutput(await call('git_status', { repo })) : needRepo();
-      case 'log': {
-        if (!repo) return needRepo();
-        const f = flags(rest, ['n', 'max-count']);
-        const n = Number(f.n || f['max-count'] || (rest.find(a => /^-\d+$/.test(a)) || '').slice(1)) || 10;
-        return asOutput(await call('git_log', { repo, count: n }));
-      }
-      case 'show': {
-        if (!repo) return needRepo();
-        const spec = rest.find(a => !a.startsWith('-')) || 'HEAD';
-        const at = spec.indexOf(':');
-        if (at < 0) return fail('git show here reads a file at a commit: git show <commit>:<path> (git log lists commits)');
-        return asOutput(await call('git_show', { repo, ref: spec.slice(0, at) || 'HEAD', path: spec.slice(at + 1) }));
-      }
-      case 'checkout': case 'switch': case 'branch': {
-        if (!repo) return needRepo();
-        const f = flags(rest);
-        const name = f._[0];
-        if (!name) return sub === 'branch' ? asOutput(await call('git_status', { repo })) : fail(`usage: git ${sub} <branch>`);
-        return asOutput(await call('git_branch', { repo, name, ...(f._[1] ? { from: f._[1] } : {}) }));
-      }
-      case 'add': return say('');   // git commit takes every change
-      case 'commit': {
-        if (!repo) return needRepo();
-        const f = flags(rest, ['m', 'message']);
-        const message = f.m || f.message;
-        if (!message) return fail('error: give a message: git commit -m "…"');
-        return asOutput(await call('git_commit', { repo, message }));
-      }
-      case 'push': return repo ? asOutput(await call('git_push', { repo })) : needRepo();
-      case 'pull': return repo ? asOutput(await call('git_pull', { repo })) : needRepo();
-      case 'diff': return repo ? asOutput(await call('git_status', { repo })) : needRepo();
-      default: return fail(`git: '${sub || ''}' isn't available here. Use: clone, status, log, show <commit>:<path>, checkout/switch/branch <name>, add, commit -m, push, pull.`);
-    }
+    const name = repoFrom(ctx.cwd, dir);
+    const env = await gitEnv(dir ? { ...ctx, cwd: normalize(resolve(ctx.cwd, dir)) } : ctx, name);
+    return runGit(args, env);
   }));
 
   const gh = defineCommand('gh', helped(HELP.gh, async (argv, ctx) => {
-    const [area, verb, ...rest] = argv;
-    if (area === 'repo' && verb === 'list') {
-      const res = await call('github_list_repos', {});
-      if (res.model && res.model.error) return asOutput(res);
-      const rows = (res.model.repos || []).map(r => `${r.repo}\t${String(r.description || '').replace(STRIP, '').replace(/\s+/g, ' ').trim()}\t${r.private ? 'private' : 'public'}`);
-      return say(rows.join('\n') + '\n');
+    const name = repoFrom(ctx.cwd);
+    const genv = await gitEnv(ctx, name);
+    let repo = null, branch = null;
+    if (genv.dir) {
+      const o = (await isoGit.listRemotes({ fs: gitFs, dir: genv.dir }).catch(() => [])).find(r => r.remote === 'origin');
+      const m = o && o.url.match(/github\.com\/([^/]+)\/([^/]+?)(\.git)?$/);
+      if (m) repo = { owner: m[1], name: m[2] };
+      branch = await isoGit.currentBranch({ fs: gitFs, dir: genv.dir, fullname: false }).catch(() => null);
     }
-    if (area === 'repo' && verb === 'clone') return rest[0] ? asOutput(await call('git_clone', { repo: rest[0] })) : fail('usage: gh repo clone <owner/name>');
-    if (area === 'pr' && verb === 'create') {
-      const repo = repoFrom(ctx.cwd);
-      if (!repo) return fail('cd into /repos/<name> first');
-      const f = flags(rest, ['title', 't', 'body', 'b', 'base', 'B']);
-      if (!(f.title || f.t)) return fail('usage: gh pr create --title "…" [--body "…"] [--base main]');
-      return asOutput(await call('github_open_pr', { repo, title: f.title || f.t, ...(f.body || f.b ? { body: f.body || f.b } : {}), ...(f.base || f.B ? { base: f.base || f.B } : {}) }));
-    }
-    return fail('gh here does: gh repo list, gh repo clone <owner/name>, gh pr create --title "…" [--body "…"]');
+    const cfg = storage.storageConfig();
+    return runGh(argv, {
+      gh: githubApi, repo, branch, login: async () => (await getUser()).login,
+      approve: toolCtx.approve, call: (n, a) => call(n, a), stdin: ctx.stdin || '', help: HELP.gh,
+      exec: ctx.exec ? (cmd, opts = {}) => ctx.exec(cmd, { cwd: ctx.cwd, ...opts }) : null,
+      git: genv.dir ? (args) => runGit(args, genv) : null,
+      readFile: async (p) => { try { return await ctx.fs.readFile(ctx.fs.resolvePath(ctx.cwd, p)); } catch { return null; } },
+      isStorage: (o, n) => Boolean(cfg && String(o).toLowerCase() === cfg.owner.toLowerCase() && String(n).toLowerCase() === cfg.name.toLowerCase()),
+      storageName: cfg ? cfg.name : null,   // the name alone: a graphql query names owner and repo apart
+    });
   }));
 
   const curl = defineCommand('curl', helped(HELP.curl, async (argv) => {
@@ -430,8 +411,8 @@ export function commands(defineCommand, toolCtx, seen) {
 
 export const HELP = {
   all: `Custom commands here (each has --help):
-  git      clone, status, log, show <commit>:<path>, checkout/switch/branch <name>, add, commit -m, push, pull
-  gh       gh repo list (your GitHub repos), gh repo clone, gh pr create
+  git      real git on /repos/<name>: status, add, commit, diff, log, show, branch, switch, merge, push, pull, …
+  gh       GitHub's CLI: pr list/view/create/edit/merge/…, issue …, repo …, run …, api
   curl     curl URL: a web page as readable text (pipe it: curl URL | grep -i word)
   search   search WORDS: web search results with links
   wiki     wiki NAME: Wikipedia and Wikidata facts about something
@@ -439,21 +420,34 @@ export const HELP = {
   bc       echo "5*5/129" | bc -l: maths with decimals and %
 Everything else is ordinary bash: cat, ls, grep, sed, awk, find, head, tail, wc, sort, jq, pipes, loops.
 Files: /home (yours, synced to the user's devices), /repos/<name> (git clones), /web (saved pages), /tmp.`,
-  git: `git (Squiggle): works on clones in /repos/<name>; cd there first or use git -C /repos/<name>.
-  git clone <owner/name | github URL>     clone into /repos/<name>
-  git status | git diff                   current branch and changed files
-  git log [-n N]                          recent commits
-  git show <commit>:<path>                a file as it was at a commit (HEAD~1:path for the one before)
-  git checkout -b <name> | git switch <name> | git branch <name>
-                                          switch branch, or start one (new ones get the agent/ prefix)
-  git add …                               nothing to do: commit takes every change
-  git commit -m "message"                 commit all changes
-  git push                                agent/ branches push right away; any other branch asks the user
-  git pull                                fast-forward from GitHub`,
-  gh: `gh (Squiggle):
-  gh repo list                            the user's GitHub repos (owner/name, description, public/private)
-  gh repo clone <owner/name>              same as git clone
-  gh pr create --title "…" [--body "…"] [--base main]   from the pushed branch of the repo you're in`,
+  git: `git (Squiggle): real git on clones in /repos/<name> (cd there first, or git -C /repos/<name> …).
+  Staging works as usual: git add, then git commit -m "…" (or git commit -am "…" for tracked files).
+  Not here: rebase, revert, reflog, bisect, submodules, force pushes, deleting branches on GitHub.
+  clone <owner/name>   init   status [-s] [-b]   add <paths>|.|-A|-u   rm [-r] [--cached]   mv
+  commit [-m] [-a] [--amend] [--no-edit] [--allow-empty] [-F file]
+  diff [--cached] [<rev>] [<a>..<b>] [<a>...<b>] [--stat|--name-only|--name-status|--numstat] [-- paths]
+  log [-n N] [--oneline] [--stat] [-p] [--author=] [--grep=] [--since=] [--format=…] [<a>..<b>] [-- path]
+  show [<rev>] [--stat] [--name-only]   show <rev>:<path>   blame <file>   grep [-n] [-i] <pattern>
+  branch [-a] [-r] [-v] [-vv] [--show-current] [<new>] [-d|-D <name>] [-m <new>]
+  checkout <branch>|-b <new>|-- <paths>   switch <branch>|-c <new>   restore [--staged] [--source=<rev>] <paths>
+  reset [--soft|--mixed|--hard] [<rev>]   reset -- <paths>   stash [push|pop|apply|list|drop|show|clear]
+  merge <branch> [--ff-only] [--no-ff]   cherry-pick <commit>   apply [-R] [--check] <patch>
+  fetch   pull   push [-u] [origin <branch>]   remote -v   rev-parse [--short] [--abbrev-ref] <rev>
+  tag [-a] [-m] [-d]   config user.name   clean -n|-f [-d]   ls-files   ls-tree   cat-file -p   shortlog -sn   describe
+  New branches get the agent/ prefix: pushing them needs no approval; pushing any other branch asks the user.`,
+  gh: `gh (Squiggle): GitHub's CLI for the repo you're in (or -R owner/name). --json fields and --jq work.
+  pr list [--state open|closed|merged|all] [--author @me] [--head b] [--base b] [-L n]
+  pr view [<n>|<branch>] [--comments]   pr diff [<n>] [--name-only]   pr checks [<n>]   pr status
+  pr create --title "…" [--body "…"|--fill] [--base main] [--head b] [--draft] [--label x] [--reviewer u]
+  pr edit <n> [--title] [--body] [--base] [--add-label] [--add-reviewer]   pr comment <n> --body "…"
+  pr review <n> --approve|--comment|--request-changes [--body]   pr ready <n>   pr checkout <n>
+  pr close <n> [--comment "…"] [--delete-branch]   pr reopen <n>   pr merge <n> [--merge|--squash|--rebase] [--delete-branch]
+  issue list|view|create|edit|comment|close|reopen   (same flags as pr; close --reason "not planned")
+  repo list   repo view [owner/name]   repo clone <owner/name>   browse
+  run list [--branch b] [--workflow f]   run view [<id>] [-v]   run rerun <id> [--failed]   workflow list
+  release list   release view [<tag>]   search repos|issues|prs <words>   auth status
+  api <path> [-X METHOD] [-f k=v] [-F k=v] [--jq expr] [--paginate]   ({owner} {repo} {branch} fill in)
+  Asks the user first: pr merge, deleting a branch, any gh api call that isn't a read.`,
   curl: `curl URL: fetch a web page and print it as readable text (not HTML). GET only.
   A URL that doesn't exist fails (404 or no such host): prefer links from search results or the user.
   curl https://example.com | grep -i -m5 word     find a line without reading the whole page`,
