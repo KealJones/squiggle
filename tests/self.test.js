@@ -1,7 +1,7 @@
 // The `squiggle` bash command (app/src/tools/self.js): the agent's view of itself, this chat and the user's others.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { squiggle, chatMarkdown, HELP_SELF } from '../app/src/tools/self.js';
+import { squiggle, chatMarkdown, chatText, HELP_SELF } from '../app/src/tools/self.js';
 
 const MODES = { compact: { label: 'Compress', short: 'Compress' }, smart: { label: 'Smart', short: 'Smart' } };
 const chat = (id, title, updated, extra = {}) => ({ id, title, created: updated - 1000, updated, messages: [
@@ -103,4 +103,36 @@ test('squiggle --help anywhere prints the help; unknown subcommands fail with th
 test('chatMarkdown makes a hash link ui/links.js opens', () => {
   assert.equal(chatMarkdown({ id: 's0abc', title: 'A\nB [x]' }), '[A B x](#chat=s0abc)');
   assert.equal(chatMarkdown({ id: 's0abc', title: '' }), '[Untitled chat](#chat=s0abc)');
+});
+
+test('chatText is the whole chat as markdown: title first, settings, every message with who/when/id, tools, attachments', () => {
+  const s = {
+    id: 's_tok', title: 'Tokenizer zoo ideas', created: Date.UTC(2026, 9, 12, 15), updated: Date.UTC(2026, 9, 12, 16),
+    model: 'WLF3QAD', contextMode: 'compact', threads: { t1: { title: 'side quest' } },
+    messages: [
+      { id: 'm1', role: 'user', content: 'compare tokenizers', ts: Date.UTC(2026, 9, 12, 15), attachments: [{ name: 'notes.pdf', path: 'home/attachments/s_tok/notes.pdf.txt' }] },
+      { id: 'm2', role: 'assistant', content: 'Here is the plan.', ts: Date.UTC(2026, 9, 12, 15, 1), tools: [{ name: 'bash', label: 'ran ls /repos', ok: true }, { name: 'curl', label: 'fetch failed', ok: false }] },
+      { id: 'm3', role: 'user', content: '(gone)', deleted: true },
+      { id: 'm4', role: 'user', content: 'in a thread', thread: 't1', ts: Date.UTC(2026, 9, 12, 16) },
+    ],
+  };
+  const t = chatText(s, { modelLabel: () => 'LFM3 1.7B', contextModes: MODES });
+  const lines = t.split('\n');
+  assert.equal(lines[0], '# Tokenizer zoo ideas');
+  assert.match(lines[1], /^Link: \[Tokenizer zoo ideas\]\(#chat=s_tok\) · id s_tok · model: LFM3 1\.7B · context type: Compress$/);
+  assert.match(lines[2], /3 messages$/, 'deleted messages are left out');
+  assert.match(t, /\n## user · 2026-10-1\d \d\d:\d\d · m1\n\[attached: notes\.pdf → \/home\/attachments\/s_tok\/notes\.pdf\.txt\]\ncompare tokenizers\n/);
+  assert.match(t, /\n## assistant · .* · m2\nHere is the plan\.\n\n- bash: ran ls \/repos\n- ✕ curl: fetch failed\n/);
+  assert.match(t, /## user · .* · m4 · thread: side quest\nin a thread\n$/);
+  assert.doesNotMatch(t, /\(gone\)/);
+});
+
+test('squiggle read prints a whole chat (this one by default) for pipes; unknown ids fail', async () => {
+  const d = deps();
+  const here = await squiggle(['read'], d);
+  assert.equal(here.exitCode, 0);
+  assert.match(here.stdout, /^# New chat\n/);
+  const other = await squiggle(['read', 's_tok'], d);
+  assert.match(other.stdout, /^# Tokenizer zoo ideas\n[\s\S]*compare tokenizers for the small model/);
+  assert.equal((await squiggle(['read', 'nope'], d)).exitCode, 1);
 });

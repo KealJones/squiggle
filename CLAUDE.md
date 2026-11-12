@@ -59,7 +59,8 @@ app/                    static app, plain ES modules, no build step
       bash.js           `bash` (lab, settings.toolSurface 'bash'): just-bash (app/vendor/just-bash.js) on the workspace through WorkspaceFs (/home via storage.js so it syncs, /repos and /web via LightningFS, everything else in memory); custom commands git, gh, curl, search, wiki, node, bc call the tools above (squiggle: self.js) (approvals and URL rules kept); `man` / `--help` document them
       self.js           `squiggle` (a bash custom command): what the agent is (model, how it runs, context type/window, storage), this
                         chat's and other chats' settings, chats as #chat=<id> markdown links, rename this chat, list/forget memory
-                        facts; agent.js `selfInfo` passes the run's details as toolCtx.self
+                        facts; agent.js `selfInfo` passes the run's details as toolCtx.self. `squiggle read [ID]` prints a
+                        whole chat (`chatText`) so the model can pipe it into tail/grep
       wiki.js           wiki_lookup: Wikipedia search → article + Wikidata item → every fact (ranked by the question via property aliases) and newest links, straight from the browser (CORS); wikidata_query: raw SPARQL, big models only (agent.js BIG_ONLY)
     calc.js             `calculate` tool: safe math expression parser (no eval), % and money-friendly
     guard.js            hard limits: push policy, workflow-file check, workspace path resolution

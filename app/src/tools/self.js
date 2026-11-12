@@ -3,6 +3,7 @@
 //   squiggle [about]            what it is: the model and how it runs, the context type and window, this chat, storage
 //   squiggle chats [-n N] [WORDS]   recent chats (or ones matching WORDS) as markdown links the reply can copy
 //   squiggle chat [ID]          one chat's own settings (model, context type, dates, size); this chat by default
+//   squiggle read [ID]          the whole chat, every message, to pipe into tail/grep (chatText)
 //   squiggle rename "TITLE"     renames this chat (small models never get an auto title, nameSession)
 //   squiggle memory [WORDS]     what's saved about the user (all, or matching), with ids
 //   squiggle forget ID          deletes a saved fact the user says is wrong
@@ -18,6 +19,33 @@ const date = (ts) => (ts ? new Date(ts).toISOString().slice(0, 10) : '');
 const linkText = (s) => oneLine(s, 60).replace(/[[\]]/g, '') || 'Untitled chat';
 export const chatMarkdown = (s) => `[${linkText(s.title)}](#chat=${s.id})`;
 
+// ── squiggle read: a whole chat on stdout, so the model can pipe it into tail, grep, sed ──
+
+const pad = (n) => String(n).padStart(2, '0');
+// Local time, as the user sees it in the app.
+export const stamp = (ts) => { if (!ts) return ''; const d = new Date(ts); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+
+/** The whole chat as markdown: a header (title, link, settings), then every message with who, when, its id and
+ *  thread, attachments and the tools the reply used. No cap: bash.js saves big output to /tmp for the model. */
+export function chatText(s, deps = {}) {
+  const msgs = (s.messages || []).filter(m => !m.deleted);
+  const model = s.model ? (deps.modelLabel ? deps.modelLabel(s.model) : s.model) : 'the device default';
+  const out = [
+    `# ${oneLine(s.title, 200) || 'Untitled chat'}`,
+    `Link: ${chatMarkdown(s)} · id ${s.id} · model: ${model} · context type: ${s.contextMode ? modeLabel(deps, s.contextMode) : 'the device default'}`,
+    `Started ${stamp(s.created)} · last message ${stamp(s.updated)} · ${msgs.length} message${msgs.length === 1 ? '' : 's'}${s.archived ? ' · archived' : ''}`,
+  ];
+  for (const m of msgs) {
+    const thread = m.thread ? ` · thread: ${oneLine((s.threads && s.threads[m.thread] && s.threads[m.thread].title) || m.thread, 60)}` : '';
+    out.push('', `## ${m.role} · ${stamp(m.ts)} · ${m.id}${thread}${m.pinned ? ' · pinned' : ''}`);
+    for (const a of m.attachments || []) out.push(`[attached: ${a.name}${a.path ? ` → /home/${String(a.path).replace(/^home\//, '')}` : ''}]`);
+    out.push(String(m.content || '').trim());
+    const tools = (m.tools || []).filter(t => t && t.name);
+    if (tools.length) out.push('', ...tools.map(t => `- ${t.ok === false ? '✕ ' : ''}${t.name}: ${oneLine(t.label || '', 160)}`));
+  }
+  return out.join('\n') + '\n';
+}
+
 export const HELP_SELF = `squiggle: about you (Squiggle), this chat and the user's other chats.
   squiggle                      what you are: model, how it runs, context type and window, this chat, storage
   squiggle chats [-n N] [WORDS] recent chats, or ones mentioning WORDS, as markdown links: put the link in your
@@ -26,6 +54,8 @@ export const HELP_SELF = `squiggle: about you (Squiggle), this chat and the user
   squiggle rename "TITLE"       rename this chat (do it when the user asks, or once the topic is clear)
   squiggle memory [WORDS]       facts saved about the user (all, or matching WORDS), with ids
   squiggle forget ID            delete a saved fact the user says is wrong or outdated
+  squiggle read [ID]            a whole chat (this one by default), every message: pipe it, e.g.
+                                squiggle read | tail -40, squiggle read ID | grep -i -A3 "toki pona"
 Save a new fact with the remember tool. The model and context type are the user's to change, in the app.`;
 
 function modeLabel(deps, mode) {
@@ -53,7 +83,7 @@ function about(deps, session) {
     a.tools ? `Your tools: ${a.tools}.` : '',
     a.storage ? `Storage: ${a.storage}.` : '',
     session ? chatSettings(deps, session, true) : '',
-    'More: squiggle chats, squiggle memory, squiggle --help.',
+    'More: squiggle chats, squiggle read [ID] (a whole chat, to pipe into grep or tail), squiggle memory, squiggle --help.',
   ].filter(Boolean).join('\n');
 }
 
@@ -103,6 +133,13 @@ export async function squiggle(argv, deps = {}) {
       return say(chatSettings(deps, s, session && s.id === session.id));
     }
 
+    case 'read': case 'cat': case 'history': {
+      const id = rest[0];
+      const s = !id ? session : ID.test(id) && (deps.get ? deps.get(id) : list().find(x => x.id === id));
+      if (!s || s.deleted) return fail(id ? `squiggle read: no chat with id ${id} (squiggle chats lists them)` : 'squiggle read: no chat open; give an id from squiggle chats');
+      return { stdout: chatText(s, deps), stderr: '', exitCode: 0 };
+    }
+
     case 'rename': case 'title': {
       if (!session) return fail('squiggle rename: no chat open');
       const title = oneLine(rest.join(' '), 60).replace(/^["']|["']$/g, '').trim();
@@ -130,6 +167,6 @@ export async function squiggle(argv, deps = {}) {
       return deps.forget && deps.forget(id) ? say(`Forgot fact ${id}.`) : fail(`squiggle forget: no fact with id ${id}`);
     }
 
-    default: return fail(`squiggle: unknown subcommand '${sub}'. Try: squiggle, squiggle chats, squiggle chat, squiggle rename, squiggle memory (squiggle --help).`);
+    default: return fail(`squiggle: unknown subcommand '${sub}'. Try: squiggle, squiggle chats, squiggle chat, squiggle read, squiggle rename, squiggle memory (squiggle --help).`);
   }
 }
