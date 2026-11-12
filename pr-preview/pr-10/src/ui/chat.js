@@ -168,7 +168,7 @@ export function messageEl(m, { inThread, streaming, session }) {
   const el = h('div', { class: `msg ${m.role}${m.voice ? ' voice-' + m.voice.toLowerCase() : ''}`, 'data-mid': m.id || '' });
   const col = h('div', { style: m.role === 'user' ? 'display:flex;flex-direction:column;align-items:flex-end;width:100%' : '' });
   if (m.role === 'assistant') {
-    if (m.voice) col.append(h('div', { class: 'voice-label' }, brainstorm.VOICES[m.voice] || m.voice));
+    if (m.voice) col.append(h('div', { class: 'voice-label' }, voiceLabel(m.voice, m.phase)));
     const owner = session || current;
     const task = m.task && owner && owner.tasks && owner.tasks[m.task];
     if (task) col.append(planEl(task, { live: false }));
@@ -504,6 +504,9 @@ function renderBrainstormBar() {
     : [h('span', { class: 'muted' }, 'Brainstorm stopped.'), h('button', { type: 'button', class: 'btn', onclick: (e) => { e.currentTarget.disabled = true; send('', null, []); } }, 'Keep going')]));
 }
 
+// "Squiggle A · listing options": which voice, and which phase of the brainstorm (transcript framing).
+const voiceLabel = (v, phase) => (brainstorm.VOICES[v] || v) + (brainstorm.PHASES[phase] ? ` · ${brainstorm.PHASES[phase]}` : '');
+
 async function runBrainstorm(text, files) {
   if (state.brainstorm) return;   // one run at a time (a second Keep going while the model loaded)
   const session = state.current;
@@ -528,10 +531,10 @@ async function runBrainstorm(text, files) {
       takeSteer: () => { const t = run.steer.splice(0).join('\n\n'); renderBrainstormBar(); return t; },
       ui: {
         onSteer: (m) => { if (here()) { $('#messages-inner').append(messageEl(m, { inThread: false })); scrollDown(scroller); } },
-        onStart: (v) => {
+        onStart: (v, phase) => {
           if (!here()) return;
           body = h('div', { class: 'body' }, squiggleWait());
-          live = h('div', { class: `msg assistant voice-${v.toLowerCase()}` }, h('div', {}, h('div', { class: 'voice-label' }, brainstorm.VOICES[v]), body));
+          live = h('div', { class: `msg assistant voice-${v.toLowerCase()}` }, h('div', {}, h('div', { class: 'voice-label' }, voiceLabel(v, phase)), body));
           smooth = smoothText((t) => { body.innerHTML = md(t); if (here() && live && live.isConnected) scrollDown(scroller); });
           $('#messages-inner').append(live);
           scrollDown(scroller);
@@ -547,6 +550,7 @@ async function runBrainstorm(text, files) {
       },
     });
     if (why === 'limit') toast(`Paused after ${brainstorm.MAX_TURNS} turns. Keep going or jump in to carry on.`);
+    if (why === 'stuck') toast('Stopped: a voice kept repeating an earlier turn. Jump in to steer it somewhere new, or Keep going.');
   } finally {
     if (smooth) smooth.stop();
     // Typed to jump in, but the run ended first (Stop, the turn limit, an error): it's kept, and the next run starts from it.
