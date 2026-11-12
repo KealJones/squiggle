@@ -132,7 +132,8 @@ function newChatSettings() {
   const session = state.current;
   const model = sessionModel(session);
   const mode = session.contextMode || agent.settings.defaultContextMode || 'compact';
-  const summary = h('span', {}, 'This chat: ', h('b', {}, engine.MODELS[model] ? engine.MODELS[model].label : model), ' · ', h('b', {}, session.brainstorm ? 'Brainstorm' : contextMode(mode).short));
+  const framing = brainstorm.framingOf(session);
+  const summary = h('span', {}, 'This chat: ', h('b', {}, engine.MODELS[model] ? engine.MODELS[model].label : model), ' · ', h('b', {}, session.brainstorm ? (framing === 'flip' ? 'Brainstorm (role flip)' : 'Brainstorm') : contextMode(mode).short));
   const choice = (name, value, checked, label, hint, onPick) => h('label', { class: 'choice' },
     h('input', { type: 'radio', name, value, checked: checked ? true : null, onchange: onPick }),
     h('span', {}, h('span', { class: 'choice-label' }, label), hint ? h('span', { class: 'choice-hint' }, hint) : ''));
@@ -143,7 +144,11 @@ function newChatSettings() {
     }));
   const kinds = [[false, 'Chat', 'Squiggle answers you.'], [true, 'Brainstorm', 'You send the idea; Squiggle talks it through with itself.']]
     .map(([on, label, hint]) => choice('chat-kind', String(on), Boolean(session.brainstorm) === on, label, hint, () => {
-      session.brainstorm = on || undefined; sessions.touch(session); renderChat();
+      session.brainstorm = on ? 'transcript' : undefined; sessions.touch(session); renderChat();
+    }));
+  const framings = [['transcript', 'Transcript', 'Squiggle writes each voice\'s next turn from the whole brainstorm.'], ['flip', 'Role flip', 'Each voice sees the other as the user.']]
+    .map(([k, label, hint]) => choice('chat-framing', k, k === framing, label, hint, () => {
+      session.brainstorm = k; sessions.touch(session); renderChat();
     }));
   const modes = Object.entries(CONTEXT_MODES).filter(([, d]) => d.offered).map(([k, d]) => choice('chat-context', k, k === mode, d.label, d.hint.split('. ')[0] + '.', () => {
     session.contextMode = k; sessions.touch(session);
@@ -154,7 +159,7 @@ function newChatSettings() {
     h('div', { class: 'chat-setup-body' },
       h('fieldset', {}, h('legend', {}, 'Kind'), ...kinds),
       h('fieldset', {}, h('legend', {}, 'Model'), ...models),
-      session.brainstorm ? '' : h('fieldset', {}, h('legend', {}, 'Context'), ...modes),
+      session.brainstorm ? h('fieldset', {}, h('legend', {}, 'Brainstorm'), ...framings) : h('fieldset', {}, h('legend', {}, 'Context'), ...modes),
       h('p', { class: 'muted' }, 'The context type stays for this chat; the model can switch later in the chat details.')));
 }
 
