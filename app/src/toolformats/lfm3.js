@@ -80,6 +80,9 @@ export const lfm3 = {
   stop: ['<|im_end|>'],
   callStart: '<tool_call>',
   parseCalls: parseQwenCalls,
+  // How its thinking opens and closes: the shim can close a thinking block itself (think_prefill).
+  thinkOpen: '<think>',
+  thinkClose: '</think>',
   // With thinking on the prompt ends inside <think>, so the reply starts as thinking until </think>.
   split: (raw, { prompt }) => splitRaw(raw, Boolean(prompt && prompt.endsWith('<think>'))),
 };

@@ -11,6 +11,8 @@ import { $, h, squiggleWait, gb, eta } from './dom.js';
 import { state } from './state.js';
 import { saveSettings, setDefaultModel } from './settings.js';
 import { renderSide } from './side.js';
+import { report, gpu } from '../incidents.js';
+import { LAST_PROMPT_KEY } from '../trace.js';
 
 export async function initModel() {
   // Which build of the model this device runs (LFM3 on the GPU, or on the CPU without WebGPU or 16-bit floats):
@@ -46,6 +48,14 @@ export async function initModel() {
   let crashed = loadCrashMarker();
   // Left mid-load or mid-reply (refresh, closed, backgrounded), not crashed: load again without asking.
   if (takeLeftNote() && crashed) { console.info(`Squiggle: the page was left while ${crashed.stage || 'working'}, not a crash; loading again.`); setCrashMarker(null); crashed = null; }
+  // A real crash, written down once (incidents.js) with the prompt it was reading, if it was answering.
+  if (crashed && !crashed.reported) {
+    let prompt = null;
+    try { prompt = crashed.phase === 'reply' ? localStorage.getItem(LAST_PROMPT_KEY) : null; } catch {}
+    report('tab-killed', { ...crashed, ua: undefined, prompt });
+    crashed = { ...crashed, reported: true };
+    setCrashMarker(crashed);
+  }
   // A crash with a different model (say Gemma 4 on a phone) says nothing about this one.
   if (crashed && crashed.model !== agent.settings.model && !engine.needsGpu(agent.settings.model)) { setCrashMarker(null); crashed = null; }
   if (crashed) { state.modelState = 'idle'; showCrashBanner(crashed); return; }
@@ -341,7 +351,9 @@ export async function loadModel() {
     // says so on the next open.
     engine.setProgress((st) => {
       if (!st) { setCrashMarker(null); clearCrashes(); return; }
-      setCrashMarker({ ...marker, phase: 'reply', stage: st, at: Date.now() });
+      // What a crash report needs, written before the work starts (the tab may die without a word).
+      const t = state.liveTurn && state.liveTurn.ctx;
+      setCrashMarker({ ...marker, phase: 'reply', stage: st, at: Date.now(), session: state.current && state.current.id, window: t && t.window, gpuBytes: gpu.bytes });
     });
     state.modelState = 'ready';
     banner();
@@ -349,6 +361,7 @@ export async function loadModel() {
     if (['smart', 'fresh'].includes(agent.settings.contextMode) && agent.settings.semantic) loadSemantic();
   } catch (e) {
     setCrashMarker(null);
+    report('load-failed', { model: S.model, stage: marker.stage, message: String((e && e.message) || e).slice(0, 500), gpuSummary: marker.gpu });
     state.modelState = 'error';
     banner(h('span', { class: 'error' }, 'Could not start the model: ' + e.message), h('button', { class: 'btn', onclick: () => loadModel() }, 'Try again'));
   }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseQwenCalls, toWebLLMMessages, toolSystem, splitRaw, createShim, paceGpu, webkitGpu } from '../app/src/engine-webllm.js';
+import { parseQwenCalls, toWebLLMMessages, toolSystem, splitRaw, createShim, paceGpu, webkitGpu, pacedGpu } from '../app/src/engine-webllm.js';
 import { NativeConversation, Conversation } from '../app/src/engine-wllama.js';
 
 const TOOLS = [
@@ -224,6 +224,25 @@ test('a load that fails for another reason is not retried and says what it was',
   assert.equal(tries, 1);
 });
 
+test('think_prefill: LFM3 carries on from thinking written into its turn; the reply after it is plain text', async () => {
+  let prompt = '';
+  const engine = { async resetChat() {}, interruptGenerate() {}, async unload() {}, completions: { async create(o) {
+    prompt = o.prompt;
+    return (async function* () { for (const t of ['Here is one way.', ' What maths?']) yield { choices: [{ text: t }] }; })();
+  } } };
+  const w = await createShim('LFM3-1.7B-QAD-q4f16_1-MLC', 4096, () => {}, { format: 'lfm3', engine, pace: false, watch: fakeWatch() });
+  assert.equal(w.info.closesThinking, true);
+  const chunks = await w.createChatCompletion({ messages: [{ role: 'user', content: 'crazy maths?' }], chat_template_kwargs: { enable_thinking: true }, think_prefill: 'Options: 5!, 2^10.\n\nEnough.\n', stream: true });
+  let text = '', thinking = '';
+  for await (const c of chunks) { const d = c.choices[0].delta; text += d.content || ''; thinking += d.reasoning_content || ''; }
+  assert.ok(prompt.endsWith('<|im_start|>assistant\n<think>Options: 5!, 2^10.\n\nEnough.\n</think>'), prompt.slice(-120));
+  assert.equal(thinking, '');
+  assert.equal(text, 'Here is one way. What maths?');
+  const off = await w.createChatCompletion({ messages: [{ role: 'user', content: 'x' }], chat_template_kwargs: { enable_thinking: false }, think_prefill: 'ignored', stream: true });
+  for await (const c of off) void c;
+  assert.ok(prompt.endsWith('<think></think>'), 'thinking off: nothing written into it');
+});
+
 test('paceGpu: smaller prompt pieces, and each waits for the GPU before the next is queued (iOS 27 Safari)', async () => {
   const order = [];
   const pipe = {
@@ -242,6 +261,23 @@ test('paceGpu: smaller prompt pieces, and each waits for the GPU before the next
   paceGpu({ loadedModelIdToPipeline: new Map([['s', small]]) });
   assert.equal(small.prefillChunkSize, 64, 'a smaller chunk stays');
   assert.equal(paceGpu({}), 0, 'an engine without those internals is left alone');
+});
+
+test('paceGpu: a frame-long gap after each prompt piece (Android), none after a generated token', async () => {
+  const pipe = { prefillChunkSize: 256, async embedAndForward() { return 'logits'; }, async sync() {} };
+  paceGpu({ loadedModelIdToPipeline: new Map([['m', pipe]]) }, 128, 40);
+  let t = performance.now();
+  await pipe.embedAndForward([[1, 2, 3]], 3);
+  assert.ok(performance.now() - t >= 35, 'a prompt piece waits');
+  t = performance.now();
+  await pipe.embedAndForward([[7]], 1);
+  assert.ok(performance.now() - t < 30, 'a decoded token does not');
+});
+
+test('pacedGpu: phones (iPhone and Android), not computers other than Safari', () => {
+  assert.ok(pacedGpu('Mozilla/5.0 (Linux; Android 17; Pixel 10 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36'));
+  assert.ok(pacedGpu('Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Mobile/15E148 Safari/604.1'));
+  assert.ok(!pacedGpu('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'));
 });
 
 test('webkitGpu: every iPhone browser and Mac Safari, not Chrome or Firefox on a computer', () => {

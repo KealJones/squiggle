@@ -10,6 +10,7 @@ import { checkFiles, fmtSize } from '../attachments.js';
 import * as voice from '../voice.js';
 import { bm25 } from '../search.js';
 import { $, h, icon, md, ago, squiggleWait, iconButton, scrollDown, keepAwake } from './dom.js';
+import { smoothText } from './smooth.js';
 import { state } from './state.js';
 import { openThread, openPanel, closeDrawer, renderThreadPanel, renderNotesPanel } from './panels.js';
 import { renderSide } from './side.js';
@@ -364,6 +365,7 @@ export async function send(text, threadId, files = []) {
   const scroller = threadId ? $('#thread-scroll') : $('#messages');
   if (!threadId && !session.messages.some(m => !m.thread)) container.replaceChildren();
   let live = null, body = null, trail = null, think = null, plan = null;
+  const smooth = smoothText((t) => { body.innerHTML = md(t); scrollDown(scroller); });
   const vc = !threadId && state.call ? state.call.ctl : null; // a voice call speaks this reply as it streams
   const liveTools = [];
   if (!threadId) state.liveTurn = { ctx: null, tools: liveTools, task: null };
@@ -386,7 +388,7 @@ export async function send(text, threadId, files = []) {
           scrollDown(scroller);
         },
         onThinking: (t) => { think.hidden = false; think.lastChild.textContent = t; },
-        onText: (t) => { const clean = agent.scrubFakeToolNotes(t); body.innerHTML = md(clean); scrollDown(scroller); if (vc) vc.feed(clean); },
+        onText: (t) => { const clean = agent.scrubFakeToolNotes(t); smooth.feed(clean); if (vc) vc.feed(clean); },
         onTool: (t) => {
           if (t.name === 'note' && !t.running && state.drawerPanel === 'notes') renderNotesPanel();
           const existing = liveTools.find(x => x.running && x.name === t.name);
@@ -411,10 +413,11 @@ export async function send(text, threadId, files = []) {
           scrollDown(scroller);
           card.querySelector('button').focus({ preventScroll: true });
         },
-        onDone: (m) => { if (vc) vc.finish(agent.scrubFakeToolNotes(m.content)); live.replaceWith(messageEl(m, { inThread: Boolean(threadId), session })); if (!threadId) $('#chat-title').textContent = session.title; state.liveTurn = null; renderSide(); },
+        onDone: (m) => { smooth.stop(); if (vc) vc.finish(agent.scrubFakeToolNotes(m.content)); live.replaceWith(messageEl(m, { inThread: Boolean(threadId), session })); if (!threadId) $('#chat-title').textContent = session.title; state.liveTurn = null; renderSide(); },
       },
     });
   } finally {
+    smooth.stop();
     setBusy(false);
     state.controller = null;
     if (!threadId) { state.liveTurn = null; renderSide(); }

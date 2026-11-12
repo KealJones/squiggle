@@ -20,6 +20,7 @@ import { embed, embedReady } from './embed.js';
 import { bm25, tokenize } from './search.js';
 import { estTokens, truncate, uid } from './util.js';
 import { createTrace, openConv, addRound, takeRendered } from './trace.js';
+import { report } from './incidents.js';
 import { parseJsonl } from './merge.js';
 import { attachmentPrompt, saveAttachments, toRecord } from './attachments.js';
 
@@ -72,6 +73,7 @@ export const LITE_SYSTEM_NATIVE = [
   'Look things up with web_search and fetch_url. find(query) searches your other tools, recipes, memory and',
   'past chats when you need one of them; ask_user(question) asks the user something only they know and waits.',
   'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
+  "Don't go round in circles: after three options or attempts, stop and use the best one; if you're still unsure, say so and ask the user.",
 ].join('\n');
 
 // The same for the bash surface (tools/bash.js): the lookups are commands in the shell.
@@ -84,6 +86,7 @@ export const LITE_SYSTEM_BASH = [
   'Your context window is small: never cat a whole file or curl a whole page. Pipe into grep, head, tail, sed -n or wc,',
   'or save it to a file (> /tmp/page.txt) and work on the file in small pieces.',
   'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
+  "Don't go round in circles: after three options or attempts, stop and use the best one; if you're still unsure, say so and ask the user.",
 ].join('\n');
 
 // Which prompt dialect this model gets (tasks.js DIALECT): the frozen fenced one for Squiggle Small, v3
@@ -313,6 +316,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
         ? 'The conversation got too long for the model\'s context window. Start a new chat to keep going.'
         : (e.message || e);
       turn.prefix += `\n\n⚠️ ${msg}`;
+      turn.error = String(msg);
       if (turn.task && turn.task.status === 'active' && !turn.task.waiting) { turn.task.status = 'stopped'; sessions.saveTask(session, turn.task); }
       ui.onError && ui.onError(e);
     } finally {
@@ -341,6 +345,8 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
       storage.write(reply.trace, JSON.stringify(turn.trace)).catch(e => console.warn('trace', e));
     }
     const saved = sessions.addMessage(session, reply);
+    // The prompt it was working on is the trace (prompts/…), when "Save tool results and prompts" is on.
+    if (turn.error) report('reply-error', { message: turn.error.slice(0, 500), session: session.id, reply: saved.id, trace: reply.trace, model: reply.model, window: reply.context && reply.context.window, task: turn.task ? { goal: String(turn.task.goal || '').slice(0, 200), step: (turn.task.steps || []).findIndex(st => st.status === 'active') } : undefined });
     ui.onDone && ui.onDone(saved);
     if (session.title === 'New chat' && !threadId) nameSession(session);
     afterTurn(session, threadId, turn.task && turn.task.status === 'done' && turn.finishedNow ? turn.task : null);
