@@ -376,3 +376,26 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   label again, or the person), and a leading label of its own is dropped (`ownTurn`); the call is stopped as soon as
   that shows up, and a turn that ended there isn't continued.
 - **Caught by:** tests/brainstorm.test.js "a turn ends where another speaker starts"; e2e "brainstorm chat" (SCRIPT).
+
+### 23. Asked which noodle shape, it argued one cheese ratio, then looped
+
+- **Asked:** a transcript brainstorm (`s0mwe4yoqe000frhk4`), 2026-11-12: "what noodle shape give the optimal cheese to
+  noodle ratio for mac n cheese?"
+- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm.js transcript framing (builder/critic from the first turn).
+- **What it did:** A's first turn named a couple of shapes and closed on "the key is matching the noodle's thickness to
+  how much sauce you pour"; from then on B attacked the numbers and A refined them, so the brainstorm became a cheese
+  ratio (1:2–3, 1:4, ¼ cup per cup, 10 g per 30 g handful) and then a recipe. Shells, cavatappi or any comparison of
+  shapes never came up. From 15:46 B posted the same 685-character turn four times and A its recipe three times
+  nearly word for word.
+- **Why it's bad:** the question was which shape; a brainstorm that critiques from turn two narrows onto whatever the
+  first turn said, and once the transcript shows a turn twice the likeliest next turn is that text again, whatever
+  the prompt says about repeating.
+- **Good answer:** a list of shapes first (elbows, shells, cavatappi, rigatoni…) with why each holds cheese, then the
+  most promising ones compared, ending in a proposed answer.
+- **Fix:** phases ("diverge before you converge"): four turns where both voices only add possible answers, a cluster
+  turn that restates the question, groups the options and gives a first answer, then builder/critic; from the
+  cluster turn on, every turn ends with "Best answer so far:", and the question is repeated right before the ask.
+  A turn that repeats an earlier one (`isRepeat`) is never saved: it's retried once with a note, and a second repeat
+  stops the run and says so; repeats already saved are left out of the transcript.
+- **Caught by:** tests/brainstorm.test.js ("phases", "repeats", which uses this chat's own looping turns); e2e
+  "brainstorm chat" (LOOP). Whether the voices now list shapes first is model behaviour: not covered.

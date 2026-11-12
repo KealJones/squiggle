@@ -113,13 +113,20 @@ function stepScript(conv, input, onText) {
 export async function respond(conv, input, { onText } = {}) {
   log.push({ type: 'respond', input, system: conv.cfg && conv.cfg.system });
   // Brainstorm chats (brainstorm.js): each voice says who it is and what it answered, a little slowly so a test can steer and stop.
-  // Role flip: says what it answered (the end of its user turn). Transcript: the last turn in the transcript.
+  // Role flip: says what it answered (the end of its user turn). Transcript: the start of the last turn in the transcript.
   // LONGDOC: A's first reply stops for length (the window filled at 380 tokens) and is handed back to finish.
-  const bs = conv.cfg && /brainstorm/.test(conv.cfg.system || '') && conv.cfg.system.match(/(?:You are the|You write [AB]'s turns\. [AB] is the) (builder|critic)/);
+  // LOOP: B says the same long thing every turn (A says something new): the repeat is thrown away, retried, then the run stops.
+  const sys = (conv.cfg && conv.cfg.system) || '';
+  const bs = /brainstorm/.test(sys) && (sys.match(/You write ([AB])'s turns/) || sys.match(/You are the (builder|critic)/));
   if (bs) {
     await new Promise(r => setTimeout(r, 120));
-    const v = bs[1] === 'builder' ? 'A' : 'B';
-    const transcript = /^You write|You write [AB]'s turns/m.test(conv.cfg.system);
+    const v = bs[1] === 'builder' ? 'A' : bs[1] === 'critic' ? 'B' : bs[1];
+    const transcript = /You write [AB]'s turns/.test(sys);
+    if (/LOOP/.test(input)) {
+      window.__smallSpeed = { tokens: 40, finish: 'stop' };
+      if (v === 'A') return say(`A adds option ${(String(input).match(/\n\nA: /g) || []).length + 1}`, onText);
+      return say('The same critique again: '.concat('this idea has a weak spot that nobody has tested yet and it will fail in practice unless we check it first. '.repeat(3)), onText);
+    }
     const cont = /cut off by the length limit/.test(conv.cfg.system);
     const firstA = v === 'A' && /LONGDOC/.test(input) && !/\n\nA: /.test(input);
     window.__smallSpeed = firstA && !cont ? { tokens: 380, finish: 'length' } : { tokens: 40, finish: 'stop' };   // the window ran out well short of 1,024
@@ -127,7 +134,7 @@ export async function respond(conv, input, { onText } = {}) {
     // SCRIPT: A writes the rest of the script too, B's line and another of its own.
     if (v === 'A' && /SCRIPT/.test(input) && !/\n\nA: /.test(input)) return say('A: my turn\n\nB: your turn\n\nA: again', onText);
     const parts = String(input).split('\n\n');
-    const said = transcript ? parts[parts.length - 2] : String(input).slice(-40);
+    const said = transcript ? parts[parts.length - 2].split(' ').slice(0, 12).join(' ') : String(input).slice(-40);   // 12 words: echoes don't nest and grow
     return say(`${v} answers: ${said}`, onText);
   }
   // The script answers the person's words, not the recalled block smart context appends.

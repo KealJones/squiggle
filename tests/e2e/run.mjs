@@ -1712,6 +1712,16 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
   const script = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.find(m => m.voice === 'A').content);
   assert.equal(script, 'my turn');
+  // A voice repeating an earlier turn: the copy is thrown away and tried again, then the run stops by itself (s0mwe4yoqe000frhk4).
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.fill('#input', 'LOOP an idea');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted', { timeout: 15000 });
+  const loop = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.filter(m => m.voice).map(m => m.voice + ':' + m.phase));
+  assert.deepEqual(loop, ['A:diverge', 'B:diverge', 'A:diverge'], 'B\'s copy never saved, the run stopped at it');
+  assert.match(await D.page.textContent('#messages-inner'), /Squiggle A · listing options/);
   // The role flip is still there to compare: the other voice arrives as the user.
   await D.page.click('#new-chat');
   await D.page.click('.chat-setup > summary');

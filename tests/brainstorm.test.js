@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { viewFor, transcriptFor, framingOf, nextVoice, systemFor, continueSystem, cutOff, latestSteer, ownTurn, clipMiddle, PIECE, PERSON } from '../app/src/brainstorm.js';
+import { viewFor, transcriptFor, framingOf, nextVoice, systemFor, continueSystem, cutOff, latestSteer, ownTurn, clipMiddle, phaseOf, isRepeat, BEST, PIECE, PERSON } from '../app/src/brainstorm.js';
 
 let n = 0;
 const msg = (role, content, extra = {}) => ({ id: 'm' + (++n), role, content, ts: n, thread: null, ...extra });
@@ -106,7 +106,7 @@ test('transcript: one user turn, every turn labelled, the person included, endin
   const v = transcriptFor([seed, a1, b1, steer], 'A').messages;
   assert.equal(v.length, 1);
   assert.equal(v[0].role, 'user');
-  assert.equal(v[0].content, `${PERSON}: A coffee shop for dogs\n\nA: Dog-safe pup cups\n\nB: Who cleans up?\n\n${PERSON}: focus on money\n\nNow write A's next turn.`);
+  assert.equal(v[0].content, `${PERSON}: A coffee shop for dogs\n\nA: Dog-safe pup cups\n\nB: Who cleans up?\n\n${PERSON}: focus on money\n\nThe question: A coffee shop for dogs\nNow write A's next turn.`);
   const sys = systemFor('B', 'cats', '', 'transcript');
   assert.match(sys, /You write B's turns\. B is the critic: starts every turn with the weakest/);
   assert.match(sys, /no "B:" label/);
@@ -120,11 +120,11 @@ test('transcript: the idea always stays, the oldest turns drop off, and an overl
   for (let i = 0; i < 30; i++) line.push(msg('assistant', `turn ${i} `.repeat(40), { voice: i % 2 ? 'B' : 'A' }));
   const t = transcriptFor(line, 'A', 400).messages[0].content;
   assert.ok(t.startsWith(`${PERSON}: A coffee shop for dogs\n\n…\n\n`), t.slice(0, 80));
-  assert.match(t, /turn 29 \n\nNow write A's next turn\.$/);
+  assert.match(t, /turn 29 \n\nThe question: A coffee shop for dogs\nNow write A's next turn\.$/);
   assert.doesNotMatch(t, /turn 0 /);
   const doc = msg('assistant', 'START ' + 'word '.repeat(3000) + 'FINAL LINE', { voice: 'A' });
   const d = transcriptFor([seed, doc], 'B', 500).messages[0].content;
-  assert.match(d, /…[^]*FINAL LINE\n\nNow write B's next turn\.$/);
+  assert.match(d, /…[^]*FINAL LINE\n\nThe question: A coffee shop for dogs\nNow write B's next turn\.$/);
   assert.doesNotMatch(d, /START/);
 });
 
@@ -152,7 +152,7 @@ test('a long idea is cut in the middle and the latest turn still fits in a 4K wi
   assert.match(system, /IDEA START[^]* … [^]*IDEA END/);
   const budget = 4096 - PIECE - est(system) - 200;
   const t = transcriptFor([longSeed, turnA], 'B', budget).messages[0].content;
-  assert.match(t, /\n\nA: A has a plan\n\nNow write B's next turn\.$/, 'B sees A');
+  assert.match(t, /\n\nA: A has a plan\n\nThe question: IDEA START[^]*\nNow write B's next turn\.$/, 'B sees A');
   assert.match(t, /IDEA START[^]* … [^]*IDEA END/);
   assert.ok(est(system) + est(t) + PIECE <= 4096, `prompt + reply ${est(system) + est(t) + PIECE} tokens`);
   assert.equal(clipMiddle('short', 100), 'short');
@@ -163,4 +163,36 @@ test('role flip: a budget at or below zero keeps a short end of the turn, not al
   const v = viewFor([seed, doc], 'B', -100).messages;
   assert.ok(v[0].content.length <= 302, `${v[0].content.length} chars`);
   assert.match(v[0].content, /END$/);
+});
+
+// Chat s0mwe4yoqe000frhk4 (2026-11-12): asked which noodle shape, it argued one cheese ratio for twenty turns.
+test('phases: diverge for four turns, one cluster turn, then converge; each tied to the question', () => {
+  const v = (n) => [seed, ...Array.from({ length: n }, (_, i) => msg('assistant', 'x', { voice: i % 2 ? 'B' : 'A' }))];
+  assert.deepEqual([0, 3, 4, 5, 9].map(n => phaseOf(v(n))), ['diverge', 'diverge', 'cluster', 'converge', 'converge']);
+  const diverge = systemFor('B', 'noodles?', '', 'transcript', { phase: 'diverge' });
+  assert.match(diverge, /only generating options/);
+  assert.doesNotMatch(diverge, /critic|weakest/, 'no judging while options are listed');
+  assert.match(diverge, /The question, from the person who started it: noodles\?/);
+  const cluster = systemFor('A', 'noodles?', '', 'transcript', { phase: 'cluster' });
+  assert.match(cluster, /restates the person's question[^]*groups every option/);
+  assert.ok(cluster.includes(BEST));
+  const converge = systemFor('B', 'noodles?', '', 'transcript', { phase: 'converge' });
+  assert.match(converge, /B is the critic/);
+  assert.match(converge, /drifts away from it gets pulled back/);
+  assert.ok(converge.includes(`ends every turn with a line starting "${BEST}"`));
+  assert.match(systemFor('B', 'noodles?', '', 'transcript', { retry: true }), /last try repeated an earlier turn/);
+});
+
+const LOOP_B = "The 0.25 cup cheese per cup noodle volume is a solid, practical target — but \"per cup\" of cooked tagliatelle or elbow can be ambiguous because dried-to-cooked ratios vary by brand and how much water you add to cook them. For home cooks without a scale, weighing one handful of dry noodles (about 30 g) and filling it with roughly 10 g cheese gives a reliable feel: that's about 1/3 teaspoon grated sharp cheddar per handful, which scales up well. If the sauce pools in the center after adding cheese, you're under-ratioing; if it slides off before baking, over-ratio. Also, parmesan should be blended into the cheese mixture first so it disperses evenly rather than clumping on ridges.";
+const LOOP_A1 = "To turn the test batch into a repeatable recipe, I'd lay out the exact steps: **cook 1 lb tagliatelle or elbow** (about 2–3 cups cooked), grate **¼ cup sharp cheddar + ¼ cup grated parmesan**, pour a thin layer of hot mac n cheese sauce over them, let sit 30 seconds so the cheese adheres to ridges before adding the remaining mixture. Then bake at **350°F for ~20 minutes** until bubbly and golden. Taste after the first 5 minutes — if coating feels too light, stir in **1 tbsp milk or ½ tsp butter**; if too heavy/grainy, add a splash more broth or extra cheese. This standardized run gives you a concrete ratio without guessing, and the parmesan blend keeps the melt glossy rather than chalky.\n\nIf";
+const LOOP_A2 = "To scale the test batch into a repeatable recipe, I'd lay out the exact steps: **cook 1 lb tagliatelle or elbow** (about 2–3 cups cooked), grate **¼ cup sharp cheddar + ¼ cup grated parmesan**, pour a thin layer of hot mac n cheese sauce over them, let sit 30 seconds so the cheese adheres to ridges before adding the remaining mixture. Then bake at **350°F for ~20 minutes** until bubbly and golden. Taste after the first 5 minutes — if coating feels too light, stir in **1 tbsp milk or ½ tsp butter**; if too heavy or grainy, add a splash more broth or extra cheese. This standardized run gives you a concrete ratio without guessing, and the parmesan blend keeps the melt glossy rather than chalky.";
+test('repeats: the real loop from s0mwe4yoqe000frhk4 is caught; fresh turns and short ones are not', () => {
+  assert.equal(isRepeat(LOOP_B, ['something else entirely', LOOP_B]), true, 'B posted this four times');
+  assert.equal(isRepeat(LOOP_A2, [LOOP_A1]), true, 'A\'s recipe again with a word changed');
+  assert.equal(isRepeat("The 1:2–3 cheese-to-noodle weight ratio is a solid starting point, but \"roughly\" leaves too much room for guesswork — you could end up with either a watery sauce or a cheese-heavy mess. For mac n cheese specifically, I'd tighten it to **1 part grated sharp cheddar per 4 parts cooked noodles by weight** (so roughly 0.25 cup cheese to 1 cup tagliatelle) and test on one batch before scaling; the ridges of elbow hold better than flat sheets, which reduces surface-area loss and keeps the sauce from pooling in the center where it runs off. Also, mixing in parmesan isn't just about gloss — it prevents graininess when heated through, so don't skip that step even if the base looks fine. And remember, the \"medium-thick ribbon\" suggestion earlier was about strand count, not weight; a 12-inch wide elbow at standard thickness (~5 mm) should land near that sweet spot without being overly dense.", ["The idea of matching noodle thickness to sauce volume is sound, but \"wide flat sheet\" or \"thick lasagna disc\" shapes introduce risk — a rolled disc collapses and loses structure, while flat sheets can become soggy if the cheese-to-noodle ratio isn't adjusted for their lower surface area. For mac n cheese specifically, I'd reject the ultra-wide ribbons; instead, a **12-inch wide elbow tagliatelle** gives enough strands to wrap around the fork without drowning in sauce, and the natural ridges hold the cheese better than smooth sheets. Fine spaghetti would be too thin, letting sauce pool and cheese run off before it sets. So narrow down to medium-thick ribbon or classic tagliatelle/elbow, not super fine or overly thick discs."]), false, 'B\'s first two turns: same topic, new content');
+  assert.equal(isRepeat('Elbows. Shells.', ['Elbows. Shells.']), false, 'under 30 words: left alone');
+  const old = [seed, msg('assistant', LOOP_A1, { voice: 'A' }), msg('assistant', LOOP_B, { voice: 'B' }), msg('assistant', LOOP_A2, { voice: 'A' }), msg('assistant', LOOP_B, { voice: 'B' })];
+  const t = transcriptFor(old, 'A').messages[0].content;
+  assert.equal(t.split(LOOP_B).length - 1, 1, 'a repeat saved before this is shown once');
+  assert.equal(t.split('\n\nA: ').length - 1, 1, 'A\'s near-copy is left out too');
 });
