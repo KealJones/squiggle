@@ -1638,6 +1638,51 @@ await check('the prompt follows the model, with no switches: a big model gets th
   assert.doesNotMatch(small.system || '', /^You are Squiggle, a personal AI agent/, 'Squiggle Small never gets the full prompt');
 });
 
+await check('brainstorm chat: the model answers itself in two voices, the person steers in between, Stop ends it', async () => {
+  const D = await device('brainstorm');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  assert.match(await D.page.textContent('.chat-setup > summary'), /· Brainstorm/);
+  assert.equal(await D.page.$('.chat-setup input[name="chat-context"]'), null, 'no context type to pick for a brainstorm');
+  assert.equal(await D.page.getAttribute('#input', 'placeholder'), 'Pitch an idea to brainstorm');
+  await D.page.fill('#input', 'a coffee shop for dogs');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) button');
+  await D.page.waitForFunction(() => document.querySelectorAll('#messages-inner .msg.voice-b').length >= 1);
+  // Jump in while it runs: the text is queued and added before the next voice speaks.
+  await D.page.fill('#input', 'focus on money');
+  assert.equal(await D.page.getAttribute('#send', 'aria-label'), 'Send', 'typed text turns Stop into Send');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => [...document.querySelectorAll('#messages-inner .msg.user')].some(m => /focus on money/.test(m.textContent)));
+  await D.page.waitForFunction(() => /steps in: focus on money/.test(document.querySelector('#messages-inner').textContent));
+  await D.page.click('.brainstorm-bar button');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  assert.match(await D.page.textContent('.brainstorm-bar'), /Brainstorm stopped.*Keep going/);
+  const s = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current);
+  const said = s.messages.filter(m => !m.deleted);
+  assert.ok(s.brainstorm);
+  assert.equal(said[0].content, 'a coffee shop for dogs');
+  const voices = said.filter(m => m.role === 'assistant').map(m => m.voice);
+  assert.ok(voices.length >= 2 && voices.length < 20, `stopped early (${voices.length} turns)`);
+  voices.forEach((v, i) => assert.equal(v, i % 2 ? 'B' : 'A', 'voices alternate'));
+  // A answered the idea itself; B answered A (the other voice arrives as the user).
+  assert.match(said[1].content, /^A answers: a coffee shop for dogs/);
+  assert.match(said[2].content, /^B answers: A answers:/);
+  // Keep going picks up with the next voice.
+  const before = voices.length;
+  await D.page.click('.brainstorm-bar button');
+  await D.page.waitForFunction((n) => document.querySelectorAll('#messages-inner .msg.assistant').length > n, before);
+  await D.page.click('.brainstorm-bar button');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+});
+
 await check('small models: a long page comes back as a card saved in /web, grep finds the answer, and used results shrink to what the model took', async () => {
   const D = await device('cards');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));

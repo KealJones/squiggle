@@ -33,6 +33,7 @@ app/                    static app, plain ES modules, no build step
       model-ui.js       model download/load with progress, crash-loop guard, banners, composer note
       voice-ui.js       read aloud, voice calls (call bar)
       links.js          chat links: the open chat's id in the URL hash (#chat=<id>); a link opens that chat if this account has it (else the usual one, after the first sync), back/forward between chats, Copy link in the sidebar
+    brainstorm.js       brainstorm chats (`session.brainstorm`, picked before the first message): the person sends an idea, then voices A and B take turns, each seeing its own turns as the assistant and everything else as the user; the person can jump in between turns (queued while one runs) and Stop; no tools or thinking, 400 tokens a turn, 20 turns a run, oldest turns dropped to fit the window
     agent.js            turn loop (docs/harness.md): chat phase → plan → one fresh prompt per step → final reply; ask_user (need for Squiggle Small)/find; recipes learned after
     tasks.js            step-mode task state, step/final prompts (budgeted), resume rules, DIALECT (v2 frozen fenced text / v3 harness text kept out of user turns in steps)
     recipes.js          memory/recipes.jsonl: how finished tasks were solved; saved pending, matched only once the user approves; forgotten after 90 days unused
@@ -131,7 +132,7 @@ panel is open at ≤1500 px. Replies saved before this show just the total.
 ## Data model
 
 Session file `sessions/<id>.json`: `{ v, id, title, created, updated, deleted?, archived?, model?,
-messages[{id, role, content, ts, mts?, thread, tools?, context?, model?, pinned?, deleted?, attachments?[{name, path, type, size, chars, lines?, error?}]}],
+messages[{id, role, content, ts, mts?, thread, voice?, tools?, context?, model?, pinned?, deleted?, attachments?[{name, path, type, size, chars, lines?, error?}]}],
 threads{id: {parent, title, summary?}}, observations[], summaries{main|threadId} }`.
 `deleted`/`archived` on the session and `deleted` on a message are tombstones (content emptied) so the change
 syncs; `sessions.list()` leaves archived chats out (`listArchived`), `lineMessages` leaves deleted messages out.
@@ -139,7 +140,7 @@ syncs; `sessions.list()` leaves archived chats out (`listArchived`), `lineMessag
 device default from Settings) and `settings.model` is whatever is loaded right now. `contextMode` on the session
 works the same way (`sessionContextMode` / `useSessionContext`, applied with the model when a chat opens and before
 each turn; `settings.defaultContextMode` is the saved default, `settings.contextMode` the mode in effect). `model` on a reply is which
-model wrote it (`agent.js replyModel`: `{ id, label, how, smallMode?, contextSize, contextMode }`). A session seeded by the
+model wrote it (`agent.js replyModel`: `{ id, label, how, smallMode?, contextSize, contextMode }`). `brainstorm: true` marks a brainstorm chat (brainstorm.js) and `voice` ('A' | 'B') which voice wrote a reply in one. A session seeded by the
 demo carries `demo: true` (demo.js `clearSamples` removes those).
 Attachments: storage only holds text, so text files are saved as-is and PDFs as
 their extract (`<name>.txt`) under `home/attachments/<session>/`; images as the text

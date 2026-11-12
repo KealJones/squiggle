@@ -61,7 +61,7 @@ export const foreground = (fn) => lock(fn);
 export const background = (fn) => lock(fn);
 
 export async function conversation(cfg) {
-  log.push({ type: 'conversation', system: cfg.system, messages: cfg.messages, tools: cfg.tools.map(t => t.name), known: cfg.known || [] });
+  log.push({ type: 'conversation', system: cfg.system, messages: cfg.messages, tools: (cfg.tools || []).map(t => t.name), known: cfg.known || [] });
   return { cfg, delete: async () => {}, cancel() {}, replaceResult(msg, response) { log.push({ type: 'replace', name: msg.content[0].name, response }); return true; } };
 }
 
@@ -112,6 +112,9 @@ function stepScript(conv, input, onText) {
 
 export async function respond(conv, input, { onText } = {}) {
   log.push({ type: 'respond', input, system: conv.cfg && conv.cfg.system });
+  // Brainstorm chats (brainstorm.js): each voice says who it is and what it answered, a little slowly so a test can steer and stop.
+  const bs = conv.cfg && /brainstorming with a partner/.test(conv.cfg.system || '') && conv.cfg.system.match(/You lean toward (\w+)/);
+  if (bs) { await new Promise(r => setTimeout(r, 120)); return say(`${bs[1] === 'pitching' ? 'A' : 'B'} answers: ${String(input).slice(-40)}`, onText); }
   // The script answers the person's words, not the recalled block smart context appends.
   if (typeof input === 'string') input = input.split('\n\n---\nPossibly relevant earlier messages')[0];
   // Fresh context: the first input is the result of the lookup the agent made for the model.

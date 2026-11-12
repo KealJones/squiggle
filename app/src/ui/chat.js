@@ -9,7 +9,7 @@ import * as attachments from '../attachments.js';
 import { checkFiles, fmtSize } from '../attachments.js';
 import * as voice from '../voice.js';
 import { bm25 } from '../search.js';
-import { $, h, icon, md, ago, squiggleWait, iconButton, scrollDown, keepAwake } from './dom.js';
+import { $, h, icon, md, ago, squiggleWait, iconButton, scrollDown, keepAwake, toast } from './dom.js';
 import { smoothText } from './smooth.js';
 import { state } from './state.js';
 import { openThread, openPanel, closeDrawer, renderThreadPanel, renderNotesPanel } from './panels.js';
@@ -19,6 +19,7 @@ import { ensureModel, loadCrashMarker, updateComposerNote, useSessionModel, sess
 import * as engine from '../engine.js';
 import { CONTEXT_MODES, contextMode } from '../context.js';
 import { showChatInUrl } from './links.js';
+import * as brainstorm from '../brainstorm.js';
 
 export const closeSidebar = () => $('#sidebar').classList.remove('open');
 
@@ -100,6 +101,7 @@ export function renderChat() {
   const current = state.current;
   $('#chat-title').textContent = current.title;
   renderSide();
+  renderBrainstormBar();
   const inner = $('#messages-inner');
   inner.replaceChildren();
   const line = sessions.lineMessages(current, null);
@@ -109,6 +111,11 @@ export function renderChat() {
 }
 
 function emptyState() {
+  if (state.current.brainstorm) return h('div', { class: 'empty' },
+    icon('squiggle'),
+    h('h2', {}, 'What are we brainstorming?'),
+    h('p', {}, 'Send the idea, then Squiggle talks it through with itself. Jump in any time to steer it.'),
+    newChatSettings());
   const ideas = ['What do you remember about me?', 'Clone one of my repos and summarize it', 'Read https://example.com and tell me what it says'];
   return h('div', { class: 'empty' },
     icon('squiggle'),
@@ -125,7 +132,7 @@ function newChatSettings() {
   const session = state.current;
   const model = sessionModel(session);
   const mode = session.contextMode || agent.settings.defaultContextMode || 'compact';
-  const summary = h('span', {}, 'This chat: ', h('b', {}, engine.MODELS[model] ? engine.MODELS[model].label : model), ' · ', h('b', {}, contextMode(mode).short));
+  const summary = h('span', {}, 'This chat: ', h('b', {}, engine.MODELS[model] ? engine.MODELS[model].label : model), ' · ', h('b', {}, session.brainstorm ? 'Brainstorm' : contextMode(mode).short));
   const choice = (name, value, checked, label, hint, onPick) => h('label', { class: 'choice' },
     h('input', { type: 'radio', name, value, checked: checked ? true : null, onchange: onPick }),
     h('span', {}, h('span', { class: 'choice-label' }, label), hint ? h('span', { class: 'choice-hint' }, hint) : ''));
@@ -134,6 +141,10 @@ function newChatSettings() {
       session.model = id; sessions.touch(session);
       await switchModel(sessionModel(session)); renderChat();
     }));
+  const kinds = [[false, 'Chat', 'Squiggle answers you.'], [true, 'Brainstorm', 'You send the idea; Squiggle talks it through with itself.']]
+    .map(([on, label, hint]) => choice('chat-kind', String(on), Boolean(session.brainstorm) === on, label, hint, () => {
+      session.brainstorm = on || undefined; sessions.touch(session); renderChat();
+    }));
   const modes = Object.entries(CONTEXT_MODES).filter(([, d]) => d.offered).map(([k, d]) => choice('chat-context', k, k === mode, d.label, d.hint.split('. ')[0] + '.', () => {
     session.contextMode = k; sessions.touch(session);
     useSessionContext(session); renderChat();
@@ -141,16 +152,18 @@ function newChatSettings() {
   return h('details', { class: 'chat-setup' },
     h('summary', {}, icon('i-settings'), summary, h('span', { class: 'muted' }, 'Change')),
     h('div', { class: 'chat-setup-body' },
+      h('fieldset', {}, h('legend', {}, 'Kind'), ...kinds),
       h('fieldset', {}, h('legend', {}, 'Model'), ...models),
-      h('fieldset', {}, h('legend', {}, 'Context'), ...modes),
+      session.brainstorm ? '' : h('fieldset', {}, h('legend', {}, 'Context'), ...modes),
       h('p', { class: 'muted' }, 'The context type stays for this chat; the model can switch later in the chat details.')));
 }
 
 export function messageEl(m, { inThread, streaming, session }) {
   const current = state.current;
-  const el = h('div', { class: `msg ${m.role}`, 'data-mid': m.id || '' });
+  const el = h('div', { class: `msg ${m.role}${m.voice ? ' voice-' + m.voice.toLowerCase() : ''}`, 'data-mid': m.id || '' });
   const col = h('div', { style: m.role === 'user' ? 'display:flex;flex-direction:column;align-items:flex-end;width:100%' : '' });
   if (m.role === 'assistant') {
+    if (m.voice) col.append(h('div', { class: 'voice-label' }, brainstorm.VOICES[m.voice] || m.voice));
     const owner = session || current;
     const task = m.task && owner && owner.tasks && owner.tasks[m.task];
     if (task) col.append(planEl(task, { live: false }));
@@ -288,7 +301,7 @@ export function rerender() {
 // ── Composer ───────────────────────────────────────────────────────────────
 export function setupComposer(form, input, onSend) {
   const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, innerHeight * 0.4) + 'px'; };
-  input.addEventListener('input', grow);
+  input.addEventListener('input', () => { grow(); syncSendButton(); });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !matchMedia('(hover: none)').matches) { e.preventDefault(); form.requestSubmit(); }
   });
@@ -329,8 +342,9 @@ export function setupComposer(form, input, onSend) {
 
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    if (state.busy) { state.controller && state.controller.abort(); return; }
     const text = input.value.trim();
+    if (state.busy && state.brainstorm && state.brainstorm.session === state.current && text) { state.brainstorm.steer.push(text); input.value = ''; grow(); renderBrainstormBar(); syncSendButton(); return; }
+    if (state.busy) { state.controller && state.controller.abort(); return; }
     if (!text && !files.length) return;
     const sending = files;
     input.value = ''; grow();
@@ -342,11 +356,19 @@ export function setupComposer(form, input, onSend) {
 function setBusy(on) {
   state.busy = on;
   keepAwake('reply', on);   // a phone that sleeps mid-reply loses the GPU (iOS Safari)
-  for (const btn of document.querySelectorAll('.composer button[type="submit"]')) {
-    btn.replaceChildren(icon(on ? 'i-stop' : 'i-send'));
-    btn.setAttribute('aria-label', on ? 'Stop' : 'Send');
-  }
+  syncSendButton();
   renderSide();
+  renderBrainstormBar();
+}
+
+// Stop while a reply runs; during a brainstorm, typed text turns it back into Send (to steer).
+function syncSendButton() {
+  for (const btn of document.querySelectorAll('.composer button[type="submit"]')) {
+    const input = btn.closest('form').querySelector('textarea');
+    const stop = state.busy && !(state.brainstorm && state.brainstorm.session === state.current && input && input.value.trim());
+    btn.replaceChildren(icon(stop ? 'i-stop' : 'i-send'));
+    btn.setAttribute('aria-label', stop ? 'Stop' : 'Send');
+  }
 }
 
 // ── A turn ─────────────────────────────────────────────────────────────────
@@ -359,6 +381,7 @@ export async function send(text, threadId, files = []) {
     if (!ok) return;
   }
   const session = state.current;
+  if (session.brainstorm && !threadId) return runBrainstorm(text, files);
   // The first message settles the chat's context type: what was picked, or the default (it's shown, not changed, after).
   if (!session.contextMode && !session.messages.some(m => !m.deleted)) session.contextMode = agent.settings.defaultContextMode || 'compact';
   const container = threadId ? $('#thread-messages') : $('#messages-inner');
@@ -432,4 +455,73 @@ async function readFiles(files, session) {
   const taken = new Set(session.messages.flatMap(m => (m.attachments || []).map(a => String(a.path || a.name).split('/').pop().toLowerCase())));
   for (const f of files) out.push(await attachments.readAttachment(f, taken, session.id));
   return out;
+}
+
+// ── Brainstorm chats (brainstorm.js) ───────────────────────────────────────
+// The bar over the composer: what's running and a Stop button, or Keep going once it has stopped.
+function renderBrainstormBar() {
+  const form = $('#composer');
+  let bar = form.querySelector('.brainstorm-bar');
+  const session = state.current;
+  const on = Boolean(session && session.brainstorm);
+  if (!bar) { bar = h('div', { class: 'brainstorm-bar', hidden: true }); form.insertBefore(bar, form.querySelector('.composer-inner')); }
+  $('#input').placeholder = !on ? 'Message Squiggle' : session.messages.some(m => !m.deleted) ? 'Jump in to steer the brainstorm' : 'Pitch an idea to brainstorm';
+  const run = state.brainstorm && state.brainstorm.session === session ? state.brainstorm : null;
+  const started = on && session.messages.some(m => m.role === 'assistant' && m.voice && !m.deleted);
+  bar.hidden = !(run || (started && !state.busy));
+  if (bar.hidden) return;
+  const queued = run && run.steer.length ? ` · you'll jump in after this turn` : '';
+  bar.replaceChildren(...(run
+    ? [squiggleWait(), h('span', {}, `Brainstorming${queued}`), h('button', { type: 'button', class: 'btn', onclick: () => state.controller && state.controller.abort() }, icon('i-stop'), 'Stop')]
+    : [h('span', { class: 'muted' }, 'Brainstorm stopped.'), h('button', { type: 'button', class: 'btn', onclick: () => send('', null, []) }, 'Keep going')]));
+}
+
+async function runBrainstorm(text, files) {
+  const session = state.current;
+  if (files.length) toast('Brainstorms don\'t read attachments; sending just the text.');
+  const container = $('#messages-inner');
+  const scroller = $('#messages');
+  const here = () => state.current === session;
+  if (text) {
+    if (!session.messages.some(m => !m.deleted)) { container.replaceChildren(); session.title = text.replace(/\s+/g, ' ').slice(0, 60); }
+    const m = sessions.addMessage(session, { role: 'user', content: text });
+    container.append(messageEl(m, { inThread: false }));
+    renderSessions();
+  }
+  if (!session.messages.some(m => m.role === 'user' && !m.deleted)) return;
+  const controller = state.controller = new AbortController();
+  const run = state.brainstorm = { session, steer: [] };
+  setBusy(true);
+  let live = null, body = null, smooth = null;
+  try {
+    const why = await brainstorm.run({
+      session, signal: controller.signal,
+      takeSteer: () => { const t = run.steer.splice(0).join('\n\n'); renderBrainstormBar(); return t; },
+      ui: {
+        onSteer: (m) => { if (here()) { container.append(messageEl(m, { inThread: false })); scrollDown(scroller); } },
+        onStart: (v) => {
+          if (!here()) return;
+          body = h('div', { class: 'body' }, squiggleWait());
+          live = h('div', { class: `msg assistant voice-${v.toLowerCase()}` }, h('div', {}, h('div', { class: 'voice-label' }, brainstorm.VOICES[v]), body));
+          smooth = smoothText((t) => { body.innerHTML = md(t); scrollDown(scroller); });
+          container.append(live);
+          scrollDown(scroller);
+        },
+        onText: (t) => smooth && smooth.feed(t),
+        onDone: (m) => {
+          if (smooth) smooth.stop();
+          if (live) { if (m) live.replaceWith(messageEl(m, { inThread: false, session })); else live.remove(); }
+          live = body = smooth = null;
+        },
+      },
+    });
+    if (why === 'limit') toast(`Paused after ${brainstorm.MAX_TURNS} turns. Keep going or jump in to carry on.`);
+  } finally {
+    if (smooth) smooth.stop();
+    state.brainstorm = null;
+    state.controller = null;
+    setBusy(false);
+    sessions.flush();
+    if (here()) rerender();
+  }
 }

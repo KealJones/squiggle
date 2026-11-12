@@ -354,7 +354,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
 
 // The model behind a reply, saved on the message: its id, label and how it ran (on this device, on the GPU or
 // CPU, or on the relay). Labels are kept because MODELS entries come and go.
-function replyModel() {
+export function replyModel() {
   const id = settings.model;
   const m = engine.MODELS[id] || {};
   const info = engine.smallInfo && engine.smallInfo();
