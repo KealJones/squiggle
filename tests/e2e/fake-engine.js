@@ -113,8 +113,16 @@ function stepScript(conv, input, onText) {
 export async function respond(conv, input, { onText } = {}) {
   log.push({ type: 'respond', input, system: conv.cfg && conv.cfg.system });
   // Brainstorm chats (brainstorm.js): each voice says who it is and what it answered, a little slowly so a test can steer and stop.
-  const bs = conv.cfg && /brainstorming with a partner/.test(conv.cfg.system || '') && conv.cfg.system.match(/You lean toward (\w+)/);
-  if (bs) { await new Promise(r => setTimeout(r, 120)); return say(`${bs[1] === 'pitching' ? 'A' : 'B'} answers: ${String(input).slice(-40)}`, onText); }
+  // LONGDOC: A's first reply stops at the length limit (a full token count) and is handed back to finish.
+  const bs = conv.cfg && /brainstorming with a partner/.test(conv.cfg.system || '') && conv.cfg.system.match(/You are the (builder|critic)/);
+  if (bs) {
+    await new Promise(r => setTimeout(r, 120));
+    const v = bs[1] === 'builder' ? 'A' : 'B';
+    const cont = /cut off by the length limit/.test(conv.cfg.system);
+    window.__smallSpeed = { tokens: v === 'A' && /LONGDOC/.test(input) && !cont ? 1024 : 40 };
+    if (v === 'A' && /LONGDOC/.test(input)) return say(cont ? ' and the second half of the spec.' : 'A answers: the first half of the spec', onText);
+    return say(`${v} answers: ${String(input).slice(-40)}`, onText);
+  }
   // The script answers the person's words, not the recalled block smart context appends.
   if (typeof input === 'string') input = input.split('\n\n---\nPossibly relevant earlier messages')[0];
   // Fresh context: the first input is the result of the lookup the agent made for the model.

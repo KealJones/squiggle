@@ -1680,6 +1680,17 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   await D.page.waitForFunction((n) => document.querySelectorAll('#messages-inner .msg.assistant').length > n, before);
   await D.page.click('.brainstorm-bar button');
   await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  // A turn cut off at the length limit is handed back to the same voice and finished in the same message.
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.fill('#input', 'LONGDOC write the spec');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => document.querySelectorAll('#messages-inner .msg.voice-b').length >= 1);
+  await D.page.click('.brainstorm-bar button');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const long = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.find(m => m.voice === 'A').content);
+  assert.equal(long, 'A answers: the first half of the spec and the second half of the spec.');
   assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
 });
 

@@ -304,3 +304,26 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 - **Caught by:** tests/failures.test.js case 19; tests/tasks.test.js "prompt dialects"; e2e "step mode through the
   UI" (ASKTEST: a plain-text question pauses the task, a thinking-only step restarts, every step and final user
   turn is the request).
+
+### 20. The brainstorm critic only praised, and its spec sheet was cut off mid-word
+
+- **Asked:** a brainstorm chat (`s0mwdzez4u000gv6fi`), 2026-11-12: "How would you design an elevator for cats?"
+- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm chat (brainstorm.js), first version: voice B told it "lean[s] toward
+  testing: poke holes", both told to keep a turn to "a short paragraph or a few bullets", 400 tokens a call.
+- **What it did:** B opened its turns with "Great start —", "Excellent —", "Great additions —", "Perfect —",
+  "Absolutely —"; by B4 both voices were agreeing on next steps and drafting a spec sheet together. B5's spec sheet
+  stopped at the 400-token limit mid-word ("Individual scent markers (catnip/pher"), and A's next turn opened with
+  "Looks like your draft got cut off — let me finish it".
+- **Why it's bad:** a brainstorm with two voices that agree is one voice twice: nothing in the idea gets tested.
+  And the cut-off was the harness's limit, not the model's choice: the other voice spent its turn finishing the
+  document instead of answering it.
+- **Good answer:** B starts each turn with what's weakest in A's last turn and why it would fail, then a fix; a long
+  document comes out whole, in the voice that started it.
+- **Fix:** roles instead of leanings (A the builder, B the critic who starts with the weakest part), no opening with
+  praise, no length rule in the prompt ("take as much space as the turn needs"). A call that stops at its limit
+  (`cutOff`, from the engine's token count) is handed back to the same voice with the end of what it wrote in the
+  system prompt (`continueSystem`), up to 8 calls a turn, stitched into one message; a turn longer than the window
+  shows the next voice its end.
+- **Caught by:** tests/brainstorm.test.js (the prompts, `cutOff`, `continueSystem`, a turn longer than the budget);
+  e2e "brainstorm chat" (LONGDOC: a cut-off turn is finished in the same message). Whether B actually criticizes is
+  model behaviour: not covered.
