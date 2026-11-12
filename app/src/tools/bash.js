@@ -258,12 +258,21 @@ function asOutput(res) {
 }
 
 // "-m 'fix it'" style flags: the value after a flag, and the words that aren't flags.
-function flags(args, withValue = []) {
+export function flags(args, withValue = []) {
   const out = { _: [] };
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     const eq = /^--?([\w-]+)=(.*)$/.exec(a);
     if (eq) { out[eq[1]] = eq[2]; continue; }
+    // Short options together: -am "msg" is -a -m "msg", -sSL is -s -S -L; the last one may take the value.
+    // (git commit -am read as one unknown flag left a model unable to commit, 2026-11-12.)
+    const group = /^-([a-zA-Z]{2,})$/.exec(a);
+    if (group && !withValue.includes(group[1])) {
+      const letters = [...group[1]], last = letters.pop();
+      for (const l of letters) out[l] = true;
+      out[last] = withValue.includes(last) && i + 1 < args.length ? args[++i] : true;
+      continue;
+    }
     const f = /^--?([\w-]+)$/.exec(a);
     if (f && withValue.includes(f[1]) && i + 1 < args.length) { out[f[1]] = args[++i]; continue; }
     if (f) { out[f[1]] = true; continue; }
