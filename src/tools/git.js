@@ -205,9 +205,13 @@ export const gitPush = defineTool({
   group: 'git and GitHub',
   description: `Push the current branch to GitHub (never forced). ${AGENT_BRANCH_PREFIX} branches push right away; any other branch (like main) asks the user for permission first.`,
   parameters: params({ repo: str('Folder name under /repos') }, ['repo']),
+  // ctx.pushBranch: bash's `git push origin <branch>` for a branch other than the current one (not a model-facing
+  // parameter: the fine-tunes' tool schemas stay as they were trained).
   async run({ repo }, ctx = {}) {
     const dir = await repoDir(repo);
-    const branch = await currentBranch(dir);
+    const named = ctx.pushBranch || null;
+    const branch = named || await currentBranch(dir);
+    if (named && !(await git.listBranches({ fs, dir })).includes(named)) return { model: { error: `There's no local branch ${named} to push.` } };
     const problem = checkBranch(branch);
     if (problem) return { model: { error: problem } };
     const o = await originOf(dir);
