@@ -22,7 +22,10 @@ test('trackBuffers: counts what a device allocates and frees, and what it held w
   a.destroy(); a.destroy();               // freeing twice counts once
   assert.equal(gpu.bytes - start, 500);
   assert.ok(gpu.peak >= start + 1500);
+  const b = device.createBuffer({ size: 300 });
   drop();                                 // lost: everything it held is gone
-  assert.equal(gpu.atLoss, 500);
+  assert.equal(gpu.atLoss, 800);
+  assert.equal(gpu.bytes, start);
+  b.destroy();                            // freed after the loss (an unload): already counted out
   assert.equal(gpu.bytes, start);
 });
