@@ -182,10 +182,17 @@ export const REVIVE_WAITS = [0, 500, 1500, 3000, 6000];
 // one waits for the GPU to finish. The compiled kernels take any length up to the build's chunk size, so it's a
 // runtime setting; it reaches into WebLLM's pipeline (loadedModelIdToPipeline, prefillChunkSize, embedAndForward,
 // sync, all in 0.2.86/0.2.87), and does nothing if those aren't there.
+// Android has the opposite problem (Greg's phone in Chrome, 2026-11-11): nothing kills the long work, so the phone's
+// own screen waits behind it and everything drops to a couple of frames a second. So phones get the same pacing,
+// plus a gap the length of a frame after each prompt piece for the system to draw in (not after each generated
+// token: those are short, and each already ends with a sync).
 export const PACED_CHUNK = 128;
-export const webkitGpu = (ua = (globalThis.navigator && navigator.userAgent) || '') =>
+export const PACED_GAP_MS = 16;
+const uaOf = () => (globalThis.navigator && navigator.userAgent) || '';
+export const webkitGpu = (ua = uaOf()) =>
   /iPhone|iPad|iPod/.test(ua) || (/AppleWebKit/.test(ua) && /Safari\//.test(ua) && !/Chrome|Chromium|CriOS|Edg|Firefox|FxiOS/.test(ua));
-export function paceGpu(engine, chunk = PACED_CHUNK) {
+export const pacedGpu = (ua = uaOf()) => webkitGpu(ua) || /Android/.test(ua);
+export function paceGpu(engine, chunk = PACED_CHUNK, gap = PACED_GAP_MS) {
   const pipes = engine && engine.loadedModelIdToPipeline;
   if (!pipes || typeof pipes.values !== 'function') return 0;
   let paced = 0;
@@ -195,6 +202,7 @@ export function paceGpu(engine, chunk = PACED_CHUNK) {
     p.embedAndForward = async function (...args) {
       const out = await forward.apply(this, args);
       if (typeof this.sync === 'function') await this.sync();   // this piece is done before the next is queued
+      if (gap && args[1] > 1) await sleep(gap);                  // a prompt piece: let the screen draw a frame
       return out;
     };
     if (typeof p.prefillChunkSize === 'number' && p.prefillChunkSize > chunk) p.prefillChunkSize = chunk;
@@ -209,7 +217,7 @@ export function paceGpu(engine, chunk = PACED_CHUNK) {
 // engine: an already-made engine with WebLLM's API (tests pass a fake). makeEngine: how to make another one
 // when the GPU device is lost (tests pass a fake; by default the same CreateMLCEngine call, from WebLLM's cache).
 // watch: which GPU device is in use and when one is lost (tests pass a fake). waits: pauses between reload tries.
-export async function createShim(mlc, contextSize, onStage = () => {}, { format = null, engine: given = null, makeEngine = null, pace = webkitGpu(), watch = deviceWatch, waits = REVIVE_WAITS } = {}) {
+export async function createShim(mlc, contextSize, onStage = () => {}, { format = null, engine: given = null, makeEngine = null, pace = pacedGpu(), watch = deviceWatch, waits = REVIVE_WAITS } = {}) {
   const id = given ? mlc : await pickId(mlc);
   const fmt = toolFormat(format) || PLAIN;
   const manifest = Boolean((custom.get(id) || {}).model_manifest);
@@ -221,7 +229,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
   onStage('loading the model onto the GPU');
   let engine = given || await make();
   let device = watch.current();       // the device this engine runs on (WebLLM asks for one per engine)
-  if (pace && !paceGpu(engine)) console.warn('Squiggle: could not pace WebLLM\'s GPU work (its internals changed); long prompts may lose the GPU on Safari.');
+  if (pace && !paceGpu(engine)) console.warn('Squiggle: could not pace WebLLM\'s GPU work (its internals changed); long prompts may lose the GPU on Safari or stall the screen on Android.');
   let reloads = 0, reviving = null, stale = false, closed = false, lostNotes = null;
 
   // A fresh engine from the files WebLLM already cached. Not reported through onStage: that's the load screen's
@@ -322,6 +330,9 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
         // WebLLM puts the conversation's prefix tokens (BOS) in front of a raw completion only on its manifest
         // path; a build without a manifest gets the prompt as is (web-llm 0.2.86/0.2.87 getInputData).
         prompt = (f.bos && !manifest ? f.bos : '') + f.prompt(history, tools, { thinking: Boolean(thinking), names: opts.tool_names || [] });
+        // think_prefill: thinking written into the model's own turn and closed here, so it carries on from it as
+        // if it had thought that (the thinking budget, engine-wllama.js). The reply then starts after the close.
+        if (opts.think_prefill && f.thinkClose && thinking && prompt.endsWith(f.thinkOpen)) prompt += opts.think_prefill + f.thinkClose;
         noteRendered('raw prompt', prompt);   // the exact text the model reads ("What the model saw", trace.js)
         try { await engine.resetChat(); } catch {}         // raw completions need an empty KV cache
         chunks = await engine.completions.create({ prompt, stream: true, max_tokens: opts.max_tokens, ...sampling(opts), stop: f.stop });
@@ -377,7 +388,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
   return {
     async createChatCompletion(opts) { return stream(opts, opts.abortSignal); },
     async exit() { closed = true; unwatch(); try { engine && await engine.unload(); } catch {} },
-    info: { gpu: true, threads: 1, compat: false, webllm: true, webllmVersion: versionFor(id), toolFormat: fmt.id, toolNames: Boolean(fmt.listsNames), id },
+    info: { gpu: true, threads: 1, compat: false, webllm: true, closesThinking: Boolean(fmt.mode === 'raw' && fmt.thinkClose), webllmVersion: versionFor(id), toolFormat: fmt.id, toolNames: Boolean(fmt.listsNames), id },
     get reloads() { return reloads; },
     get paced() { return Boolean(pace); },
   };

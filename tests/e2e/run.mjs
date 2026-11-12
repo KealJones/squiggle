@@ -892,7 +892,7 @@ await check('chat details sidebar: model, context window breakdown (live and sav
       seen: [...new Set(window.__sideSeen)],
     };
   });
-  assert.match(r.model, /Model.*Runs\s*this device.*Context\s*Smart/s, r.model);
+  assert.match(r.model, /Model.*Runs\s*this device.*Context\s*Compress/s, r.model);   // a new browser starts on Compress (settings.js compactDefault)
   assert.match(r.total, /^[\d.]+k? of [\d.]+k? tokens$/);
   assert.ok(r.rows.includes('Instructions') && r.rows.includes('Free space') && r.rows.includes('Request'), JSON.stringify(r.rows));
   assert.equal(r.bar, r.rows.length - 1, 'one bar segment per part (free space is the empty track)');
@@ -1652,6 +1652,8 @@ await check('small models: a long page comes back as a card saved in /web, grep 
   await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'SQ'; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
+  // Shrinking used results is Smart context's (agent.js trimJunk); a new browser starts on Compress.
+  await D.page.evaluate(async () => { (await import('/src/ui/settings.js')).setDefaultContextMode('smart'); });
   await D.page.click('#new-chat');
   await D.page.fill('#input', 'how big is it? https://models.example.test/gemma3');
   await D.page.press('#input', 'Enter');

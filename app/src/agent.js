@@ -73,6 +73,7 @@ export const LITE_SYSTEM_NATIVE = [
   'Look things up with web_search and fetch_url. find(query) searches your other tools, recipes, memory and',
   'past chats when you need one of them; ask_user(question) asks the user something only they know and waits.',
   'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
+  "Don't go round in circles: after three options or attempts, stop and use the best one; if you're still unsure, say so and ask the user.",
 ].join('\n');
 
 // The same for the bash surface (tools/bash.js): the lookups are commands in the shell.
@@ -83,6 +84,7 @@ export const LITE_SYSTEM_BASH = [
   'Your context window is small: never cat a whole file or curl a whole page. Pipe into grep, head, tail, sed -n or wc,',
   'or save it to a file (> /tmp/page.txt) and work on the file in small pieces.',
   'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
+  "Don't go round in circles: after three options or attempts, stop and use the best one; if you're still unsure, say so and ask the user.",
 ].join('\n');
 
 // Which prompt dialect this model gets (tasks.js DIALECT): the frozen fenced one for Squiggle Small, v3
