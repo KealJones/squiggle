@@ -20,7 +20,7 @@ export const gpu = { bytes: 0, peak: 0, atLoss: null };
 
 // Counts one device's buffers into `gpu`. Returns a function that drops the device's share (it's lost or gone).
 export function trackBuffers(device) {
-  let mine = 0;
+  let mine = 0, gone = false;
   const create = device.createBuffer.bind(device);
   device.createBuffer = (desc) => {
     const buf = create(desc);
@@ -28,8 +28,9 @@ export function trackBuffers(device) {
     mine += size; gpu.bytes += size; gpu.peak = Math.max(gpu.peak, gpu.bytes);
     const destroy = buf.destroy && buf.destroy.bind(buf);
     let freed = false;
-    buf.destroy = () => { if (!freed) { freed = true; mine -= size; gpu.bytes -= size; } return destroy && destroy(); };
+    buf.destroy = () => { if (!freed && !gone) { freed = true; mine -= size; gpu.bytes -= size; } return destroy && destroy(); };
     return buf;
   };
-  return () => { gpu.atLoss = mine; gpu.bytes -= mine; mine = 0; };
+  // Buffers freed after the loss were already taken off here (the incident log showed -1 GB without this).
+  return () => { if (gone) return; gone = true; gpu.atLoss = mine; gpu.bytes -= mine; mine = 0; };
 }
