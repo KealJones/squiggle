@@ -1648,8 +1648,9 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   await D.page.click('#new-chat');
   await D.page.click('.chat-setup > summary');
   await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
-  assert.match(await D.page.textContent('.chat-setup > summary'), /· Brainstorm/);
+  assert.match(await D.page.textContent('.chat-setup > summary'), /· BrainstormChange$/);
   assert.equal(await D.page.$('.chat-setup input[name="chat-context"]'), null, 'no context type to pick for a brainstorm');
+  assert.ok(await D.page.isChecked('.chat-setup input[name="chat-framing"][value="transcript"]'), 'transcript is the default');
   assert.equal(await D.page.getAttribute('#input', 'placeholder'), 'Pitch an idea to brainstorm');
   await D.page.fill('#input', 'a coffee shop for dogs');
   await D.page.press('#input', 'Enter');
@@ -1660,20 +1661,20 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   assert.equal(await D.page.getAttribute('#send', 'aria-label'), 'Send', 'typed text turns Stop into Send');
   await D.page.press('#input', 'Enter');
   await D.page.waitForFunction(() => [...document.querySelectorAll('#messages-inner .msg.user')].some(m => /focus on money/.test(m.textContent)));
-  await D.page.waitForFunction(() => /steps in: focus on money/.test(document.querySelector('#messages-inner').textContent));
+  await D.page.waitForFunction(() => [...document.querySelectorAll('#messages-inner .msg.assistant')].some(m => /brainstorm: focus on money/.test(m.textContent)));
   await D.page.click('.brainstorm-bar button');
   await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
   assert.match(await D.page.textContent('.brainstorm-bar'), /Brainstorm stopped.*Keep going/);
   const s = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current);
   const said = s.messages.filter(m => !m.deleted);
-  assert.ok(s.brainstorm);
+  assert.equal(s.brainstorm, 'transcript');
   assert.equal(said[0].content, 'a coffee shop for dogs');
   const voices = said.filter(m => m.role === 'assistant').map(m => m.voice);
   assert.ok(voices.length >= 2 && voices.length < 20, `stopped early (${voices.length} turns)`);
   voices.forEach((v, i) => assert.equal(v, i % 2 ? 'B' : 'A', 'voices alternate'));
-  // A answered the idea itself; B answered A (the other voice arrives as the user).
-  assert.match(said[1].content, /^A answers: a coffee shop for dogs/);
-  assert.match(said[2].content, /^B answers: A answers:/);
+  // Each voice wrote its turn from the transcript: A from the person's idea, B from A's labelled turn.
+  assert.equal(said[1].content, 'A answers: The person who started this brainstorm: a coffee shop for dogs');
+  assert.match(said[2].content, /^B answers: A: A answers: The person who started this brainstorm/);
   // Keep going picks up with the next voice.
   const before = voices.length;
   await D.page.click('.brainstorm-bar button');
@@ -1691,6 +1692,22 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
   const long = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.find(m => m.voice === 'A').content);
   assert.equal(long, 'A answers: the first half of the spec and the second half of the spec.');
+  // The role flip is still there to compare: the other voice arrives as the user.
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.click('.chat-setup > summary');   // picking a kind redraws the settings closed
+  await D.page.check('.chat-setup input[name="chat-framing"][value="flip"]');
+  assert.match(await D.page.textContent('.chat-setup > summary'), /Brainstorm \(role flip\)/);
+  await D.page.fill('#input', 'a hat for snakes');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => document.querySelectorAll('#messages-inner .msg.voice-b').length >= 1);
+  await D.page.click('.brainstorm-bar button');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const flip = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current);
+  assert.equal(flip.brainstorm, 'flip');
+  assert.match(flip.messages.find(m => m.voice === 'A').content, /^A answers: a hat for snakes$/);
+  assert.match(flip.messages.find(m => m.voice === 'B').content, /^B answers: A answers: a hat for snakes$/);
   assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
 });
 

@@ -113,15 +113,20 @@ function stepScript(conv, input, onText) {
 export async function respond(conv, input, { onText } = {}) {
   log.push({ type: 'respond', input, system: conv.cfg && conv.cfg.system });
   // Brainstorm chats (brainstorm.js): each voice says who it is and what it answered, a little slowly so a test can steer and stop.
+  // Role flip: says what it answered (the end of its user turn). Transcript: the last turn in the transcript.
   // LONGDOC: A's first reply stops for length (the window filled at 380 tokens) and is handed back to finish.
-  const bs = conv.cfg && /brainstorming with a partner/.test(conv.cfg.system || '') && conv.cfg.system.match(/You are the (builder|critic)/);
+  const bs = conv.cfg && /brainstorm/.test(conv.cfg.system || '') && conv.cfg.system.match(/(?:You are the|You write [AB]'s turns\. [AB] is the) (builder|critic)/);
   if (bs) {
     await new Promise(r => setTimeout(r, 120));
     const v = bs[1] === 'builder' ? 'A' : 'B';
+    const transcript = /^You write|You write [AB]'s turns/m.test(conv.cfg.system);
     const cont = /cut off by the length limit/.test(conv.cfg.system);
-    window.__smallSpeed = v === 'A' && /LONGDOC/.test(input) && !cont ? { tokens: 380, finish: 'length' } : { tokens: 40, finish: 'stop' };   // the window ran out well short of 1,024
-    if (v === 'A' && /LONGDOC/.test(input)) return say(cont ? ' and the second half of the spec.' : 'A answers: the first half of the spec', onText);
-    return say(`${v} answers: ${String(input).slice(-40)}`, onText);
+    const firstA = v === 'A' && /LONGDOC/.test(input) && !/\n\nA: /.test(input);
+    window.__smallSpeed = firstA && !cont ? { tokens: 380, finish: 'length' } : { tokens: 40, finish: 'stop' };   // the window ran out well short of 1,024
+    if (firstA) return say(cont ? ' and the second half of the spec.' : 'A answers: the first half of the spec', onText);
+    const parts = String(input).split('\n\n');
+    const said = transcript ? parts[parts.length - 2] : String(input).slice(-40);
+    return say(`${v} answers: ${said}`, onText);
   }
   // The script answers the person's words, not the recalled block smart context appends.
   if (typeof input === 'string') input = input.split('\n\n---\nPossibly relevant earlier messages')[0];

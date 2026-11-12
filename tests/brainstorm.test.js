@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { viewFor, nextVoice, systemFor, continueSystem, cutOff, latestSteer, PIECE } from '../app/src/brainstorm.js';
+import { viewFor, transcriptFor, framingOf, nextVoice, systemFor, continueSystem, cutOff, latestSteer, PIECE, PERSON } from '../app/src/brainstorm.js';
 
 let n = 0;
 const msg = (role, content, extra = {}) => ({ id: 'm' + (++n), role, content, ts: n, thread: null, ...extra });
@@ -53,9 +53,9 @@ test('deleted messages and thread replies are left out', () => {
 test('B is the critic and starts with the weakest part; neither opens with praise or is told to keep it short', () => {
   assert.match(systemFor('B', 'x'), /critic.*Start every turn with the weakest/s);
   assert.match(systemFor('A', 'x'), /builder/);
-  for (const v of ['A', 'B']) {
-    assert.match(systemFor(v, 'x'), /Never open with praise/);
-    assert.doesNotMatch(systemFor(v, 'x'), /short paragraph|keep it (short|brief)/i);
+  for (const v of ['A', 'B']) for (const f of ['flip', 'transcript']) {
+    assert.match(systemFor(v, 'x', '', f), /ever opens? with praise/);
+    assert.doesNotMatch(systemFor(v, 'x', '', f), /short paragraph|keep it (short|brief)/i);
   }
 });
 
@@ -94,4 +94,36 @@ test('the person\'s latest steer goes in the system prompt until both voices hav
   assert.match(systemFor('B', 'cats', 'focus on money'), /just stepped in and said: "focus on money"/);
   assert.match(continueSystem('B', 'cats', 'so far', 'focus on money'), /focus on money/);
   assert.doesNotMatch(systemFor('B', 'cats'), /stepped in and said/);
+});
+
+test('framing: new brainstorms are transcripts; chats from before the switch (true) stay role flips', () => {
+  assert.equal(framingOf({ brainstorm: 'transcript' }), 'transcript');
+  assert.equal(framingOf({ brainstorm: 'flip' }), 'flip');
+  assert.equal(framingOf({ brainstorm: true }), 'flip');
+});
+
+test('transcript: one user turn, every turn labelled, the person included, ending with the ask', () => {
+  const v = transcriptFor([seed, a1, b1, steer], 'A').messages;
+  assert.equal(v.length, 1);
+  assert.equal(v[0].role, 'user');
+  assert.equal(v[0].content, `${PERSON}: A coffee shop for dogs\n\nA: Dog-safe pup cups\n\nB: Who cleans up?\n\n${PERSON}: focus on money\n\nNow write A's next turn.`);
+  const sys = systemFor('B', 'cats', '', 'transcript');
+  assert.match(sys, /You write B's turns\. B is the critic: starts every turn with the weakest/);
+  assert.match(sys, /no "B:" label/);
+  assert.doesNotMatch(sys, /user turns/, 'nothing about the other voice being the user');
+  assert.match(systemFor('A', 'cats', 'focus on money', 'transcript'), /just stepped in and said: "focus on money"\. This turn follows that direction, whatever B last said/);
+  assert.match(continueSystem('A', 'cats', 'half a', '', 'transcript'), /A's turn was cut off by the length limit/);
+});
+
+test('transcript: the idea always stays, the oldest turns drop off, and an overlong last turn keeps its end', () => {
+  const line = [seed];
+  for (let i = 0; i < 30; i++) line.push(msg('assistant', `turn ${i} `.repeat(40), { voice: i % 2 ? 'B' : 'A' }));
+  const t = transcriptFor(line, 'A', 400).messages[0].content;
+  assert.ok(t.startsWith(`${PERSON}: A coffee shop for dogs\n\n…\n\n`), t.slice(0, 80));
+  assert.match(t, /turn 29 \n\nNow write A's next turn\.$/);
+  assert.doesNotMatch(t, /turn 0 /);
+  const doc = msg('assistant', 'START ' + 'word '.repeat(3000) + 'FINAL LINE', { voice: 'A' });
+  const d = transcriptFor([seed, doc], 'B', 500).messages[0].content;
+  assert.match(d, /…[^]*FINAL LINE\n\nNow write B's next turn\.$/);
+  assert.doesNotMatch(d, /START/);
 });

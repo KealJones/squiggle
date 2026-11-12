@@ -1,5 +1,10 @@
 // Brainstorm chats (Keal, 2026-11-12): the person sends the idea, then the model talks to itself. Two voices, A and B,
-// take turns; each sees its own turns as the assistant and everything else (the other voice, the person) as the user.
+// take turns, in one of two framings (session.brainstorm):
+// - 'transcript' (the default): the model gets the whole brainstorm as a labelled transcript in one user turn and
+//   writes one speaker's next turn, so nobody it talks to sits in the user role (failures.md case 21: in the role
+//   flip LFM3 served and agreed with the other voice whatever the system prompt said).
+// - 'flip' (the first design; `true` on chats made before the switch): each voice sees its own turns as the
+//   assistant and everything else (the other voice, the person) as the user.
 // The person can jump in between turns to steer, and stop it. No tools, no plan, no thinking: just the back-and-forth.
 // A turn can be as long as the voice wants: one call writes up to PIECE tokens, and a turn cut off there is handed back
 // to the same voice (a fresh call with what it wrote so far) to finish, since a 4K window can't hold a long turn at once.
@@ -20,8 +25,24 @@ const ROLE = {
   A: 'You are the builder. Push the idea further with new, concrete ideas. When your partner criticizes something, either fix it or say plainly why the criticism is wrong.',
   B: 'You are the critic. Start every turn with the weakest or riskiest part of what your partner just said and why it would fail. Then offer a fix or a different direction. Agree only with what survives that.',
 };
+// The same jobs, for the transcript framing, where the model writes a named speaker's lines.
+const PART = {
+  A: 'A is the builder: pushes the idea further with new, concrete ideas, and when B criticizes something, either fixes it or says plainly why the criticism is wrong.',
+  B: 'B is the critic: starts every turn with the weakest or riskiest part of what A just said and why it would fail, then offers a fix or a different direction, and agrees only with what survives that.',
+};
+const other = (v) => (v === 'A' ? 'B' : 'A');
 
-export function systemFor(voice, topic, steer = '') {
+export const framingOf = (session) => (session && (session.brainstorm === 'flip' || session.brainstorm === true) ? 'flip' : 'transcript');
+export const PERSON = 'The person who started this brainstorm';
+
+export function systemFor(voice, topic, steer = '', framing = 'flip') {
+  if (framing === 'transcript') return [
+    `This is a brainstorm between two partners, A and B. The topic, from the person who started it: ${topic}`,
+    ...(steer ? [`The person who started it just stepped in and said: "${steer}". This turn follows that direction, whatever ${other(voice)} last said.`] : []),
+    `You write ${voice}'s turns. ${PART[voice]}`,
+    `${voice} never opens with praise or agreement: the first sentence is about the idea. No repeating earlier points. Take as much space as the turn needs.`,
+    `Reply with ${voice}'s next turn only: no "${voice}:" label and nothing for anyone else.`,
+  ].join('\n');
   return [
     `You are brainstorming with a partner. The topic, from the person who started this: ${topic}`,
     ...(steer ? [`The person who started this just stepped in and said: "${steer}". Your turn follows that direction, whatever your partner last said.`] : []),
@@ -33,9 +54,10 @@ export function systemFor(voice, topic, steer = '') {
 }
 
 // The system prompt for finishing a turn that was cut off: the same instructions, then what it wrote so far.
-export function continueSystem(voice, topic, sofar, steer = '') {
+export function continueSystem(voice, topic, sofar, steer = '', framing = 'flip') {
   const tail = sofar.length > TAIL ? '…' + sofar.slice(-TAIL) : sofar;
-  return `${systemFor(voice, topic, steer)}\n\nYour reply to the latest message was cut off by the length limit. It ends like this:\n\n${tail}\n\nContinue it from exactly where it stops, mid-sentence if needed. Don't repeat any of it and don't start over.`;
+  const what = framing === 'transcript' ? `${voice}'s turn` : 'Your reply to the latest message';
+  return `${systemFor(voice, topic, steer, framing)}\n\n${what} was cut off by the length limit. It ends like this:\n\n${tail}\n\nContinue it from exactly where it stops, mid-sentence if needed. Don't repeat any of it and don't start over.`;
 }
 
 // Whether one call stopped short rather than finishing. The runtime's own reason when it gives one ('length': it ran
@@ -105,6 +127,26 @@ export function viewFor(line, voice, budget = Infinity) {
 }
 
 /**
+ * The transcript framing: the whole brainstorm as one user turn, every turn labelled with who said it (A, B, or the
+ * person), ending with the ask for `voice`'s next turn. The oldest turns after the idea drop off to fit `budget`
+ * tokens, and a turn longer than what's left keeps its end. Returns { messages } like viewFor.
+ */
+export function transcriptFor(line, voice, budget = Infinity) {
+  const all = turns(line);
+  const seed = all.find(m => m.role === 'user');
+  const label = (m) => (m.role === 'user' ? PERSON : m.voice || 'A');
+  const entries = all.filter(m => m !== seed).map(m => `${label(m)}: ${m.content}`);
+  const head = seed ? `${PERSON}: ${seed.content}` : '';
+  const ask = `Now write ${voice}'s next turn.`;
+  let room = budget - est(head) - est(ask), start = entries.length;
+  while (start > 0 && est(entries[start - 1]) <= room) room -= est(entries[--start]);
+  const kept = entries.slice(start);
+  if (start > 0 && !kept.length && room > 0) kept.push('…' + entries[entries.length - 1].slice(-Math.floor(room * 3)));
+  const body = [head, ...(start > 0 && kept.length ? ['…'] : []), ...kept].filter(Boolean).join('\n\n');
+  return { messages: [{ role: 'user', content: `${body}\n\n${ask}` }] };
+}
+
+/**
  * Runs voices back and forth until stopped or MAX_TURNS. `takeSteer()` returns what the person typed since the last
  * turn (or ''), added to the chat before the next voice speaks. ui: onStart(voice), onText(text), onDone(msg),
  * onSteer(msg). Returns why it ended: 'stopped' | 'limit' | 'error'.
@@ -124,9 +166,10 @@ export async function run({ session, signal, ui = {}, takeSteer = () => '' }) {
         const r = await engine.foreground(async () => {
           const topic = (turns(line).find(m => m.role === 'user') || {}).content || '';
           const steer = latestSteer(line);
-          const system = sofar ? continueSystem(voice, topic, sofar, steer) : systemFor(voice, topic, steer);
+          const framing = framingOf(session);
+          const system = sofar ? continueSystem(voice, topic, sofar, steer, framing) : systemFor(voice, topic, steer, framing);
           const budget = engine.contextFor(engine.currentModel()) - PIECE - est(system) - 200;
-          const { messages } = viewFor(line, voice, budget);
+          const { messages } = framing === 'transcript' ? transcriptFor(line, voice, budget) : viewFor(line, voice, budget);
           const conv = await engine.conversation({ system, messages: messages.slice(0, -1), maxOutputTokens: PIECE });
           try {
             const out = await engine.respond(conv, messages[messages.length - 1].content, { signal, onText: (t) => ui.onText && ui.onText(sofar + t) });

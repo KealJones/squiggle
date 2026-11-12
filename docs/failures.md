@@ -351,9 +351,11 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 - **Fix:** (1) the runtime's own stop reason (`finish_reason`, now forwarded by the WebLLM shim and kept in
   engine-wllama's `lastSpeed().finish`) decides `cutOff`; 'length' is continued whatever the count; prompt
   estimates use 3 characters a token. (2) the person's latest steer goes in both voices' system prompts until both
-  have answered it (`latestSteer`). (3) not fixed: prompt wording didn't move it twice now (cases 20 and 21). The
-  candidate is framing: hand the model the brainstorm as a transcript and ask for one speaker's next line, instead of
-  casting its partner as the user.
+  have answered it (`latestSteer`). (3) prompt wording didn't move it twice (cases 20 and 21), so new brainstorms use
+  a transcript framing (`transcriptFor`): the whole brainstorm as one labelled user turn and "write B's next turn",
+  so the other voice is a speaker in a script, not a user to serve; the role flip stays as a per-chat option to
+  compare. Untested on LFM3 yet.
 - **Caught by:** tests/toolformats.test.js "why WebLLM stopped reaches lastSpeed"; tests/brainstorm.test.js
   ("cut off: the runtime's own reason first", "the person's latest steer"); e2e "brainstorm chat" (LONGDOC stops for
-  length at 380 tokens and is finished). (3) not covered.
+  length at 380 tokens and is finished); (3) the framing is covered (tests/brainstorm.test.js "transcript", e2e
+  both framings), whether B then disagrees is model behaviour: not covered.
