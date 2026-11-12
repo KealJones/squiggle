@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { viewFor, nextVoice, systemFor, continueSystem, cutOff, PIECE } from '../app/src/brainstorm.js';
+import { viewFor, nextVoice, systemFor, continueSystem, cutOff, latestSteer, PIECE } from '../app/src/brainstorm.js';
 
 let n = 0;
 const msg = (role, content, extra = {}) => ({ id: 'm' + (++n), role, content, ts: n, thread: null, ...extra });
@@ -59,11 +59,13 @@ test('B is the critic and starts with the weakest part; neither opens with prais
   }
 });
 
-test('a reply that hit the limit counts as cut off; one that finished, or wrote nothing, does not', () => {
-  assert.equal(cutOff('lots of text', PIECE), true);
-  assert.equal(cutOff('done.', 200), false);
-  assert.equal(cutOff('', PIECE), false, 'an empty call keeps the last reply\'s count; not a cut-off');
-  assert.equal(cutOff('x'.repeat(PIECE * 4), null), true, 'no count (cloud): estimated from the text');
+test('cut off: the runtime\'s own reason first, then the token count, then the text', () => {
+  assert.equal(cutOff('half a table', { tokens: 380, finish: 'length' }), true, 'the window ran out before max_tokens');
+  assert.equal(cutOff('done.', { tokens: PIECE, finish: 'stop' }), false);
+  assert.equal(cutOff('lots of text', { tokens: PIECE }), true, 'no reason given: the count');
+  assert.equal(cutOff('done.', { tokens: 200 }), false);
+  assert.equal(cutOff('', { tokens: PIECE, finish: 'length' }), false, 'an empty call keeps the last reply\'s numbers; not a cut-off');
+  assert.equal(cutOff('x'.repeat(PIECE * 4), null), true, 'no numbers (cloud): estimated from the text');
   assert.equal(cutOff('x'.repeat(400), null), false);
 });
 
@@ -81,5 +83,15 @@ test('a turn longer than the whole budget keeps its end', () => {
   assert.equal(v.length, 1);
   assert.match(v[0].content, /^….*FINAL LINE$/s);
   assert.doesNotMatch(v[0].content, /START/);
-  assert.ok(v[0].content.length <= 500 * 3.5 + 1);
+  assert.ok(v[0].content.length <= 500 * 3 + 1);
+});
+
+test('the person\'s latest steer goes in the system prompt until both voices have answered it', () => {
+  assert.equal(latestSteer([seed, a1]), '', 'the idea itself is the topic, not a steer');
+  assert.equal(latestSteer([seed, a1, b1, steer]), 'focus on money');
+  assert.equal(latestSteer([seed, a1, b1, steer, a2]), 'focus on money', 'B still has to answer it');
+  assert.equal(latestSteer([seed, a1, b1, steer, a2, msg('assistant', 'x', { voice: 'B' })]), '');
+  assert.match(systemFor('B', 'cats', 'focus on money'), /just stepped in and said: "focus on money"/);
+  assert.match(continueSystem('B', 'cats', 'so far', 'focus on money'), /focus on money/);
+  assert.doesNotMatch(systemFor('B', 'cats'), /stepped in and said/);
 });

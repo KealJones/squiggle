@@ -327,3 +327,33 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 - **Caught by:** tests/brainstorm.test.js (the prompts, `cutOff`, `continueSystem`, a turn longer than the budget);
   e2e "brainstorm chat" (LONGDOC: a cut-off turn is finished in the same message). Whether B actually criticizes is
   model behaviour: not covered.
+
+### 21. Brainstorm: cut off by the window, a steer ignored, and two assistants serving each other
+
+- **Asked:** a brainstorm chat (`s0mwe2h0vm000lwbud`), 2026-11-12: "what noodle shape give the optimal cheese to
+  noodle ratio for mac n cheese?", then, 13 turns in, Keal stepped in: "Lets get back to pasta shapes".
+- **Model:** LFM3 1.7B QAD on WebLLM (4K window), brainstorm.js after case 20 (builder/critic roles, 1,024 tokens a
+  call, continued when the token count hit 1,024).
+- **What it did:** (1) four turns stopped mid-word ("…sketch the **pancetta + breadcrumb combo**… **", "Mix
+  breadcru", "merge into one \"Advanced\" ver", "If you ever want to swap") at 1,200–1,900 characters, about
+  300–450 tokens, and none was continued. (2) B answered the steer with "Great — I'll go with the single
+  \"Advanced\" version", the answer to A's closing question ("Which format do you prefer?"), and the pasta-shape
+  question never came back. (3) The critic still opened with praise ("The elbow macaroni ratio is solid and
+  well-reasoned", "Exactly right", "Spot on"), B's second turn restated A's almost line for line, and both voices
+  ended turns serving the other as a user ("Want me to walk through a quick step-by-step…?").
+- **Why it's bad:** (1) a 4K model's reply ends when prompt plus reply fill the window, long before max_tokens; the
+  harness only counted tokens against 1,024, so it never saw these as cut off. Its prompt estimate (3.5 characters a
+  token) also ran low for markdown tables, leaving less room than planned. (2) the steer was merged after A's long
+  reply in B's user turn, behind a question B felt bound to answer. (3) the other voice arrives in the user role,
+  and LFM3 treats the user role as someone to agree with and serve, whatever the system prompt says.
+- **Good answer:** every turn finished; after "Lets get back to pasta shapes" the next turn is about pasta shapes; B
+  disagrees with something.
+- **Fix:** (1) the runtime's own stop reason (`finish_reason`, now forwarded by the WebLLM shim and kept in
+  engine-wllama's `lastSpeed().finish`) decides `cutOff`; 'length' is continued whatever the count; prompt
+  estimates use 3 characters a token. (2) the person's latest steer goes in both voices' system prompts until both
+  have answered it (`latestSteer`). (3) not fixed: prompt wording didn't move it twice now (cases 20 and 21). The
+  candidate is framing: hand the model the brainstorm as a transcript and ask for one speaker's next line, instead of
+  casting its partner as the user.
+- **Caught by:** tests/toolformats.test.js "why WebLLM stopped reaches lastSpeed"; tests/brainstorm.test.js
+  ("cut off: the runtime's own reason first", "the person's latest steer"); e2e "brainstorm chat" (LONGDOC stops for
+  length at 380 tokens and is finished). (3) not covered.

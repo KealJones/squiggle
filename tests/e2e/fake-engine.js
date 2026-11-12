@@ -113,13 +113,13 @@ function stepScript(conv, input, onText) {
 export async function respond(conv, input, { onText } = {}) {
   log.push({ type: 'respond', input, system: conv.cfg && conv.cfg.system });
   // Brainstorm chats (brainstorm.js): each voice says who it is and what it answered, a little slowly so a test can steer and stop.
-  // LONGDOC: A's first reply stops at the length limit (a full token count) and is handed back to finish.
+  // LONGDOC: A's first reply stops for length (the window filled at 380 tokens) and is handed back to finish.
   const bs = conv.cfg && /brainstorming with a partner/.test(conv.cfg.system || '') && conv.cfg.system.match(/You are the (builder|critic)/);
   if (bs) {
     await new Promise(r => setTimeout(r, 120));
     const v = bs[1] === 'builder' ? 'A' : 'B';
     const cont = /cut off by the length limit/.test(conv.cfg.system);
-    window.__smallSpeed = { tokens: v === 'A' && /LONGDOC/.test(input) && !cont ? 1024 : 40 };
+    window.__smallSpeed = v === 'A' && /LONGDOC/.test(input) && !cont ? { tokens: 380, finish: 'length' } : { tokens: 40, finish: 'stop' };   // the window ran out well short of 1,024
     if (v === 'A' && /LONGDOC/.test(input)) return say(cont ? ' and the second half of the spec.' : 'A answers: the first half of the spec', onText);
     return say(`${v} answers: ${String(input).slice(-40)}`, onText);
   }

@@ -267,7 +267,7 @@ export class Conversation {
     const loops = (buf, last, piece) => (/[.!?\n]/.test(piece) && buf.length - last > 40) || buf.length - last > 200;
     const tools = this.tools.length > 0;
     const t0 = performance.now();
-    let tFirst = 0, pieces = 0, thinkPieces = 0, overBudget = false;
+    let tFirst = 0, pieces = 0, thinkPieces = 0, overBudget = false, finish = null;
     // Thinking budget: streamed pieces are about one token each; past the budget the thinking is
     // stopped and the reply continues from a closed think block (prefill), so the model answers.
     const budgetHit = () => this.thinkBudget && ++thinkPieces > this.thinkBudget;
@@ -282,6 +282,7 @@ export class Conversation {
       });
       for await (const chunk of stream) {
         const delta = (chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta) || {};
+        finish = finishOf(chunk) || finish;
         if (delta.reasoning_content || delta.content) { pieces++; if (!tFirst) tFirst = performance.now(); }
         // llama.cpp may split a <think> block off into reasoning_content (it does
         // for chat templates that know about thinking, like LFM2.5's).
@@ -329,7 +330,7 @@ export class Conversation {
     }
     // Speed of this call: how long before the first token (mostly reading the
     // prompt) and tokens per second after (streamed pieces are about one token each).
-    if (tFirst) speed = { waitMs: Math.round(tFirst - t0), tokens: pieces, perSec: pieces > 1 ? Math.round(10 * (pieces - 1) / ((performance.now() - tFirst) / 1000)) / 10 : null };
+    if (tFirst) speed = { waitMs: Math.round(tFirst - t0), tokens: pieces, perSec: pieces > 1 ? Math.round(10 * (pieces - 1) / ((performance.now() - tFirst) / 1000)) / 10 : null, finish };
     const parts = splitThinking(out);
     text = parts.open ? '' : parts.text;
     if (parts.open && parts.thinking.length > thinkShown) yield { thinking: parts.thinking.slice(thinkShown) };
@@ -523,7 +524,7 @@ export class NativeConversation {
     const tools = this.declared();
     const ctrl = this.ctrl = new AbortController();
     const t0 = performance.now();
-    let tFirst = 0, pieces = 0, thinkPieces = 0, text = '', reasoning = '', checked = 0, looped = false, overBudget = false;
+    let tFirst = 0, pieces = 0, thinkPieces = 0, text = '', reasoning = '', checked = 0, looped = false, overBudget = false, finish = null;
     const parts = [];                                          // streamed tool calls, by index
     try {
       // A runtime whose tool format lists every tool (w.info.toolNames: WebLLM with LFM2) also gets the names of
@@ -543,6 +544,7 @@ export class NativeConversation {
       });
       for await (const chunk of stream) {
         const d = (chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].delta) || {};
+        finish = finishOf(chunk) || finish;
         if (d.reasoning_content || d.content || d.tool_calls) { pieces++; if (!tFirst) tFirst = performance.now(); }
         if (d.reasoning_content) {
           reasoning += d.reasoning_content; yield { thinking: d.reasoning_content };
@@ -564,7 +566,7 @@ export class NativeConversation {
     } catch (e) {
       if (!ctrl.signal.aborted) throw e;
     }
-    if (tFirst) speed = { waitMs: Math.round(tFirst - t0), tokens: pieces, perSec: pieces > 1 ? Math.round(10 * (pieces - 1) / ((performance.now() - tFirst) / 1000)) / 10 : null };
+    if (tFirst) speed = { waitMs: Math.round(tFirst - t0), tokens: pieces, perSec: pieces > 1 ? Math.round(10 * (pieces - 1) / ((performance.now() - tFirst) / 1000)) / 10 : null, finish };
     if (overBudget) return { calls: [], looped: false, aborted: false, overBudget: true, reasoning };
     if (looped) yield { content: '\n\n_(stopped: the model was repeating itself)_' };
     const calls = looped ? [] : parts.filter(p => p && p.name).map(p => {
@@ -582,7 +584,9 @@ export class NativeConversation {
   }
 }
 
-// Speed of the last call (see generate), for the composer note.
+// Speed of the last call (see generate), for the composer note; `finish` is why the runtime stopped ('stop', or
+// 'length' when it ran out of max_tokens or of context window), null if it didn't say.
+const finishOf = (chunk) => (chunk && chunk.choices && chunk.choices[0] && chunk.choices[0].finish_reason) || null;
 let speed = null;
 export const lastSpeed = () => speed;
 
