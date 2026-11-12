@@ -28,6 +28,8 @@ export function samplingOptions(sampling, { greedy = false, retry = false } = {}
 }
 
 // The budget note shown in the thinking view (and sent back to the model where it can continue).
+// What a native model's thinking ends with when it reaches its budget (Keal's idea, 2026-11-11): a decision, not a stop.
+export const ENOUGH_THINKING = 'I\'ve weighed enough options. I\'ll go with the best one now, or ask the user if I\'m really unsure.';
 export const thinkBudgetNote = (n) => `[Squiggle stopped the thinking at its ${n}-token budget and asked for the answer.]`;
 
 let lib = null;
@@ -497,9 +499,15 @@ export class NativeConversation {
       for (const n of foundNames(input)) this.active.add(n);
     }
     let r = yield* this.generate({ thinking: this.thinking });
-    if (r.overBudget) {
-      // The thinking used its budget without an answer: the same request again with thinking off, so the
-      // model answers (or calls) straight away. (These templates can't continue a half-written turn.)
+    if (r.overBudget && this.w.info && this.w.info.closesThinking && r.reasoning) {
+      // The thinking used its budget: it's kept, and closed with a decision in the model's own words, so the reply
+      // carries on from it. Restarting with thinking off threw it away, and the model re-argued it in the reply
+      // (crazy math, 2026-11-11; this line tested on that chat: one example and a question, no circling).
+      yield { thinking: `\n\n${ENOUGH_THINKING}\n\n[Squiggle added that line at the ${this.thinkBudget}-token thinking budget.]\n\n` };
+      r = yield* this.generate({ thinking: true, prefill: `${r.reasoning.trimEnd()}\n\n${ENOUGH_THINKING}\n`, reasoning: r.reasoning });
+    } else if (r.overBudget) {
+      // Runtimes that can't continue a half-written turn (llama.cpp's own templates): the same request again with
+      // thinking off, so the model answers (or calls) straight away.
       yield { thinking: `\n\n${thinkBudgetNote(this.thinkBudget)}\n\n` };
       r = yield* this.generate({ thinking: false, reasoning: r.reasoning });
     }
@@ -511,7 +519,7 @@ export class NativeConversation {
 
   // One model reply; `thinking` is this call's switch. Returns { calls, looped, aborted, overBudget, reasoning }.
   // `reasoning` is thinking from a stopped first try, kept with the tool call it leads to (nativeMessages).
-  async *generate({ thinking, reasoning: earlier = '' }) {
+  async *generate({ thinking, reasoning: earlier = '', prefill = '' }) {
     const tools = this.declared();
     const ctrl = this.ctrl = new AbortController();
     const t0 = performance.now();
@@ -526,6 +534,7 @@ export class NativeConversation {
         ...(tools.length ? { tools } : {}),
         ...(undeclared.length ? { tool_names: undeclared } : {}),
         chat_template_kwargs: { enable_thinking: thinking },
+        ...(prefill ? { think_prefill: prefill } : {}),
         stream: true,
         max_tokens: this.max,
         ...samplingOptions(this.sampling, { greedy: this.greedy }),

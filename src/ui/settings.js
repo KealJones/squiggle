@@ -68,7 +68,7 @@ export function loadSettings() {
   if (!saved.simplified) {
     for (const k of ['lab', 'smallMode', 'noPrompt', 'toolSurface', 'smallGpu', 'contextSize']) delete saved[k];
     Object.assign(agent.settings, { smallMode: {}, noPrompt: {}, toolSurface: 'bash', smallGpu: false, contextMode: 'compact' });
-    saved = { ...saved, contextMode: 'compact', simplified: true };
+    saved = { ...saved, contextMode: 'compact', simplified: true, harnessV2: true };   // harnessV2's Smart default is older; it mustn't run after this
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
   if (!engine.MODELS[agent.settings.model]) agent.settings.model = engine.deviceModel();
@@ -88,6 +88,14 @@ export function loadSettings() {
   if (!saved.harnessV2) {
     agent.settings.contextMode = 'smart';
     saved = { ...saved, contextMode: 'smart', harnessV2: true };
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
+  }
+  // Compress really is the default (2026-11-11): until now a new browser ran the "simplified" step above and then the
+  // older harnessV2 one, which put it back on Smart (Greg's phone, every demo visitor). Devices left on Smart move to
+  // Compress once; chats keep the type they were started with (session.contextMode).
+  if (!saved.compactDefault) {
+    if (agent.settings.contextMode === 'smart') agent.settings.contextMode = 'compact';
+    saved = { ...saved, contextMode: agent.settings.contextMode, compactDefault: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
   // The natural voice (Kokoro/KittenTTS) was removed; calls use system speech.
