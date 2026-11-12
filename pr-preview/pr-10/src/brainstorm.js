@@ -31,11 +31,15 @@ const PART = {
   B: 'B is the critic: starts every turn with the weakest or riskiest part of what A just said and why it would fail, then offers a fix or a different direction, and agrees only with what survives that.',
 };
 const other = (v) => (v === 'A' ? 'B' : 'A');
+// A long idea (a pasted page of notes) is cut in the middle, keeping its start and end.
+export const clipMiddle = (s, chars) => (s.length <= chars ? s : s.slice(0, Math.ceil(chars / 2)) + ' … ' + s.slice(-Math.floor(chars / 2)));
+const TOPIC = 600;                // characters of the idea in a system prompt; the transcript carries it in full (up to a third of its budget)
 
 export const framingOf = (session) => (session && (session.brainstorm === 'flip' || session.brainstorm === true) ? 'flip' : 'transcript');
 export const PERSON = 'The person who started this brainstorm';
 
 export function systemFor(voice, topic, steer = '', framing = 'flip') {
+  topic = clipMiddle(String(topic || ''), TOPIC);
   if (framing === 'transcript') return [
     `This is a brainstorm between two partners, A and B. The topic, from the person who started it: ${topic}`,
     ...(steer ? [`The person who started it just stepped in and said: "${steer}". This turn follows that direction, whatever ${other(voice)} last said.`] : []),
@@ -122,16 +126,17 @@ export function viewFor(line, voice, budget = Infinity) {
   const messages = out.slice(start);
   // A turn longer than the whole budget (a long document): its end, which is what gets answered.
   const last = messages[messages.length - 1];
-  if (last && est(last.content) > budget) last.content = '…' + last.content.slice(-Math.max(0, Math.floor(budget * 3)));
+  if (last && est(last.content) > budget) last.content = '…' + last.content.slice(-Math.max(300, Math.floor(budget * 3)));   // slice(-0) would keep it all
   return { topic: seed ? seed.content : '', messages };
 }
 
 // In the transcript framing the model is writing a script, and a script goes on: chat s0mwe3d6wm000gl4py's first turn
 // finished A's part and carried on with "A: Let me flesh out…", and B's first was "B: … A: … B: …", each running until
 // the window filled. Like any transcript prompt, a turn ends where the next speaker's label starts (the person's
-// included), and a leading label of its own is dropped. A line inside a turn that starts "A:" or "B:" ends it too.
+// included) after a blank line, and a leading label of its own is dropped.
 const LEAD = /^\s*(?:\*\*)?[AB](?::\*\*|\*\*:|:)[ \t]*/;   // B:, **B:** or **B**:
-const NEXT = new RegExp(`\\n[ \\t]*(?:\\*\\*)?(?:A|B|${PERSON})(?::\\*\\*|\\*\\*:|:)`);
+// A blank line before it, as transcriptFor joins turns: a "Q: … / A: …" list inside a turn doesn't end it.
+const NEXT = new RegExp(`\\n[ \\t]*\\n[ \\t]*(?:\\*\\*)?(?:A|B|${PERSON})(?::\\*\\*|\\*\\*:|:)`);
 export function ownTurn(text, framing = 'transcript') {
   if (framing !== 'transcript') return { text, other: false };
   const t = String(text || '').replace(LEAD, '');
@@ -149,7 +154,9 @@ export function transcriptFor(line, voice, budget = Infinity) {
   const seed = all.find(m => m.role === 'user');
   const label = (m) => (m.role === 'user' ? PERSON : m.voice || 'A');
   const entries = all.filter(m => m !== seed).map(m => `${label(m)}: ${m.content}`);
-  const head = seed ? `${PERSON}: ${seed.content}` : '';
+  // The idea opens the transcript but takes at most a third of the budget, so the turns still fit (review, 2026-11-12:
+  // an idea over ~4,000 characters left no room and B never saw A's turn).
+  const head = seed ? `${PERSON}: ${clipMiddle(seed.content, Math.max(300, Math.floor(budget / 3) * 3))}` : '';
   const ask = `Now write ${voice}'s next turn.`;
   let room = budget - est(head) - est(ask), start = entries.length;
   while (start > 0 && est(entries[start - 1]) <= room) room -= est(entries[--start]);
@@ -167,7 +174,7 @@ export function transcriptFor(line, voice, budget = Infinity) {
 export async function run({ session, signal, ui = {}, takeSteer = () => '' }) {
   const [engine, sessions, { replyModel }] = await Promise.all([import('./engine.js'), import('./sessions.js'), import('./agent.js')]);
   for (let i = 0; i < MAX_TURNS; i++) {
-    if (signal.aborted) return 'stopped';
+    if (signal.aborted || session.deleted || session.archived) return 'stopped';
     const steer = takeSteer();
     if (steer) ui.onSteer && ui.onSteer(sessions.addMessage(session, { role: 'user', content: steer }));
     const line = sessions.lineMessages(session, null);
@@ -188,6 +195,7 @@ export async function run({ session, signal, ui = {}, takeSteer = () => '' }) {
           const call = new AbortController();
           const stop = () => call.abort();
           signal.addEventListener('abort', stop, { once: true });
+          if (signal.aborted) call.abort();   // Stop pressed while this waited for the generation lock
           let other = false;
           try {
             const out = await engine.respond(conv, messages[messages.length - 1].content, { signal: call.signal, onText: (t) => {
@@ -205,8 +213,8 @@ export async function run({ session, signal, ui = {}, takeSteer = () => '' }) {
     } catch (e) { error = e; }
     const text = sofar.trim();
     if (signal.aborted && !text) { ui.onDone && ui.onDone(null); return 'stopped'; }
-    const content = error ? [text, `⚠️ ${error.message || error}`].filter(Boolean).join('\n\n') : text || '_(nothing to add)_';
-    const msg = sessions.addMessage(session, { role: 'assistant', voice, content, model: replyModel() });
+    // An error is shown under the turn, not written into it, so the next voice doesn't read it as A's or B's words.
+    const msg = sessions.addMessage(session, { role: 'assistant', voice, content: text || '_(nothing to add)_', ...(error ? { error: String(error.message || error) } : {}), model: replyModel() });
     ui.onDone && ui.onDone(msg);
     if (error) return 'error';
   }

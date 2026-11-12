@@ -144,7 +144,7 @@ function newChatSettings() {
     }));
   const kinds = [[false, 'Chat', 'Squiggle answers you.'], [true, 'Brainstorm', 'You send the idea; Squiggle talks it through with itself.']]
     .map(([on, label, hint]) => choice('chat-kind', String(on), Boolean(session.brainstorm) === on, label, hint, () => {
-      session.brainstorm = on ? 'transcript' : undefined; sessions.touch(session); renderChat();
+      session.brainstorm = on ? 'transcript' : false; sessions.touch(session); renderChat();   // false, not undefined: a dropped key would let a merge bring 'transcript' back
     }));
   const framings = [['transcript', 'Transcript', 'Squiggle writes each voice\'s next turn from the whole brainstorm.'], ['flip', 'Role flip', 'Each voice sees the other as the user.']]
     .map(([k, label, hint]) => choice('chat-framing', k, k === framing, label, hint, () => {
@@ -176,6 +176,7 @@ export function messageEl(m, { inThread, streaming, session }) {
     // Saved thinking stays viewable (collapsed); it's never sent back to the model.
     if (m.thinking) col.append(h('details', { class: 'thinking' }, h('summary', {}, 'Thinking'), h('div', {}, m.thinking)));
     col.append(h('div', { class: 'body', html: md(agent.scrubFakeToolNotes(m.content)) }));
+    if (m.error) col.append(h('div', { class: 'msg-error muted' }, '⚠️ ' + m.error));
   } else {
     col.append(h('div', { class: 'body' }, m.content));
     if (m.attachments && m.attachments.length) {
@@ -367,7 +368,7 @@ export function setupComposer(form, input, onSend) {
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const text = input.value.trim();
-    if (state.busy && state.brainstorm && state.brainstorm.session === state.current && text) { state.brainstorm.steer.push(text); input.value = ''; grow(); renderBrainstormBar(); syncSendButton(); return; }
+    if (state.busy && steers(form) && text) { state.brainstorm.steer.push(text); input.value = ''; grow(); renderBrainstormBar(); syncSendButton(); return; }
     if (state.busy) { state.controller && state.controller.abort(); return; }
     if (!text && !files.length) return;
     const sending = files;
@@ -386,10 +387,13 @@ function setBusy(on) {
 }
 
 // Stop while a reply runs; during a brainstorm, typed text turns it back into Send (to steer).
+// Typing in the main composer during a brainstorm in the open chat steers it; a thread's composer never does.
+const steers = (form) => Boolean(form.id === 'composer' && state.brainstorm && state.brainstorm.session === state.current);
+
 function syncSendButton() {
   for (const btn of document.querySelectorAll('.composer button[type="submit"]')) {
     const input = btn.closest('form').querySelector('textarea');
-    const stop = state.busy && !(state.brainstorm && state.brainstorm.session === state.current && input && input.value.trim());
+    const stop = state.busy && !(steers(btn.closest('form')) && input && input.value.trim());
     btn.replaceChildren(icon(stop ? 'i-stop' : 'i-send'));
     btn.setAttribute('aria-label', stop ? 'Stop' : 'Send');
   }
@@ -497,17 +501,18 @@ function renderBrainstormBar() {
   const queued = run && run.steer.length ? ` · you'll jump in after this turn` : '';
   bar.replaceChildren(...(run
     ? [squiggleWait(), h('span', {}, `Brainstorming${queued}`), h('button', { type: 'button', class: 'btn', onclick: () => state.controller && state.controller.abort() }, icon('i-stop'), 'Stop')]
-    : [h('span', { class: 'muted' }, 'Brainstorm stopped.'), h('button', { type: 'button', class: 'btn', onclick: () => send('', null, []) }, 'Keep going')]));
+    : [h('span', { class: 'muted' }, 'Brainstorm stopped.'), h('button', { type: 'button', class: 'btn', onclick: (e) => { e.currentTarget.disabled = true; send('', null, []); } }, 'Keep going')]));
 }
 
 async function runBrainstorm(text, files) {
+  if (state.brainstorm) return;   // one run at a time (a second Keep going while the model loaded)
   const session = state.current;
   if (files.length) toast('Brainstorms don\'t read attachments; sending just the text.');
   const container = $('#messages-inner');
   const scroller = $('#messages');
   const here = () => state.current === session;
   if (text) {
-    if (!session.messages.some(m => !m.deleted)) { container.replaceChildren(); session.title = text.replace(/\s+/g, ' ').slice(0, 60); }
+    if (!session.messages.some(m => !m.deleted)) { container.replaceChildren(); session.title = text.replace(/\s+/g, ' ').slice(0, 60); $('#chat-title').textContent = session.title; }
     const m = sessions.addMessage(session, { role: 'user', content: text });
     container.append(messageEl(m, { inThread: false }));
     renderSessions();
@@ -522,19 +527,21 @@ async function runBrainstorm(text, files) {
       session, signal: controller.signal,
       takeSteer: () => { const t = run.steer.splice(0).join('\n\n'); renderBrainstormBar(); return t; },
       ui: {
-        onSteer: (m) => { if (here()) { container.append(messageEl(m, { inThread: false })); scrollDown(scroller); } },
+        onSteer: (m) => { if (here()) { $('#messages-inner').append(messageEl(m, { inThread: false })); scrollDown(scroller); } },
         onStart: (v) => {
           if (!here()) return;
           body = h('div', { class: 'body' }, squiggleWait());
           live = h('div', { class: `msg assistant voice-${v.toLowerCase()}` }, h('div', {}, h('div', { class: 'voice-label' }, brainstorm.VOICES[v]), body));
-          smooth = smoothText((t) => { body.innerHTML = md(t); scrollDown(scroller); });
-          container.append(live);
+          smooth = smoothText((t) => { body.innerHTML = md(t); if (here() && live && live.isConnected) scrollDown(scroller); });
+          $('#messages-inner').append(live);
           scrollDown(scroller);
         },
         onText: (t) => smooth && smooth.feed(t),
         onDone: (m) => {
           if (smooth) smooth.stop();
-          if (live) { if (m) live.replaceWith(messageEl(m, { inThread: false, session })); else live.remove(); }
+          // Left and came back mid-turn: the list was redrawn without the live turn, so the finished one is added.
+          if (live && live.isConnected) { if (m) live.replaceWith(messageEl(m, { inThread: false, session })); else live.remove(); }
+          else if (m && here()) { $('#messages-inner').append(messageEl(m, { inThread: false, session })); scrollDown(scroller); }
           live = body = smooth = null;
         },
       },
@@ -542,8 +549,10 @@ async function runBrainstorm(text, files) {
     if (why === 'limit') toast(`Paused after ${brainstorm.MAX_TURNS} turns. Keep going or jump in to carry on.`);
   } finally {
     if (smooth) smooth.stop();
-    state.brainstorm = null;
-    state.controller = null;
+    // Typed to jump in, but the run ended first (Stop, the turn limit, an error): it's kept, and the next run starts from it.
+    if (run.steer.length) sessions.addMessage(session, { role: 'user', content: run.steer.splice(0).join('\n\n') });
+    if (state.brainstorm === run) state.brainstorm = null;
+    if (state.controller === controller) state.controller = null;
     setBusy(false);
     sessions.flush();
     if (here()) rerender();
