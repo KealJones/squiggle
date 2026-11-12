@@ -263,7 +263,7 @@ test('renderFind writes a compact block a small model can use', async () => {
   assert.match(out, /^Tools:\n- git_push\(repo\): Push the current branch to GitHub \(never forced\)\./);
   assert.match(out, /\nRecipes from similar tasks:\n\* Push a branch to GitHub\n  1\. Check git status\n  2\. Commit the changes\n  3\. Push the branch\n  Specifics: <repo> = KealJones\/squiggle; <branch> = agent\/readme-link\n/);
   assert.match(out, /\nMemory:\n- Keal prefers pushing straight to main when he says it is chill\n/);
-  assert.match(out, /\nPast chats:\n- \(2026-10-12, Tokenizer zoo ideas\) .*tokenizers/);
+  assert.match(out, /\nPast chats:\n- \(2026-10-12, \[Tokenizer zoo ideas\]\(#chat=s_1\)\) .*tokenizers/);
   assert.ok(out.length < 1800, `rendered ${out.length} characters`);
 });
 

@@ -67,6 +67,22 @@ test('memory facts are included in every mode', async () => {
   }
 });
 
+test('small models get memory facts in the system prompt only with smallFacts, capped, and not in smart mode', async () => {
+  const line = [msg('user', 'hi'), msg('assistant', 'hey')];
+  const session = { messages: line, threads: {}, observations: [], summaries: {} };
+  const facts = ['Dash', 'Mackie', 'Pickles', 'Biscuit'].map((o, i) => ({ fact: { id: 'f' + i, s: 'Keal', p: 'knows', o }, score: 0.9 - i * 0.1 }));
+  const recall = async (q, k) => facts.slice(0, k);
+  const base = { line, session, query: 'who do I know?', budget: 3000, system: 's', recall, small: true };
+  // Before smallFacts (Squiggle Small, tiny Gemma): no memory section in Compress, as their training text has none.
+  assert.ok(!(await assembleContext({ ...base, mode: 'compact' })).system.includes('Keal knows'));
+  const r = await assembleContext({ ...base, mode: 'compact', smallFacts: 3 });
+  assert.ok(r.system.includes('Keal knows Dash') && r.system.includes('Keal knows Pickles'));
+  assert.ok(!r.system.includes('Biscuit'), 'at most smallFacts facts');
+  // Smart mode's recalled block carries them for small models; the system prompt doesn't repeat them.
+  const smart = await assembleContext({ ...base, mode: 'smart', smallFacts: 3 });
+  assert.ok(!smart.system.includes('Keal knows'));
+});
+
 test('pinned messages survive leaving the window', async () => {
   const line = longChat();
   line[0].pinned = true;

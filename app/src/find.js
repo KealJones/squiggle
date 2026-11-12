@@ -275,7 +275,11 @@ export function renderFind(result) {
   if (r.chats && r.chats.length) {
     parts.push('Past chats:\n' + r.chats.map(c => {
       const when = dateOf(c.ts);
-      const head = [when, oneLine(c.title, 50)].filter(Boolean).join(', ');
+      // The title as a chat link (#chat=<id>, ui/links.js) when the session is known, so a reply can point the user
+      // at it by copying the link; the bracket-free title keeps the markdown intact.
+      const title = oneLine(c.title, 50);
+      const named = title && c.session ? `[${title.replace(/[[\]]/g, '')}](#chat=${c.session})` : title;
+      const head = [when, named].filter(Boolean).join(', ');
       return `- (${head || 'earlier chat'}) ${oneLine(c.text, 200)}`;
     }).join('\n'));
   }

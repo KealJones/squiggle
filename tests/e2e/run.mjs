@@ -1394,7 +1394,16 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
   const run = (command, room = 20000) => D.page.evaluate(async ([command, room]) => {
     const { runTool } = await import('/src/tools.js');
     // One chat's session across calls, like a real turn: its /tmp lives as long as the chat does.
-    const session = (window.__bashSession = window.__bashSession || { messages: [] });
+    // A real chat (in sessions.js), so /chats/current.md and squiggle see it; plus another one to find.
+    if (!window.__bashSession) {
+      const S = await import('/src/sessions.js');
+      const other = S.newSession('Toki pona notes');
+      S.addMessage(other, { role: 'user', content: 'what does toki pona mean by pona' });
+      S.addMessage(other, { role: 'assistant', content: 'pona means good, simple' });
+      window.__bashSession = S.newSession('Bash test');
+      S.addMessage(window.__bashSession, { role: 'user', content: 'run some shell commands please' });
+    }
+    const session = window.__bashSession;
     const r = await runTool({ function: { name: 'bash', arguments: { command } } }, { session, room, approve: async () => 'deny' });
     const strip = (s) => String(s || '').replace(/<\/?untrusted[^>]*>\n?/g, '');
     return { code: r.model.exit_code, out: strip(r.model.stdout), err: strip(r.model.stderr), error: r.model.error, label: r.label, saved: r.model.saved_to };
@@ -1427,6 +1436,19 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
   assert.match(r.out, /gh repo list/);
   r = await run('man gh');
   assert.match(r.out, /gh pr create/);
+  r = await run('man squiggle');
+  assert.match(r.out, /squiggle rename "TITLE"/);
+  r = await run('squiggle chats toki');
+  assert.match(r.out, /^- \[Toki pona notes\]\(#chat=s/, JSON.stringify(r));
+  // squiggle read: a whole chat on stdout, piped like any file.
+  r = await run('squiggle read | head -1');
+  assert.equal(r.out.trim(), '# Bash test', JSON.stringify(r));
+  r = await run('squiggle read | tail -1');
+  assert.equal(r.out.trim(), 'run some shell commands please', JSON.stringify(r));
+  r = await run('id=$(squiggle chats toki | grep -o "chat=[a-z0-9_]*" | cut -d= -f2); squiggle read $id | grep -c "pona means good"');
+  assert.equal(r.out.trim(), '1', JSON.stringify(r));
+  r = await run('squiggle read nope');
+  assert.notEqual(r.code, 0, JSON.stringify(r));
   r = await run('git --help | head -3');
   assert.match(r.out, /git clone/);
   r = await run('cat /etc/passwd');
