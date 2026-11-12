@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { viewFor, transcriptFor, framingOf, nextVoice, systemFor, continueSystem, cutOff, latestSteer, ownTurn, PIECE, PERSON } from '../app/src/brainstorm.js';
+import { viewFor, transcriptFor, framingOf, nextVoice, systemFor, continueSystem, cutOff, latestSteer, ownTurn, clipMiddle, PIECE, PERSON } from '../app/src/brainstorm.js';
 
 let n = 0;
 const msg = (role, content, extra = {}) => ({ id: 'm' + (++n), role, content, ts: n, thread: null, ...extra });
@@ -131,8 +131,36 @@ test('transcript: the idea always stays, the oldest turns drop off, and an overl
 test('transcript: a turn ends where another speaker starts, and its own leading label is dropped', () => {
   assert.deepEqual(ownTurn('B: The cache will blow up.\n\nA: Then cap it.\n\nB: Fine.'), { text: 'The cache will blow up.', other: true });
   assert.deepEqual(ownTurn('Graph attention.\n\nA: Let me flesh out the core idea.'), { text: 'Graph attention.', other: true }, 'its own label again: a new turn');
-  assert.deepEqual(ownTurn(`Ok.\n${PERSON}: thanks`), { text: 'Ok.', other: true });
+  assert.deepEqual(ownTurn(`Ok.\n\n${PERSON}: thanks`), { text: 'Ok.', other: true });
   assert.deepEqual(ownTurn('**B:** bold label'), { text: 'bold label', other: false });
   assert.deepEqual(ownTurn('Plan A: cheap. Plan B: fast.\nAB: testing'), { text: 'Plan A: cheap. Plan B: fast.\nAB: testing', other: false }, 'labels only at a line start');
+  // Review 2026-11-12: a Q/A list inside a turn ended it. A speaker starts after a blank line, as transcriptFor joins turns.
+  const faq = 'FAQ:\nQ: price?\nA: $5 a cup\nB: or a subscription';
+  assert.deepEqual(ownTurn(faq), { text: faq, other: false });
   assert.deepEqual(ownTurn('B: x\nA: y', 'flip'), { text: 'B: x\nA: y', other: false }, 'the role flip keeps what it wrote');
+});
+
+// Review 2026-11-12: the idea went in the system prompt and the transcript head untrimmed, so an idea over ~4,000
+// characters left B no room for A's turn, and ~7,000 overflowed LFM3's 4K window.
+test('a long idea is cut in the middle and the latest turn still fits in a 4K window', () => {
+  const idea = 'IDEA START ' + 'notes '.repeat(1500) + ' IDEA END';   // ~9,000 characters
+  const longSeed = msg('user', idea);
+  const turnA = msg('assistant', 'A has a plan', { voice: 'A' });
+  const est = (t) => Math.ceil(t.length / 3);
+  const system = systemFor('B', idea, '', 'transcript');
+  assert.ok(system.length < 1500, `system prompt ${system.length} chars`);
+  assert.match(system, /IDEA START[^]* … [^]*IDEA END/);
+  const budget = 4096 - PIECE - est(system) - 200;
+  const t = transcriptFor([longSeed, turnA], 'B', budget).messages[0].content;
+  assert.match(t, /\n\nA: A has a plan\n\nNow write B's next turn\.$/, 'B sees A');
+  assert.match(t, /IDEA START[^]* … [^]*IDEA END/);
+  assert.ok(est(system) + est(t) + PIECE <= 4096, `prompt + reply ${est(system) + est(t) + PIECE} tokens`);
+  assert.equal(clipMiddle('short', 100), 'short');
+});
+
+test('role flip: a budget at or below zero keeps a short end of the turn, not all of it', () => {
+  const doc = msg('assistant', 'x'.repeat(12000) + 'END', { voice: 'A' });
+  const v = viewFor([seed, doc], 'B', -100).messages;
+  assert.ok(v[0].content.length <= 302, `${v[0].content.length} chars`);
+  assert.match(v[0].content, /END$/);
 });

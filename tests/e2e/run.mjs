@@ -1681,6 +1681,15 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   await D.page.waitForFunction((n) => document.querySelectorAll('#messages-inner .msg.assistant').length > n, before);
   await D.page.click('.brainstorm-bar button');
   await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  // Typed to jump in right before Stop: it isn't lost (review 2026-11-12), it's in the chat for the next run.
+  await D.page.click('.brainstorm-bar button');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .btn svg');
+  await D.page.fill('#input', 'late steer');
+  await D.page.press('#input', 'Enter');
+  await D.page.click('.brainstorm-bar button');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const kept = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.filter(m => m.role === 'user' && m.content === 'late steer').length);
+  assert.equal(kept, 1, 'the steer is in the chat once');
   // A turn cut off at the length limit is handed back to the same voice and finished in the same message.
   await D.page.click('#new-chat');
   await D.page.click('.chat-setup > summary');
@@ -1719,6 +1728,17 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   assert.equal(flip.brainstorm, 'flip');
   assert.match(flip.messages.find(m => m.voice === 'A').content, /^A answers: a hat for snakes$/);
   assert.match(flip.messages.find(m => m.voice === 'B').content, /^B answers: A answers: a hat for snakes$/);
+  // Typing in a thread's composer during a run never steers the main brainstorm (review 2026-11-12); like any busy
+  // composer, it's Stop.
+  await D.page.click('.brainstorm-bar button');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .btn svg');
+  await D.page.hover('.msg.voice-a >> nth=0');
+  await D.page.click('.msg.voice-a >> nth=0 >> [aria-label="Reply in thread"]');
+  await D.page.fill('#drawer textarea', 'thread question');
+  await D.page.press('#drawer textarea', 'Enter');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const leaked = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.filter(m => /thread question/.test(m.content)).length);
+  assert.equal(leaked, 0, 'not a steer');
   assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
 });
 
