@@ -1692,6 +1692,17 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
   const long = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.find(m => m.voice === 'A').content);
   assert.equal(long, 'A answers: the first half of the spec and the second half of the spec.');
+  // A voice that writes the rest of the script keeps only its own turn.
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.fill('#input', 'SCRIPT an idea');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => document.querySelectorAll('#messages-inner .msg.voice-b').length >= 1);
+  await D.page.click('.brainstorm-bar button');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const script = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.find(m => m.voice === 'A').content);
+  assert.equal(script, 'my turn');
   // The role flip is still there to compare: the other voice arrives as the user.
   await D.page.click('#new-chat');
   await D.page.click('.chat-setup > summary');

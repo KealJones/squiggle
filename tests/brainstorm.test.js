@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { viewFor, transcriptFor, framingOf, nextVoice, systemFor, continueSystem, cutOff, latestSteer, PIECE, PERSON } from '../app/src/brainstorm.js';
+import { viewFor, transcriptFor, framingOf, nextVoice, systemFor, continueSystem, cutOff, latestSteer, ownTurn, PIECE, PERSON } from '../app/src/brainstorm.js';
 
 let n = 0;
 const msg = (role, content, extra = {}) => ({ id: 'm' + (++n), role, content, ts: n, thread: null, ...extra });
@@ -126,4 +126,13 @@ test('transcript: the idea always stays, the oldest turns drop off, and an overl
   const d = transcriptFor([seed, doc], 'B', 500).messages[0].content;
   assert.match(d, /…[^]*FINAL LINE\n\nNow write B's next turn\.$/);
   assert.doesNotMatch(d, /START/);
+});
+
+test('transcript: a turn ends where another speaker starts, and its own leading label is dropped', () => {
+  assert.deepEqual(ownTurn('B: The cache will blow up.\n\nA: Then cap it.\n\nB: Fine.'), { text: 'The cache will blow up.', other: true });
+  assert.deepEqual(ownTurn('Graph attention.\n\nA: Let me flesh out the core idea.'), { text: 'Graph attention.', other: true }, 'its own label again: a new turn');
+  assert.deepEqual(ownTurn(`Ok.\n${PERSON}: thanks`), { text: 'Ok.', other: true });
+  assert.deepEqual(ownTurn('**B:** bold label'), { text: 'bold label', other: false });
+  assert.deepEqual(ownTurn('Plan A: cheap. Plan B: fast.\nAB: testing'), { text: 'Plan A: cheap. Plan B: fast.\nAB: testing', other: false }, 'labels only at a line start');
+  assert.deepEqual(ownTurn('B: x\nA: y', 'flip'), { text: 'B: x\nA: y', other: false }, 'the role flip keeps what it wrote');
 });

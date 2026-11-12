@@ -359,3 +359,20 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   ("cut off: the runtime's own reason first", "the person's latest steer"); e2e "brainstorm chat" (LONGDOC stops for
   length at 380 tokens and is finished); (3) the framing is covered (tests/brainstorm.test.js "transcript", e2e
   both framings), whether B then disagrees is model behaviour: not covered.
+
+### 22. Transcript brainstorm: each voice wrote the whole script
+
+- **Asked:** a brainstorm chat in the transcript framing (`s0mwe3d6wm000gl4py`), 2026-11-12: "Let's find a new way to
+  build an ai chat bot that is substantially better than neural nets."
+- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm.js transcript framing (case 21's fix).
+- **What it did:** A's first turn (5,002 characters) finished its part, then went on with "A: Let me flesh out the core
+  idea…"; B's first turn was "B: … A: … B: …", three speakers in one message. Turns ran until the window filled and
+  were continued, so the brainstorm crawled. (The framing did help otherwise: B's sixth turn was the first real
+  critique in any brainstorm, "a scaffold with placeholder methods… can't produce meaningful scores".)
+- **Why it's bad:** one voice speaking for both is no brainstorm, and the other voice's lines it writes are then
+  answered as if the other voice had said them.
+- **Good answer:** A writes A's turn and stops.
+- **Fix:** like any transcript prompt, a turn ends where the next speaker's label starts at a line start (A, B, its own
+  label again, or the person), and a leading label of its own is dropped (`ownTurn`); the call is stopped as soon as
+  that shows up, and a turn that ended there isn't continued.
+- **Caught by:** tests/brainstorm.test.js "a turn ends where another speaker starts"; e2e "brainstorm chat" (SCRIPT).

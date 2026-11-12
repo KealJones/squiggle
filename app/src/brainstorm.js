@@ -126,6 +126,19 @@ export function viewFor(line, voice, budget = Infinity) {
   return { topic: seed ? seed.content : '', messages };
 }
 
+// In the transcript framing the model is writing a script, and a script goes on: chat s0mwe3d6wm000gl4py's first turn
+// finished A's part and carried on with "A: Let me flesh out…", and B's first was "B: … A: … B: …", each running until
+// the window filled. Like any transcript prompt, a turn ends where the next speaker's label starts (the person's
+// included), and a leading label of its own is dropped. A line inside a turn that starts "A:" or "B:" ends it too.
+const LEAD = /^\s*(?:\*\*)?[AB](?::\*\*|\*\*:|:)[ \t]*/;   // B:, **B:** or **B**:
+const NEXT = new RegExp(`\\n[ \\t]*(?:\\*\\*)?(?:A|B|${PERSON})(?::\\*\\*|\\*\\*:|:)`);
+export function ownTurn(text, framing = 'transcript') {
+  if (framing !== 'transcript') return { text, other: false };
+  const t = String(text || '').replace(LEAD, '');
+  const m = t.match(NEXT);
+  return m ? { text: t.slice(0, m.index).trimEnd(), other: true } : { text: t, other: false };
+}
+
 /**
  * The transcript framing: the whole brainstorm as one user turn, every turn labelled with who said it (A, B, or the
  * person), ending with the ask for `voice`'s next turn. The oldest turns after the idea drop off to fit `budget`
@@ -171,13 +184,23 @@ export async function run({ session, signal, ui = {}, takeSteer = () => '' }) {
           const budget = engine.contextFor(engine.currentModel()) - PIECE - est(system) - 200;
           const { messages } = framing === 'transcript' ? transcriptFor(line, voice, budget) : viewFor(line, voice, budget);
           const conv = await engine.conversation({ system, messages: messages.slice(0, -1), maxOutputTokens: PIECE });
+          // This call stops as soon as the model starts another speaker's turn (ownTurn); Stop still stops it all.
+          const call = new AbortController();
+          const stop = () => call.abort();
+          signal.addEventListener('abort', stop, { once: true });
+          let other = false;
           try {
-            const out = await engine.respond(conv, messages[messages.length - 1].content, { signal, onText: (t) => ui.onText && ui.onText(sofar + t) });
-            return { text: out.text || '', speed: await engine.smallSpeed() };
-          } finally { try { await conv.delete(); } catch {} }
+            const out = await engine.respond(conv, messages[messages.length - 1].content, { signal: call.signal, onText: (t) => {
+              const own = ownTurn(sofar + t, framing);
+              if (own.other && !other) { other = true; call.abort(); }
+              ui.onText && ui.onText(own.text);
+            } });
+            return { text: out.text || '', speed: await engine.smallSpeed(), framing };
+          } finally { signal.removeEventListener('abort', stop); try { await conv.delete(); } catch {} }
         });
-        sofar += r.text;
-        if (!cutOff(r.text, r.speed)) break;
+        const own = ownTurn(sofar + r.text, r.framing);
+        sofar = own.text;
+        if (own.other || !cutOff(r.text, r.speed)) break;
       }
     } catch (e) { error = e; }
     const text = sofar.trim();

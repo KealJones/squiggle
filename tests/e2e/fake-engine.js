@@ -124,6 +124,8 @@ export async function respond(conv, input, { onText } = {}) {
     const firstA = v === 'A' && /LONGDOC/.test(input) && !/\n\nA: /.test(input);
     window.__smallSpeed = firstA && !cont ? { tokens: 380, finish: 'length' } : { tokens: 40, finish: 'stop' };   // the window ran out well short of 1,024
     if (firstA) return say(cont ? ' and the second half of the spec.' : 'A answers: the first half of the spec', onText);
+    // SCRIPT: A writes the rest of the script too, B's line and another of its own.
+    if (v === 'A' && /SCRIPT/.test(input) && !/\n\nA: /.test(input)) return say('A: my turn\n\nB: your turn\n\nA: again', onText);
     const parts = String(input).split('\n\n');
     const said = transcript ? parts[parts.length - 2] : String(input).slice(-40);
     return say(`${v} answers: ${said}`, onText);
