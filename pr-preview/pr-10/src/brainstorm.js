@@ -10,7 +10,8 @@ export const MAX_TURNS = 20;      // per run, so a forgotten tab doesn't brainst
 export const PIECE = 1024;        // tokens one call writes (engine-wllama's most); a longer turn is continued
 export const MAX_PIECES = 8;      // calls per turn: room for a long document, not a runaway
 const TAIL = 2400;                // characters of a cut-off turn shown back when it continues (its end is what matters)
-const est = (s) => Math.ceil(String(s || '').length / 3.5);
+// Tokens from characters, on the safe side (markdown, tables and symbols cost more tokens per character than prose).
+const est = (s) => Math.ceil(String(s || '').length / 3);
 
 // Each voice's job, so two copies of one model argue instead of agreeing with each other. "Lean toward testing" wasn't
 // enough: in the first real run (chat s0mwdzez4u000gv6fi, LFM3 1.7B, 2026-11-12) B opened almost every turn with praise
@@ -20,9 +21,10 @@ const ROLE = {
   B: 'You are the critic. Start every turn with the weakest or riskiest part of what your partner just said and why it would fail. Then offer a fix or a different direction. Agree only with what survives that.',
 };
 
-export function systemFor(voice, topic) {
+export function systemFor(voice, topic, steer = '') {
   return [
     `You are brainstorming with a partner. The topic, from the person who started this: ${topic}`,
+    ...(steer ? [`The person who started this just stepped in and said: "${steer}". Your turn follows that direction, whatever your partner last said.`] : []),
     'Your partner\'s messages arrive as the user turns. Reply to them directly, like a conversation between two collaborators.',
     ROLE[voice],
     'Never open with praise or agreement: your first sentence is about the idea. Don\'t repeat earlier points. Take as much space as the turn needs.',
@@ -31,18 +33,39 @@ export function systemFor(voice, topic) {
 }
 
 // The system prompt for finishing a turn that was cut off: the same instructions, then what it wrote so far.
-export function continueSystem(voice, topic, sofar) {
+export function continueSystem(voice, topic, sofar, steer = '') {
   const tail = sofar.length > TAIL ? '…' + sofar.slice(-TAIL) : sofar;
-  return `${systemFor(voice, topic)}\n\nYour reply to the latest message was cut off by the length limit. It ends like this:\n\n${tail}\n\nContinue it from exactly where it stops, mid-sentence if needed. Don't repeat any of it and don't start over.`;
+  return `${systemFor(voice, topic, steer)}\n\nYour reply to the latest message was cut off by the length limit. It ends like this:\n\n${tail}\n\nContinue it from exactly where it stops, mid-sentence if needed. Don't repeat any of it and don't start over.`;
 }
 
-// Whether one call stopped at its limit rather than finishing: the token count when the engine reports one
-// (engine.smallSpeed, streamed pieces ≈ tokens), else an estimate from the text. A call that wrote nothing isn't cut off
-// (smallSpeed keeps the previous reply's count when nothing streamed).
-export const cutOff = (text, tokens, cap = PIECE) => Boolean(String(text || '').trim()) && (tokens != null ? tokens : Math.ceil(String(text).length / 4)) >= cap - 8;
+// Whether one call stopped short rather than finishing. The runtime's own reason when it gives one ('length': it ran
+// out of max_tokens or of context window, which on a 4K model comes first: chat s0mwe2h0vm000lwbud's turns stopped at
+// ~300–450 tokens), else the token count (streamed pieces ≈ tokens), else an estimate from the text. A call that wrote
+// nothing isn't cut off (smallSpeed keeps the previous reply's numbers when nothing streamed).
+export function cutOff(text, speed, cap = PIECE) {
+  if (!String(text || '').trim()) return false;
+  if (speed && speed.finish) return speed.finish === 'length';
+  const tokens = speed && speed.tokens != null ? speed.tokens : Math.ceil(String(text).length / 4);
+  return tokens >= cap - 8;
+}
 
 const said = (m) => !m.deleted && !m.thread && (m.role === 'user' || m.role === 'assistant');
 export const turns = (line) => line.filter(said);
+
+// What the person said when they last stepped in, while it's fresh: until both voices have answered it. In chat
+// s0mwe2h0vm000lwbud "Lets get back to pasta shapes", merged after A's long reply that ended in a question to B,
+// was ignored: B answered A's question. The system prompt is where a small model takes direction from.
+export function latestSteer(line) {
+  const all = turns(line);
+  const seed = all.find(m => m.role === 'user');
+  let since = 0;
+  for (let i = all.length - 1; i >= 0; i--) {
+    const m = all[i];
+    if (m.role === 'assistant') { if (++since >= 2) return ''; continue; }
+    return m === seed ? '' : m.content;
+  }
+  return '';
+}
 
 // Who speaks next: the other voice from the last one that spoke, else A.
 export function nextVoice(line) {
@@ -77,7 +100,7 @@ export function viewFor(line, voice, budget = Infinity) {
   const messages = out.slice(start);
   // A turn longer than the whole budget (a long document): its end, which is what gets answered.
   const last = messages[messages.length - 1];
-  if (last && est(last.content) > budget) last.content = '…' + last.content.slice(-Math.max(0, Math.floor(budget * 3.5)));
+  if (last && est(last.content) > budget) last.content = '…' + last.content.slice(-Math.max(0, Math.floor(budget * 3)));
   return { topic: seed ? seed.content : '', messages };
 }
 
@@ -100,18 +123,18 @@ export async function run({ session, signal, ui = {}, takeSteer = () => '' }) {
       for (let piece = 0; piece < MAX_PIECES && !signal.aborted; piece++) {
         const r = await engine.foreground(async () => {
           const topic = (turns(line).find(m => m.role === 'user') || {}).content || '';
-          const system = sofar ? continueSystem(voice, topic, sofar) : systemFor(voice, topic);
+          const steer = latestSteer(line);
+          const system = sofar ? continueSystem(voice, topic, sofar, steer) : systemFor(voice, topic, steer);
           const budget = engine.contextFor(engine.currentModel()) - PIECE - est(system) - 200;
           const { messages } = viewFor(line, voice, budget);
           const conv = await engine.conversation({ system, messages: messages.slice(0, -1), maxOutputTokens: PIECE });
           try {
             const out = await engine.respond(conv, messages[messages.length - 1].content, { signal, onText: (t) => ui.onText && ui.onText(sofar + t) });
-            const sp = await engine.smallSpeed();
-            return { text: out.text || '', tokens: sp ? sp.tokens : null };
+            return { text: out.text || '', speed: await engine.smallSpeed() };
           } finally { try { await conv.delete(); } catch {} }
         });
         sofar += r.text;
-        if (!cutOff(r.text, r.tokens)) break;
+        if (!cutOff(r.text, r.speed)) break;
       }
     } catch (e) { error = e; }
     const text = sofar.trim();

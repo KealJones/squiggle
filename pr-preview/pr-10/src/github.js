@@ -146,7 +146,9 @@ export async function relayAiStatus() {
 
 // GitHub REST call. Returns parsed JSON (or null for 204); throws with
 // GitHub's message on failure, carrying .status.
-export async function gh(path, { method = 'GET', body, accept } = {}) {
+// text: return the body as text (diffs). The error says what GitHub said, including its list of reasons (a 422's
+// "No commits between main and agent/x" is only there).
+export async function gh(path, { method = 'GET', body, accept, text = false } = {}) {
   const r = await fetch(path.startsWith('http') ? path : REST + path, {
     // GitHub marks responses cacheable for 60s; a cached "not installed yet"
     // or stale repo list would otherwise stick around after things change.
@@ -161,9 +163,11 @@ export async function gh(path, { method = 'GET', body, accept } = {}) {
     body: body ? JSON.stringify(body) : undefined,
   });
   if (r.status === 204) return null;
+  if (text && r.ok) return r.text();
   const data = await r.json().catch(() => null);
   if (!r.ok) {
-    const err = new Error((data && data.message) || `GitHub API error ${r.status}`);
+    const reasons = data && Array.isArray(data.errors) ? data.errors.map(e => (typeof e === 'string' ? e : e.message || [e.resource, e.field, e.code].filter(Boolean).join(' '))).filter(Boolean) : [];
+    const err = new Error([(data && data.message) || `GitHub API error ${r.status}`, ...reasons].join(': '));
     err.status = r.status;
     throw err;
   }

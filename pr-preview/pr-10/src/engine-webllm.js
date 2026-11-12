@@ -356,10 +356,11 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
         // Whitespace before a call isn't shown; it's sent once more text follows.
         return (at >= 0 ? text.slice(0, at) : text.slice(0, text.length - heldBack(text, f.callStart))).replace(/\s+$/, '');
       };
-      let raw = '', shownThink = 0, shownText = 0;
+      let raw = '', shownThink = 0, shownText = 0, finish = null;
       for await (const c of chunks) {
         if (signal && signal.aborted) break;
         const ch = c.choices && c.choices[0];
+        if (ch && ch.finish_reason) finish = ch.finish_reason;
         const piece = (ch && (ch.text ?? (ch.delta && ch.delta.content))) || '';
         if (!piece) continue;
         raw += piece;
@@ -371,8 +372,11 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
       }
       // Thinking that never closed (cut off by max_tokens): it was all thinking, no reply.
       const s = f.split(raw, ctx);
+      // Why WebLLM stopped ('length': max_tokens or the context window ran out), for engine-wllama's lastSpeed.
+      const done = () => (finish ? [{ choices: [{ delta: {}, finish_reason: finish }] }] : []);
       if (!f.callStart) {
         if (s.text.length > shownText) yield { choices: [{ delta: { content: s.text.slice(shownText) } }] };
+        yield* done();
         return;
       }
       const at = s.text.indexOf(f.callStart);
@@ -380,6 +384,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
       if (before.length > shownText) yield { choices: [{ delta: { content: before.slice(shownText) } }] };
       const calls = at >= 0 ? f.parseCalls(s.text.slice(at)) : [];
       if (calls.length) yield callChunk(calls);
+      yield* done();
     } finally {
       signal && signal.removeEventListener('abort', onAbort);
     }
