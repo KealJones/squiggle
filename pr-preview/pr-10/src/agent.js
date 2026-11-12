@@ -565,7 +565,6 @@ class Turn {
     if (managed()) pending += `\n\n${tasks.budgetLine(used, settings.contextSize, reserve, dialect())}`;
     this.setWindow(windowOf(ctx.report, { system: plain() ? 0 : estTokens(ctx.system), tools: toolTokens, message: estTokens(this.shown) + estTokens(att.text) }), used);
     let chatCalls = 0, full = false, askedForAnswer = false, lastThink = 0;
-    this.seenCalls = new Map();
     let messages = ctx.messages;
     if (seed) {
       // The question is the only user turn; the lookup is the model's own find call and its result.
@@ -575,11 +574,6 @@ class Turn {
       const found = { found: seed.text, ...(seed.tools.length ? { tools: seed.tools } : {}) };
       pending = [toolResult(call, found)];
       used += this.declare(tools, call, found);
-      this.seenCalls.set(`find:${JSON.stringify({ query: seed.query })}`, 1);
-    }
-    if (fresh()) {
-      for (const q of (this.prefetched || [])) this.seenCalls.set(`web_search:${JSON.stringify({ query: q })}`, 1);
-      for (const k of (this.prefetchedCalls || [])) this.seenCalls.set(k, 1);
     }
     if (seed) chatCalls = 1;   // the lookup counts as a call (an empty reply after it gets the nudge)
     await this.open('Chat', { system: ctx.system, messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: [...new Set([...preloaded(tools), ...fit])], gate: gated() ? GATE : null });
@@ -634,8 +628,6 @@ class Turn {
           full = true;
           continue;
         }
-        const again = this.repeated(call);
-        if (again) { results.push(toolResult(call, again)); continue; }
         if (chatCalls >= maxChatCalls) {
           // A small model that keeps looking things up never answers; bound the turn.
           results.push(toolResult(call, { error: `Not run: you have made ${chatCalls} tool calls this turn. Answer now with what you have, or call plan if there is more to do.` }));
@@ -802,30 +794,9 @@ class Turn {
   // Gated models: a call to an undeclared tool, or a find/tool_info result naming tools, declares them from the
   // next request on (NativeConversation does the same). Returns their schema tokens, which also go on the
   // window's tool definitions.
-  // The same tool with the same arguments twice in one phase: small models do this instead of reading the
-  // result they already have (Qwen3.5 ran web_search five times for one question). Not run again.
-  // The same call in an earlier step of this task (a 0.6B model fetched the same made-up URL in two
-  // steps): not run again; the earlier result comes back instead, since a new step doesn't show it.
-  ranInTask(task, step, call) {
-    const fn = (call && call.function) || {};
-    if (!task || ['plan', 'done', 'checkpoint', 'need', 'ask_user', 'tool_info'].includes(fn.name)) return null;
-    const args = JSON.stringify(fn.arguments || {});
-    const prev = [...(task.log || [])].reverse().find(l => l.step !== (step && step.id) && l.name === fn.name && JSON.stringify(l.args || {}) === args);
-    if (!prev) return null;
-    this.toolEvent({ name: fn.name, label: `${fn.name} already ran in an earlier step (not run again)`, ok: false });
-    return { error: `You already called ${fn.name} with exactly these arguments in an earlier step${prev.ok === false ? ', and it failed' : ''}. Its result: ${prev.text || prev.label}. Use that, change the arguments, or call done.` };
-  }
-
-  repeated(call) {
-    const fn = (call && call.function) || {};
-    if (['plan', 'done', 'checkpoint', 'need', 'ask_user'].includes(fn.name)) return null;
-    const key = `${fn.name}:${JSON.stringify(fn.arguments || {})}`;
-    const n = (this.seenCalls.get(key) || 0) + 1;
-    this.seenCalls.set(key, n);
-    if (n === 1) return null;
-    this.toolEvent({ name: fn.name, label: `${fn.name} repeated with the same arguments (not run again)`, ok: false });
-    return { error: `You already called ${fn.name} with exactly these arguments in this turn; its result is above. Use that result, change the arguments, or answer now.` };
-  }
+  // Repeating a call is allowed (Keal, 2026-11-12): the same command can rightly give a new answer (date, ls
+  // after a write, git status), and blocking it left models stuck. Runaway lookups are still bounded by the call
+  // caps (maxChatCalls per turn, STEP_SOFT_CAP per step).
 
   // What the last try at this step did, for the step's restart (v3): why it stopped, its calls and results so far
   // (tool output stays wrapped as untrusted), and what it said.
@@ -859,7 +830,6 @@ class Turn {
   }
 
   async runStep(task, step) {
-    this.seenCalls = new Map();
     const tools = phaseTools(true);
     const known = [...new Set([...preloaded(tools), ...(task.tools || []), ...fitTools(`${step.text}\n${task.goal}`, tools).map(t => t.name)])];
     const toolTokens = toolCost(tools, known);
@@ -984,8 +954,6 @@ class Turn {
               : 'Not run: your context for this step is almost full. Call done now with what you found (the next step starts fresh).' }));
             continue;
           }
-          const again = this.repeated(call) || this.ranInTask(task, step, call);
-          if (again) { results.push(toolResult(call, again)); continue; }
           const out = await this.exec(call, { room: Math.floor(room() / r.toolCalls.length), task, step });
           if (out.ask) return 'ask';
           let response = out.response;
@@ -1206,7 +1174,6 @@ class Turn {
   async webTop(query, why = 'for find') {
     const call = { function: { name: 'web_search', arguments: { query } } };
     const res = await runTool(call, { session: this.session, threadId: this.threadId });
-    this.seenCalls && this.seenCalls.set(`web_search:${JSON.stringify({ query })}`, 1);
     this.noteUrls(res);
     this.toolEvent({ name: 'web_search', label: `${res.label} (${why})`, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
     if (!res.ok) return { query, error: res.model.error, items: [] };
@@ -1221,8 +1188,6 @@ class Turn {
   async wikiTop(query, why = 'looked up first') {
     const call = { function: { name: 'wiki_lookup', arguments: { query } } };
     const res = await runTool(call, { session: this.session, threadId: this.threadId, pageCards: lite() });
-    this.seenCalls && this.seenCalls.set(`wiki_lookup:${JSON.stringify({ query })}`, 1);
-    (this.prefetchedCalls = this.prefetchedCalls || []).push(`wiki_lookup:${JSON.stringify({ query })}`);
     this.noteUrls(res);
     this.toolEvent({ name: 'wiki_lookup', label: `${res.label} (${why})`, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
     if (!res.ok || !res.model || !res.model.found) return null;
@@ -1283,7 +1248,6 @@ class Turn {
       const answer = pushback ? [...line].reverse().find(m => m.role === 'assistant' && m.content) : null;
       const q = pushback ? checkQuery(said, { question: prevQ && prevQ.content, answer: answer && answer.content }) || query : query;
       web = await this.webTop(q, 'looked up first');
-      this.prefetched = [q];
       if (pushback) check = 'The user is questioning or checking an earlier answer, so the web was searched first. Answer only from these results; if they don\'t settle it, say so plainly, and don\'t agree just because the user said it.';
     }
     if (wikiP) wiki = await wikiP;
