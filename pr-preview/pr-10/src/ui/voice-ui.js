@@ -99,7 +99,7 @@ function callBar(message) {
   const main = $('.main');
   main.insertBefore(el, $('#composer'));
   if (!message) { main.classList.add('in-call'); $('#call').setAttribute('aria-pressed', 'true'); }
-  scrollDown($('#messages'));
+  scrollDown($('#messages'), { force: true });
   const self = {
     update(snap) {
       const idle = snap.state === 'idle';

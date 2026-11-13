@@ -107,7 +107,7 @@ export function renderChat() {
   const line = sessions.lineMessages(current, null);
   if (!line.length) { inner.append(emptyState()); return; }
   for (const m of line) inner.append(messageEl(m, { inThread: false }));
-  scrollDown($('#messages'));
+  scrollDown($('#messages'), { force: true });
 }
 
 function emptyState() {
@@ -428,7 +428,7 @@ export async function send(text, threadId, files = [], opts = {}) {
     await agent.runTurn({
       session, threadId, text, attachments: atts, signal: controller.signal,
       ui: {
-        onUser: (m) => { container.append(messageEl(m, { inThread: Boolean(threadId) })); scrollDown(scroller); renderSessions(); },
+        onUser: (m) => { container.append(messageEl(m, { inThread: Boolean(threadId) })); scrollDown(scroller, { force: true }); renderSessions(); },
         onStart: () => {
           live = h('div', { class: 'msg assistant' });
           trail = h('div');
@@ -525,6 +525,7 @@ async function runBrainstorm(text, files, { wrap = false } = {}) {
     if (!session.messages.some(m => !m.deleted)) { container.replaceChildren(); session.title = text.replace(/\s+/g, ' ').slice(0, 60); $('#chat-title').textContent = session.title; }
     const m = sessions.addMessage(session, { role: 'user', content: text });
     container.append(messageEl(m, { inThread: false }));
+    scrollDown(scroller, { force: true });
     renderSessions();
   }
   if (!session.messages.some(m => m.role === 'user' && !m.deleted)) return;
@@ -538,7 +539,7 @@ async function runBrainstorm(text, files, { wrap = false } = {}) {
       wrapOnly: wrap, wantsWrap: () => run.wrap,
       takeSteer: () => { const t = run.steer.splice(0).join('\n\n'); renderBrainstormBar(); return t; },
       ui: {
-        onSteer: (m) => { if (here()) { $('#messages-inner').append(messageEl(m, { inThread: false })); scrollDown(scroller); } },
+        onSteer: (m) => { if (here()) { $('#messages-inner').append(messageEl(m, { inThread: false })); scrollDown(scroller, { force: true }); } },
         onStart: (v, phase) => {
           if (!here()) return;
           body = h('div', { class: 'body' }, squiggleWait());
