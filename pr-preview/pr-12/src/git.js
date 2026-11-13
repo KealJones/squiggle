@@ -1,0 +1,150 @@
+// One browser filesystem (LightningFS on IndexedDB) shared by the storage
+// repo clone (/state) and the agent's repo clones (/repos/<name>), plus
+// isomorphic-git wired to the relay.
+import { git, http, LightningFS } from '../vendor/git.js';
+import { apiBase, gitAuth, commitAuthor } from './github.js';
+
+export { git };
+export const fs = new LightningFS('squiggle-fs');
+export const pfs = fs.promises;
+export const corsProxy = () => apiBase() + '/git';
+
+export const remoteUrl = (owner, name) => `https://github.com/${owner}/${name}.git`;
+
+// Sends the token with the first request instead of waiting for a 401 and
+// retrying (which logged a 401 in the console on every sync). onAuth stays
+// as the fallback; signed out, requests go without credentials.
+const authedHttp = {
+  async request(req) {
+    const has = Object.keys(req.headers || {}).some(k => k.toLowerCase() === 'authorization');
+    if (!has) {
+      try {
+        const { username, password } = await gitAuth();
+        req = { ...req, headers: { ...req.headers, Authorization: 'Basic ' + btoa(`${username}:${password}`) } };
+      } catch {}
+    }
+    return http.request(req);
+  },
+};
+
+// Options every network git call needs.
+export const net = () => ({ http: authedHttp, corsProxy: corsProxy(), onAuth: gitAuth, onAuthFailure: () => ({ cancel: true }) });
+
+export async function author() { return commitAuthor(); }
+
+// LightningFS keeps the file tree in memory and writes it to IndexedDB only once the filesystem has been
+// idle for 500 ms (its "deactivate"). A tab closed or reloaded inside that window loses every write since the
+// last save, which in demo mode (no remote) is the only copy. `flush` saves it now (LightningFS 4.10).
+export async function persist() {
+  if (typeof pfs.flush === 'function') await pfs.flush().catch(() => {});
+}
+
+export async function exists(path) {
+  try { await pfs.stat(path); return true; } catch { return false; }
+}
+
+export async function isDir(path) {
+  try { return (await pfs.stat(path)).isDirectory(); } catch { return false; }
+}
+
+export async function mkdirp(path) {
+  const parts = path.split('/').filter(Boolean);
+  let cur = '';
+  for (const p of parts) {
+    cur += '/' + p;
+    try { await pfs.mkdir(cur); } catch (e) { if (e.code !== 'EEXIST') throw e; }
+  }
+}
+
+export async function rmrf(path) {
+  let st;
+  try { st = await pfs.lstat(path); } catch { return; }
+  if (st.isDirectory()) {
+    for (const name of await pfs.readdir(path)) await rmrf(path + '/' + name);
+    await pfs.rmdir(path);
+  } else {
+    await pfs.unlink(path);
+  }
+}
+
+// Files written since the last stageAll. git's status check trusts size and
+// modification time, so a same-size change made within the same second as the
+// last commit ("return 1" → "return 2") looked unchanged and was never committed.
+const written = new Set();
+
+export async function writeFile(path, data) {
+  await mkdirp(path.split('/').slice(0, -1).join('/'));
+  await pfs.writeFile(path, data, typeof data === 'string' ? 'utf8' : undefined);
+  written.add(path);
+}
+
+// The files written under dir since the page opened (repo-relative), for gitcli.js's status, which re-hashes
+// them instead of staging them; and a way to add one (a file gitcli.js wrote itself).
+export const writtenIn = (dir) => { const pre = dir.replace(/\/$/, '') + '/'; return [...written].filter(p => p.startsWith(pre)).map(p => p.slice(pre.length)); };
+export const noteWritten = (path) => { written.add(path); };
+
+export async function readText(path) {
+  return pfs.readFile(path, 'utf8');
+}
+
+// Recursive file list (relative paths), skipping .git.
+export async function walk(dir, base = '') {
+  const out = [];
+  let names;
+  try { names = await pfs.readdir(dir); } catch { return out; }
+  for (const name of names.sort()) {
+    if (name === '.git') continue;
+    const full = dir + '/' + name;
+    const rel = base ? base + '/' + name : name;
+    const st = await pfs.stat(full);
+    if (st.isDirectory()) out.push(...await walk(full, rel));
+    else out.push({ path: rel, size: st.size });
+  }
+  return out;
+}
+
+export async function currentBranch(dir) {
+  return git.currentBranch({ fs, dir, fullname: false }).catch(() => null);
+}
+
+// Stage every change in the working tree (adds, edits, deletes).
+// Re-adds (re-hashes) every file written under dir, so the status sees
+// same-size changes too.
+async function refreshWritten(dir) {
+  const prefix = dir.replace(/\/$/, '') + '/';
+  for (const p of [...written]) {
+    if (!p.startsWith(prefix)) continue;
+    written.delete(p);
+    try { await git.add({ fs, dir, filepath: p.slice(prefix.length) }); } catch { /* deleted since: the status handles it */ }
+  }
+}
+
+export async function stageAll(dir) {
+  await refreshWritten(dir);
+  const matrix = await git.statusMatrix({ fs, dir });
+  let changed = 0;
+  for (const [filepath, head, work, stage] of matrix) {
+    if (head === 1 && work === 1 && stage === 1) continue;
+    changed++;
+    if (work === 0) await git.remove({ fs, dir, filepath });
+    else await git.add({ fs, dir, filepath });
+  }
+  return changed;
+}
+
+// Human-readable status lines like `M src/app.js`.
+export async function statusLines(dir) {
+  await refreshWritten(dir);
+  const matrix = await git.statusMatrix({ fs, dir });
+  const lines = [];
+  for (const [f, head, work, stage] of matrix) {
+    if (head === 1 && work === 1 && stage === 1) continue;
+    let code = '?';
+    if (head === 0 && work === 2) code = stage === 0 ? '??' : 'A';
+    else if (head === 1 && work === 0) code = 'D';
+    else if (head === 1 && work === 2) code = 'M';
+    else if (head === 1 && work === 1 && stage !== 1) code = 'M';
+    lines.push(`${code} ${f}`);
+  }
+  return lines;
+}
