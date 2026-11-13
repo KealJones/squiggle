@@ -14,7 +14,7 @@
 // that repeats an earlier one is thrown away and tried again; a second repeat stops the run (`isRepeat`).
 // The browser-side modules load in run(), so the pure parts here are testable in node.
 
-export const VOICES = { A: 'Squiggle A', B: 'Squiggle B' };
+export const VOICES = { A: 'Squiggle A', B: 'Squiggle B', S: 'Squiggle' };   // S writes the wrap-up
 export const MAX_TURNS = 20;      // per run, so a forgotten tab doesn't brainstorm all night; "Keep going" starts another
 export const PIECE = 1024;        // tokens one call writes (engine-wllama's most); a longer turn is continued
 export const MAX_PIECES = 8;      // calls per turn: room for a long document, not a runaway
@@ -39,10 +39,32 @@ const other = (v) => (v === 'A' ? 'B' : 'A');
 // Phases, by how many voice turns came before this one ("diverge before you converge": generate options without
 // judging, group them, then evaluate; the critic coming in on turn two is what narrowed every brainstorm so far).
 export const DIVERGE_TURNS = 4;
-export const PHASES = { diverge: 'listing options', cluster: 'grouping', converge: 'testing' };
+export const CONVERGE_TURNS = 6;  // testing turns before the wrap-up (and again after each one, on Keep going)
+export const PHASES = { diverge: 'listing options', cluster: 'grouping', converge: 'testing', decision: 'wrap-up' };
 export function phaseOf(line) {
   const n = turns(line).filter(m => m.role === 'assistant' && m.voice).length;
   return n < DIVERGE_TURNS ? 'diverge' : n === DIVERGE_TURNS ? 'cluster' : 'converge';
+}
+
+// The brainstorm ends with a wrap-up for the person (Keal, 2026-11-12, chat s0mweal56h0007v3ch: "we gotta get a summary
+// and final decision message"): a summary, the decision, why, and what's still open. Due after CONVERGE_TURNS testing
+// turns since the grouping turn or the last wrap-up.
+export function wrapUpDue(line) {
+  const all = turns(line);
+  const last = all.map(m => Boolean(m.decision)).lastIndexOf(true);
+  const voiced = all.slice(last + 1).filter(m => m.role === 'assistant' && m.voice).length;
+  return last >= 0 ? voiced >= CONVERGE_TURNS : voiced >= DIVERGE_TURNS + 1 + CONVERGE_TURNS;
+}
+export function wrapUpSystem(topic) {
+  return [
+    `This is the end of a brainstorm between two partners, A and B. The question, from the person who started it: ${clipMiddle(String(topic || ''), TOPIC)}`,
+    'You write the wrap-up for the person, in four short parts with these headings:',
+    '**Summary**: the options the brainstorm considered, grouped, a few bullets.',
+    '**Decision**: the one answer to the question it lands on, stated plainly, even if it is a hypothesis.',
+    '**Why**: the reasons, including which of B\'s objections it survives and which it doesn\'t.',
+    '**Still open**: what is untested and how to test it.',
+    'Write it for the person, not for A or B: no "A:" or "B:" labels.',
+  ].join('\n');
 }
 // Every phase is tied back to the person's question, and from the cluster turn on each turn ends with a proposed
 // answer (Keal: "always got to keep that question in mind… even if it is just a hypothesis, get into a proposal").
@@ -67,6 +89,7 @@ export function systemFor(voice, topic, steer = '', framing = 'flip', { phase = 
     ...(steer ? [`The person who started it just stepped in and said: "${steer}". This turn follows that direction, whatever ${other(voice)} last said.`] : []),
     `You write ${voice}'s turns. ${(PHASE_PART[phase] || PHASE_PART.converge)(voice)}`,
     `${voice} never opens with praise or agreement: the first sentence is about the question. No repeating earlier points. Take as much space as the turn needs.`,
+    `Write ${voice}'s own words in the first person ("I'd try…"), not a description of what ${voice} says.`,
     ...(retry ? [`${voice}'s last try repeated an earlier turn almost word for word and was thrown away: this turn says something that isn't in the transcript yet.`] : []),
     `Reply with ${voice}'s next turn only: no "${voice}:" label and nothing for anyone else.`,
   ].join('\n');
@@ -178,10 +201,18 @@ const triples = (text) => {
   for (let i = 0; i + 2 < w.length; i++) out.add(w[i] + ' ' + w[i + 1] + ' ' + w[i + 2]);
   return { set: out, words: w.length };
 };
+// Measured against everything said before, not one turn at a time: in chat s0mweal56h0007v3ch B's first testing turn
+// was its own earlier list plus A's best answer pasted after it. "Best answer so far" lines are left out of the
+// comparison: an answer that holds from turn to turn is allowed to repeat.
+const noBest = (t) => String(t || '').split('\n').filter(l => !l.includes(BEST)).join('\n');
 export function isRepeat(text, earlier) {
-  const t = triples(text);
+  const t = triples(noBest(text));
   if (t.words < MIN_WORDS || !t.set.size) return false;
-  return earlier.some(e => { const o = triples(e).set; let hit = 0; for (const x of t.set) if (o.has(x)) hit++; return hit / t.set.size >= SAME; });
+  const seen = new Set();
+  for (const e of earlier) for (const x of triples(noBest(e)).set) seen.add(x);
+  let hit = 0;
+  for (const x of t.set) if (seen.has(x)) hit++;
+  return hit / t.set.size >= SAME;
 }
 
 /**
@@ -192,18 +223,19 @@ export function isRepeat(text, earlier) {
 export function transcriptFor(line, voice, budget = Infinity) {
   const all = turns(line);
   const seed = all.find(m => m.role === 'user');
-  const label = (m) => (m.role === 'user' ? PERSON : m.voice || 'A');
+  const label = (m) => (m.role === 'user' ? PERSON : m.decision ? 'Wrap-up' : m.voice || 'A');
   // Repeats saved before repeats were caught are left out, so the model doesn't see itself saying a thing twice.
   const said = [];
   const entries = all.filter(m => m !== seed).filter(m => {
-    if (m.role === 'assistant' && isRepeat(m.content, said)) return false;
+    if (m.role === 'assistant' && !m.decision && isRepeat(m.content, said)) return false;
     said.push(m.content); return true;
   }).map(m => `${label(m)}: ${m.content}`);
   // The idea opens the transcript but takes at most a third of the budget, so the turns still fit (review, 2026-11-12:
   // an idea over ~4,000 characters left no room and B never saw A's turn).
   const head = seed ? `${PERSON}: ${clipMiddle(seed.content, Math.max(300, Math.floor(budget / 3) * 3))}` : '';
   // The question again right before the ask, where a small model's attention is (the head may be far back).
-  const ask = seed ? `The question: ${clipMiddle(seed.content, 300)}\nNow write ${voice}'s next turn.` : `Now write ${voice}'s next turn.`;
+  const what = voice === 'S' ? 'the wrap-up' : `${voice}'s next turn`;
+  const ask = seed ? `The question: ${clipMiddle(seed.content, 300)}\nNow write ${what}.` : `Now write ${what}.`;
   let room = budget - est(head) - est(ask), start = entries.length;
   while (start > 0 && est(entries[start - 1]) <= room) room -= est(entries[--start]);
   const kept = entries.slice(start);
@@ -214,64 +246,96 @@ export function transcriptFor(line, voice, budget = Infinity) {
 
 /**
  * Runs voices back and forth until stopped or MAX_TURNS. `takeSteer()` returns what the person typed since the last
- * turn (or ''), added to the chat before the next voice speaks. ui: onStart(voice, phase), onText(text), onDone(msg),
- * onSteer(msg). Returns why it ended: 'stopped' | 'limit' | 'error' | 'stuck' (a voice repeated itself twice).
+ * turn (or ''), added to the chat before the next voice speaks; `wantsWrap()` is true once the person asked for the
+ * wrap-up. ui: onStart(voice, phase), onText(text), onDone(msg), onSteer(msg); the wrap-up comes as voice 'S', phase
+ * 'decision'. With `wrapOnly` it writes just the wrap-up. Returns why it ended: 'stopped' | 'limit' | 'error' |
+ * 'stuck' (a voice repeated itself twice) | 'done' (wrapped up). In the transcript framing a run that ends by itself
+ * (done, limit, stuck) ends with a wrap-up; Stop and errors don't.
  */
-export async function run({ session, signal, ui = {}, takeSteer = () => '' }) {
+export async function run({ session, signal, ui = {}, takeSteer = () => '', wantsWrap = () => false, wrapOnly = false }) {
   const [engine, sessions, { replyModel }] = await Promise.all([import('./engine.js'), import('./sessions.js'), import('./agent.js')]);
+  const framing = framingOf(session);
+  const topicOf = (line) => (turns(line).find(m => m.role === 'user') || {}).content || '';
+
+  // One turn (a voice's, or the wrap-up as 'S'), continued while it's cut off and stopped where another speaker starts.
+  async function speak(line, voice, systemOf) {
+    let sofar = '';
+    for (let piece = 0; piece < MAX_PIECES && !signal.aborted; piece++) {
+      const r = await engine.foreground(async () => {
+        const system = systemOf(sofar);
+        const budget = engine.contextFor(engine.currentModel()) - PIECE - est(system) - 200;
+        const { messages } = framing === 'transcript' ? transcriptFor(line, voice, budget) : viewFor(line, voice, budget);
+        const conv = await engine.conversation({ system, messages: messages.slice(0, -1), maxOutputTokens: PIECE });
+        // This call stops as soon as the model starts another speaker's turn (ownTurn); Stop still stops it all.
+        const call = new AbortController();
+        const stop = () => call.abort();
+        signal.addEventListener('abort', stop, { once: true });
+        if (signal.aborted) call.abort();   // Stop pressed while this waited for the generation lock
+        let other = false;
+        try {
+          const out = await engine.respond(conv, messages[messages.length - 1].content, { signal: call.signal, onText: (t) => {
+            const own = ownTurn(sofar + t, framing);
+            if (own.other && !other) { other = true; call.abort(); }
+            ui.onText && ui.onText(own.text);
+          } });
+          return { text: out.text || '', speed: await engine.smallSpeed() };
+        } finally { signal.removeEventListener('abort', stop); try { await conv.delete(); } catch {} }
+      });
+      const own = ownTurn(sofar + r.text, framing);
+      sofar = own.text;
+      if (own.other || !cutOff(r.text, r.speed)) break;
+    }
+    return sofar;
+  }
+
+  async function wrapUp() {
+    const line = sessions.lineMessages(session, null);
+    const topic = topicOf(line);
+    ui.onStart && ui.onStart('S', 'decision');
+    let text = '', error = null;
+    try {
+      text = (await speak(line, 'S', (sofar) => sofar
+        ? `${wrapUpSystem(topic)}\n\nThe wrap-up was cut off by the length limit. It ends like this:\n\n${sofar.length > TAIL ? '…' + sofar.slice(-TAIL) : sofar}\n\nContinue it from exactly where it stops. Don't repeat any of it.`
+        : wrapUpSystem(topic))).trim();
+    } catch (e) { error = e; }
+    if (signal.aborted && !text) { ui.onDone && ui.onDone(null); return 'stopped'; }
+    const msg = sessions.addMessage(session, { role: 'assistant', decision: true, content: text || '_(nothing to add)_', ...(error ? { error: String(error.message || error) } : {}), model: replyModel() });
+    ui.onDone && ui.onDone(msg);
+    return error ? 'error' : 'done';
+  }
+  const wraps = framing === 'transcript';
+  if (wrapOnly) return wraps ? wrapUp() : 'done';
+
   for (let i = 0; i < MAX_TURNS; i++) {
     if (signal.aborted || session.deleted || session.archived) return 'stopped';
     const steer = takeSteer();
     if (steer) ui.onSteer && ui.onSteer(sessions.addMessage(session, { role: 'user', content: steer }));
     const line = sessions.lineMessages(session, null);
+    if (wraps && (wantsWrap() || wrapUpDue(line))) return wrapUp();
     const voice = nextVoice(line);
-    const framing = framingOf(session);
-    const phase = framing === 'transcript' ? phaseOf(line) : null;
-    let sofar = '', error = null, repeats = 0;
+    const phase = wraps ? phaseOf(line) : null;
+    const topic = topicOf(line);
+    let text = '', error = null, repeats = 0;
     for (;;) {
       ui.onStart && ui.onStart(voice, phase);
-      sofar = ''; error = null;
+      error = null;
       try {
-        for (let piece = 0; piece < MAX_PIECES && !signal.aborted; piece++) {
-          const r = await engine.foreground(async () => {
-            const topic = (turns(line).find(m => m.role === 'user') || {}).content || '';
-            const steer = latestSteer(line);
-            const opts = { phase: phase || 'converge', retry: repeats > 0 };
-            const system = sofar ? continueSystem(voice, topic, sofar, steer, framing, opts) : systemFor(voice, topic, steer, framing, opts);
-            const budget = engine.contextFor(engine.currentModel()) - PIECE - est(system) - 200;
-            const { messages } = framing === 'transcript' ? transcriptFor(line, voice, budget) : viewFor(line, voice, budget);
-            const conv = await engine.conversation({ system, messages: messages.slice(0, -1), maxOutputTokens: PIECE });
-            // This call stops as soon as the model starts another speaker's turn (ownTurn); Stop still stops it all.
-            const call = new AbortController();
-            const stop = () => call.abort();
-            signal.addEventListener('abort', stop, { once: true });
-            if (signal.aborted) call.abort();   // Stop pressed while this waited for the generation lock
-            let other = false;
-            try {
-              const out = await engine.respond(conv, messages[messages.length - 1].content, { signal: call.signal, onText: (t) => {
-                const own = ownTurn(sofar + t, framing);
-                if (own.other && !other) { other = true; call.abort(); }
-                ui.onText && ui.onText(own.text);
-              } });
-              return { text: out.text || '', speed: await engine.smallSpeed() };
-            } finally { signal.removeEventListener('abort', stop); try { await conv.delete(); } catch {} }
-          });
-          const own = ownTurn(sofar + r.text, framing);
-          sofar = own.text;
-          if (own.other || !cutOff(r.text, r.speed)) break;
-        }
+        const st = latestSteer(line);
+        const opts = { phase: phase || 'converge', retry: repeats > 0 };
+        text = (await speak(line, voice, (sofar) => (sofar ? continueSystem(voice, topic, sofar, st, framing, opts) : systemFor(voice, topic, st, framing, opts)))).trim();
       } catch (e) { error = e; }
       // A repeat is thrown away, never saved, so the transcript never shows it twice; one more try, then the run stops.
-      if (error || signal.aborted || !isRepeat(sofar, turns(line).filter(m => m.role === 'assistant').map(m => m.content))) break;
+      if (error || signal.aborted || !isRepeat(text, turns(line).filter(m => m.role === 'assistant').map(m => m.content))) break;
       ui.onDone && ui.onDone(null);
-      if (++repeats > 1) return 'stuck';
+      if (++repeats > 1) { if (wraps) await wrapUp(); return 'stuck'; }
     }
-    const text = sofar.trim();
     if (signal.aborted && !text) { ui.onDone && ui.onDone(null); return 'stopped'; }
     // An error is shown under the turn, not written into it, so the next voice doesn't read it as A's or B's words.
     const msg = sessions.addMessage(session, { role: 'assistant', voice, content: text || '_(nothing to add)_', ...(phase ? { phase } : {}), ...(error ? { error: String(error.message || error) } : {}), model: replyModel() });
     ui.onDone && ui.onDone(msg);
     if (error) return 'error';
   }
-  return signal.aborted ? 'stopped' : 'limit';
+  if (signal.aborted) return 'stopped';
+  if (wraps) { const why = await wrapUp(); if (why !== 'done') return why; }
+  return 'limit';
 }
