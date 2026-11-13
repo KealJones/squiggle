@@ -186,13 +186,22 @@ export const REVIVE_WAITS = [0, 500, 1500, 3000, 6000];
 // own screen waits behind it and everything drops to a couple of frames a second. So phones get the same pacing,
 // plus a gap the length of a frame after each prompt piece for the system to draw in (not after each generated
 // token: those are short, and each already ends with a sync).
+// 128 tokens is sized for an iPhone 16 (~1.25 s a piece). A slower GPU, or the same one hot and throttled, takes
+// longer for the same piece and walks into the 3-second limit again, so each prompt piece is timed: one that took
+// more than PACED_SLOW_MS halves the size for the pieces after it (WebLLM cuts a prompt into pieces when a reply
+// starts, so it applies from the next reply), down to PACED_MIN. It never grows back until the model is loaded
+// again: a smaller piece only costs a few more waits. A piece timed while the page was hidden isn't counted
+// (Safari pauses the GPU there, and the time says nothing about its speed).
 export const PACED_CHUNK = 128;
 export const PACED_GAP_MS = 16;
+export const PACED_SLOW_MS = 1500;
+export const PACED_MIN = 16;
+const pageHidden = () => Boolean(globalThis.document && document.visibilityState === 'hidden');
 const uaOf = () => (globalThis.navigator && navigator.userAgent) || '';
 export const webkitGpu = (ua = uaOf()) =>
   /iPhone|iPad|iPod/.test(ua) || (/AppleWebKit/.test(ua) && /Safari\//.test(ua) && !/Chrome|Chromium|CriOS|Edg|Firefox|FxiOS/.test(ua));
 export const pacedGpu = (ua = uaOf()) => webkitGpu(ua) || /Android/.test(ua);
-export function paceGpu(engine, chunk = PACED_CHUNK, gap = PACED_GAP_MS) {
+export function paceGpu(engine, chunk = PACED_CHUNK, gap = PACED_GAP_MS, { slowMs = PACED_SLOW_MS, min = PACED_MIN } = {}) {
   const pipes = engine && engine.loadedModelIdToPipeline;
   if (!pipes || typeof pipes.values !== 'function') return 0;
   let paced = 0;
@@ -200,9 +209,18 @@ export function paceGpu(engine, chunk = PACED_CHUNK, gap = PACED_GAP_MS) {
     if (!p || p.squigglePaced || typeof p.embedAndForward !== 'function') continue;
     const forward = p.embedAndForward;
     p.embedAndForward = async function (...args) {
+      const piece = args[1] > 1, hidden = pageHidden(), t0 = performance.now();
       const out = await forward.apply(this, args);
       if (typeof this.sync === 'function') await this.sync();   // this piece is done before the next is queued
-      if (gap && args[1] > 1) await sleep(gap);                  // a prompt piece: let the screen draw a frame
+      const ms = performance.now() - t0;
+      if (piece && slowMs && ms > slowMs && !hidden && !pageHidden() && typeof this.prefillChunkSize === 'number') {
+        const next = Math.max(min, Math.floor(Math.min(args[1], this.prefillChunkSize) / 2));
+        if (next < this.prefillChunkSize) {
+          console.info(`Squiggle: a ${args[1]}-token prompt piece took ${Math.round(ms)} ms on the GPU; pieces are ${next} tokens from the next reply.`);
+          this.prefillChunkSize = next;
+        }
+      }
+      if (gap && piece) await sleep(gap);                        // a prompt piece: let the screen draw a frame
       return out;
     };
     if (typeof p.prefillChunkSize === 'number' && p.prefillChunkSize > chunk) p.prefillChunkSize = chunk;
@@ -211,6 +229,13 @@ export function paceGpu(engine, chunk = PACED_CHUNK, gap = PACED_GAP_MS) {
   }
   return paced;
 }
+
+const chunkOf = (engine) => {
+  const pipes = engine && engine.loadedModelIdToPipeline;
+  if (!pipes || typeof pipes.values !== 'function') return null;
+  for (const p of pipes.values()) if (p && typeof p.prefillChunkSize === 'number') return p.prefillChunkSize;
+  return null;
+};
 
 // format: a tool format id (toolformats/) for models whose tools go through their own template (native),
 // null for the fenced ```tool_call format and chat-only models (plain text both ways).
@@ -244,7 +269,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
       stale = false;
       console.info('Squiggle: the GPU device was lost; loading the model onto the GPU again.');
       const was = lostNotes || device, started = Date.now();
-      const old = engine;
+      const old = engine, chunk = chunkOf(engine);   // the piece size this device had come down to, kept across the reload
       engine = null;
       try { old && await old.unload(); } catch {}
       let last = null, tries = 0;
@@ -259,7 +284,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
         }
       }
       report('gpu-lost', {
-        model: id, lost: was && was.lost, firstGpuError: was && was.error, reloads, tries, reloadMs: Date.now() - started,
+        model: id, lost: was && was.lost, firstGpuError: was && was.error, reloads, tries, reloadMs: Date.now() - started, chunk,
         backAgain: Boolean(engine), loadError: engine ? undefined : String((last && last.message) || last).slice(0, 300),
         visible: globalThis.document ? document.visibilityState : undefined,
       });
@@ -270,7 +295,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
       }
       device = watch.current();
       lostNotes = null;
-      if (pace) paceGpu(engine);
+      if (pace) paceGpu(engine, Math.min(PACED_CHUNK, chunk || PACED_CHUNK));
     })().finally(() => { reviving = null; });
     return reviving;
   }
@@ -391,6 +416,8 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
     info: { gpu: true, threads: 1, compat: false, webllm: true, closesThinking: Boolean(fmt.mode === 'raw' && fmt.thinkClose), webllmVersion: versionFor(id), toolFormat: fmt.id, toolNames: Boolean(fmt.listsNames), id },
     get reloads() { return reloads; },
     get paced() { return Boolean(pace); },
+    // The prompt piece size in use now (it shrinks on a slow GPU, paceGpu); null when WebLLM's internals aren't there.
+    get chunk() { return chunkOf(engine); },
   };
 }
 
