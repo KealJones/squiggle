@@ -1777,6 +1777,41 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
 });
 
+await check('scrolling: streamed text follows the bottom only while you are there; scrolling up lets go', async () => {
+  const D = await device('scroll');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.setViewportSize({ width: 1000, height: 480 });   // short, so a few turns overflow
+  await D.page.fill('#input', 'a hat that only fits on Tuesdays, with lots of extra words so the turns wrap and the chat overflows the screen quickly');
+  await D.page.press('#input', 'Enter');
+  const gap = () => D.page.evaluate(() => { const el = document.querySelector('#messages'); return el.scrollHeight - el.scrollTop - el.clientHeight; });
+  await D.page.waitForFunction(() => { const el = document.querySelector('#messages'); return el.scrollHeight > el.clientHeight + 200; });
+  assert.ok(await gap() <= 40, 'following the bottom while there');
+  // Scroll up with the wheel: new turns keep coming, and the view stays where it was.
+  await D.page.hover('#messages');
+  await D.page.mouse.wheel(0, -600);
+  await D.page.waitForTimeout(100);
+  const top = await D.page.evaluate(() => document.querySelector('#messages').scrollTop);
+  const n = await D.page.evaluate(() => document.querySelectorAll('#messages-inner .msg.assistant').length);
+  await D.page.waitForFunction((k) => document.querySelectorAll('#messages-inner .msg.assistant').length >= k + 2, n);
+  assert.equal(await D.page.evaluate(() => document.querySelector('#messages').scrollTop), top, 'not pulled back down');
+  // Back at the bottom: it follows again.
+  await D.page.mouse.wheel(0, 100000);
+  await D.page.waitForTimeout(100);
+  const m = await D.page.evaluate(() => document.querySelectorAll('#messages-inner .msg.assistant').length);
+  await D.page.waitForFunction((k) => document.querySelectorAll('#messages-inner .msg.assistant').length >= k + 1, m);
+  await D.page.waitForTimeout(100);
+  assert.ok(await gap() <= 40, 'following again');
+  await D.page.evaluate(async () => { const { state } = await import('/src/ui/state.js'); if (state.controller) state.controller.abort(); });   // Stop
+  assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+});
+
 await check('small models: a long page comes back as a card saved in /web, grep finds the answer, and used results shrink to what the model took', async () => {
   const D = await device('cards');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));

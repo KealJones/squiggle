@@ -21,7 +21,7 @@ app/                    static app, plain ES modules, no build step
     main.js             entry: settings, config, sign-in state → setup wizard or the app (or the demo)
     demo.js             demo mode: local-only storage (storage.js useLocalStorage), seeded sample chat/facts/file, the "Try" prompts, clearSamples
     ui/                 the UI, one module per area (plain DOM, no framework)
-      dom.js            h(), icon(), md(), toast(), number formatting
+      dom.js            h(), icon(), md(), toast(), number formatting; scrollDown follows the bottom only while the reader is there (scrolling up lets go; `force` for opening a chat or sending)
       state.js          the shared UI state object (current session, busy, model state, call, …)
       settings.js       per-device settings (localStorage) and their one-time migrations
       setup.js          first-run wizard: sign in, install the GitHub App, storage, model picker
