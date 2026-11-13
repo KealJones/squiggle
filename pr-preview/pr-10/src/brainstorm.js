@@ -284,7 +284,7 @@ export async function run({ session, signal, ui = {}, takeSteer = () => '', want
         const system = systemOf(sofar);
         const budget = engine.contextFor(engine.currentModel()) - PIECE - est(system) - 200;
         const { messages } = framing === 'transcript' ? transcriptFor(line, voice, budget) : viewFor(line, voice, budget);
-        const conv = await engine.conversation({ system, messages: messages.slice(0, -1), maxOutputTokens: PIECE, sampling });
+        const conv = await engine.conversation({ system, messages: messages.slice(0, -1), maxOutputTokens: PIECE, sampling, strictThinking: true });
         // This call stops as soon as the model starts another speaker's turn (ownTurn); Stop still stops it all.
         const call = new AbortController();
         const stop = () => call.abort();
@@ -297,11 +297,17 @@ export async function run({ session, signal, ui = {}, takeSteer = () => '', want
             if (own.other && !other) { other = true; call.abort(); }
             ui.onText && ui.onText(own.text);
           } });
-          return { text: out.text || '', speed: await engine.smallSpeed() };
+          return { text: out.text || '', thinking: out.thinking || '', speed: await engine.smallSpeed() };
         } finally { signal.removeEventListener('abort', stop); try { await conv.delete(); } catch {} }
       });
       const own = ownTurn(sofar + r.text, framing);
       sofar = own.text;
+      // Nothing came back: an error that says what did, not a "nothing to add" turn and on to the next voice
+      // (chat s0mwf2h9yl000pi7l4, Gemma 4 26B: four empty turns in a row).
+      if (!sofar.trim() && !signal.aborted) {
+        const model = (replyModel() || {}).label || 'The model';
+        throw new Error(`${model} sent back no text${r.thinking ? ` (only ${r.thinking.length} characters of thinking)` : ''}.`);
+      }
       if (own.other || !cutOff(r.text, r.speed)) break;
     }
     return sofar;
