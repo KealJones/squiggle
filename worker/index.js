@@ -116,6 +116,10 @@ async function route(request, url, env) {
     // headers; non-browser clients could, which is why it's opt-in).
     const site = request.headers.get('Sec-Fetch-Site');
     if (!request.headers.get('Origin') && site !== 'same-origin') return json({ error: 'Forbidden.' }, 403);
+    // Only fetch() may read a relayed page. A link the app itself shows (in a reply, in a page the model quoted)
+    // is a same-origin navigation too, and opening /api/fetch?url=<any page> that way would run that page's
+    // scripts on the app's own origin, next to the GitHub token.
+    if (isNavigation(request)) return json({ error: 'Forbidden.' }, 403);
     return webRelay(url.searchParams.get('url'));
   }
 
@@ -340,6 +344,13 @@ async function gitRelay(request, url) {
   return new Response(upstream.body, { status: upstream.status, headers: out });
 }
 
+// A request that would show its response as a document (a link, the address bar, an iframe, a worker script)
+// rather than hand it to fetch(). Browsers set these headers themselves; a page can't forge them.
+export function isNavigation(request) {
+  const dest = request.headers.get('Sec-Fetch-Dest');
+  return request.headers.get('Sec-Fetch-Mode') === 'navigate' || Boolean(dest && dest !== 'empty');
+}
+
 async function webRelay(raw) {
   let target;
   try { target = new URL(raw || ''); } catch { return json({ error: 'A full http(s) URL is required.' }, 400); }
@@ -370,6 +381,10 @@ async function webRelay(raw) {
       'X-Upstream-Status': String(r.status),
       'X-Truncated': String(truncated),
       'Access-Control-Expose-Headers': 'X-Final-Url, X-Upstream-Status, X-Truncated',
+      // The body is someone else's page under the relay's origin: if a browser ever does render it (one
+      // without Sec-Fetch headers), it gets no scripts, no origin and no type sniffing. fetch() ignores these.
+      'Content-Security-Policy': "sandbox; default-src 'none'",
+      'X-Content-Type-Options': 'nosniff',
     };
     return new Response(new Blob(chunks), { status: 200, headers });
   } finally {
