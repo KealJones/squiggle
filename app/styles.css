@@ -115,6 +115,9 @@ a { color: var(--action); }
 /* Brainstorm voices (brainstorm.js): a label and a rule down the side, a different colour each */
 .msg.voice-a, .msg.voice-b { padding-left: 12px; border-left: 3px solid var(--action); }
 .msg.voice-b { border-left-color: var(--marker); }
+.msg.voice-s { border-left: 3px double var(--ink-soft); padding-left: 12px; }
+.brainstorm-bar .wrap-btn { margin-left: auto; }
+.brainstorm-bar .wrap-btn + .btn { margin-left: 0; }
 .voice-label { font-size: 0.78rem; font-weight: 600; color: var(--ink-soft); margin-bottom: 4px; }
 .msg .body > :first-child { margin-top: 0; }
 .msg .body > :last-child { margin-bottom: 0; }

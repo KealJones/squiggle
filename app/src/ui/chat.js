@@ -165,10 +165,11 @@ function newChatSettings() {
 
 export function messageEl(m, { inThread, streaming, session }) {
   const current = state.current;
-  const el = h('div', { class: `msg ${m.role}${m.voice ? ' voice-' + m.voice.toLowerCase() : ''}`, 'data-mid': m.id || '' });
+  const who = m.decision ? 'S' : m.voice;   // a brainstorm's wrap-up is written by "Squiggle"
+  const el = h('div', { class: `msg ${m.role}${who ? ' voice-' + who.toLowerCase() : ''}`, 'data-mid': m.id || '' });
   const col = h('div', { style: m.role === 'user' ? 'display:flex;flex-direction:column;align-items:flex-end;width:100%' : '' });
   if (m.role === 'assistant') {
-    if (m.voice) col.append(h('div', { class: 'voice-label' }, voiceLabel(m.voice, m.phase)));
+    if (who) col.append(h('div', { class: 'voice-label' }, voiceLabel(who, m.decision ? 'decision' : m.phase)));
     const owner = session || current;
     const task = m.task && owner && owner.tasks && owner.tasks[m.task];
     if (task) col.append(planEl(task, { live: false }));
@@ -381,7 +382,7 @@ function syncSendButton() {
 }
 
 // ── A turn ─────────────────────────────────────────────────────────────────
-export async function send(text, threadId, files = []) {
+export async function send(text, threadId, files = [], opts = {}) {
   if (state.busy) return;
   await useSessionModel(state.current);
   if (state.modelState !== 'ready') {
@@ -390,7 +391,7 @@ export async function send(text, threadId, files = []) {
     if (!ok) return;
   }
   const session = state.current;
-  if (session.brainstorm && !threadId) return runBrainstorm(text, files);
+  if (session.brainstorm && !threadId) return runBrainstorm(text, files, opts);
   // The first message settles the chat's context type: what was picked, or the default (it's shown, not changed, after).
   if (!session.contextMode && !session.messages.some(m => !m.deleted)) session.contextMode = agent.settings.defaultContextMode || 'compact';
   const container = threadId ? $('#thread-messages') : $('#messages-inner');
@@ -479,16 +480,22 @@ function renderBrainstormBar() {
   const started = on && session.messages.some(m => m.role === 'assistant' && m.voice && !m.deleted);
   bar.hidden = !(run || (started && !state.busy));
   if (bar.hidden) return;
-  const queued = run && run.steer.length ? ` · you'll jump in after this turn` : '';
+  // The wrap-up (summary and decision) is the transcript framing's: asked for while it runs, it comes after this turn.
+  const wraps = brainstorm.framingOf(session) === 'transcript';
+  const note = run && run.wrap ? ' · wrapping up after this turn' : run && run.steer.length ? ` · you'll jump in after this turn` : '';
+  const wrapBtn = (onclick) => (wraps ? h('button', { type: 'button', class: 'btn wrap-btn', onclick }, 'Wrap up') : '');
   bar.replaceChildren(...(run
-    ? [squiggleWait(), h('span', {}, `Brainstorming${queued}`), h('button', { type: 'button', class: 'btn', onclick: () => state.controller && state.controller.abort() }, icon('i-stop'), 'Stop')]
-    : [h('span', { class: 'muted' }, 'Brainstorm stopped.'), h('button', { type: 'button', class: 'btn', onclick: (e) => { e.currentTarget.disabled = true; send('', null, []); } }, 'Keep going')]));
+    ? [squiggleWait(), h('span', {}, `Brainstorming${note}`), run.wrap ? '' : wrapBtn(() => { run.wrap = true; renderBrainstormBar(); }),
+      h('button', { type: 'button', class: 'btn main-btn', onclick: () => state.controller && state.controller.abort() }, icon('i-stop'), 'Stop')]
+    : [h('span', { class: 'muted' }, 'Brainstorm stopped.'),
+      wrapBtn((e) => { e.currentTarget.disabled = true; send('', null, [], { wrap: true }); }),
+      h('button', { type: 'button', class: 'btn main-btn', onclick: (e) => { e.currentTarget.disabled = true; send('', null, []); } }, 'Keep going')]));
 }
 
 // "Squiggle A · listing options": which voice, and which phase of the brainstorm (transcript framing).
 const voiceLabel = (v, phase) => (brainstorm.VOICES[v] || v) + (brainstorm.PHASES[phase] ? ` · ${brainstorm.PHASES[phase]}` : '');
 
-async function runBrainstorm(text, files) {
+async function runBrainstorm(text, files, { wrap = false } = {}) {
   if (state.brainstorm) return;   // one run at a time (a second Keep going while the model loaded)
   const session = state.current;
   if (files.length) toast('Brainstorms don\'t read attachments; sending just the text.');
@@ -503,12 +510,13 @@ async function runBrainstorm(text, files) {
   }
   if (!session.messages.some(m => m.role === 'user' && !m.deleted)) return;
   const controller = state.controller = new AbortController();
-  const run = state.brainstorm = { session, steer: [] };
+  const run = state.brainstorm = { session, steer: [], wrap: false };
   setBusy(true);
   let live = null, body = null, smooth = null;
   try {
     const why = await brainstorm.run({
       session, signal: controller.signal,
+      wrapOnly: wrap, wantsWrap: () => run.wrap,
       takeSteer: () => { const t = run.steer.splice(0).join('\n\n'); renderBrainstormBar(); return t; },
       ui: {
         onSteer: (m) => { if (here()) { $('#messages-inner').append(messageEl(m, { inThread: false })); scrollDown(scroller); } },
@@ -530,8 +538,9 @@ async function runBrainstorm(text, files) {
         },
       },
     });
-    if (why === 'limit') toast(`Paused after ${brainstorm.MAX_TURNS} turns. Keep going or jump in to carry on.`);
-    if (why === 'stuck') toast('Stopped: a voice kept repeating an earlier turn. Jump in to steer it somewhere new, or Keep going.');
+    const wrapped = brainstorm.framingOf(session) === 'transcript' ? ' and wrapped up' : '';
+    if (why === 'limit') toast(`Paused after ${brainstorm.MAX_TURNS} turns${wrapped}. Keep going or jump in to carry on.`);
+    if (why === 'stuck') toast(`A voice kept repeating an earlier turn, so it stopped there${wrapped}. Jump in to steer it somewhere new, or Keep going.`);
   } finally {
     if (smooth) smooth.stop();
     // Typed to jump in, but the run ended first (Stop, the turn limit, an error): it's kept, and the next run starts from it.

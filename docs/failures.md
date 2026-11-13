@@ -399,3 +399,25 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   stops the run and says so; repeats already saved are left out of the transcript.
 - **Caught by:** tests/brainstorm.test.js ("phases", "repeats", which uses this chat's own looping turns); e2e
   "brainstorm chat" (LOOP). Whether the voices now list shapes first is model behaviour: not covered.
+
+### 24. A brainstorm with no ending, and a testing turn pasted from two old ones
+
+- **Asked:** a transcript brainstorm with phases (`s0mweal56h0007v3ch`), 2026-11-12: "What would an alternative
+  architecture to Neural Nets be like that is as good?"
+- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm.js after case 23.
+- **What it did:** the phases worked: four real lists (spiking nets, liquid/neural ODEs, tensor networks, neuromorphic
+  hardware…) and a grouping turn with a "Best answer so far". Then B's first testing turn was its own listing turn
+  word for word with A's best-answer line pasted after it, and A's next turn restated the grouping. The voices
+  narrated themselves ("A suggests…", "A adds…"). Nothing ever closed the brainstorm: Keal stepped in with "we gotta
+  get a summary and final decision message".
+- **Why it's bad:** the repeat check compared a turn with one earlier turn at a time, so a turn stitched from two
+  passed. A brainstorm that stops without a decision leaves the person to read every turn to find the answer.
+- **Good answer:** B's testing turn tests the grouping's answer; the brainstorm ends with what was considered, what
+  it decided and why.
+- **Fix:** `isRepeat` measures against everything said before together and leaves "Best answer so far" lines out (an
+  answer that holds may repeat); the turn prompt says to write in the first person. A wrap-up by "Squiggle"
+  (Summary, Decision, Why, Still open; `wrapUpSystem`) after six testing turns (`wrapUpDue`), when a run gets
+  stuck or hits the turn limit, or on the bar's Wrap up button after the turn in progress.
+- **Caught by:** tests/brainstorm.test.js ("a turn pasted together from two earlier turns", with this chat's turns;
+  "wrap-up"); e2e "brainstorm chat" (wrap-up after stuck, Wrap up button). Whether the wrap-up's decision is any
+  good is model behaviour: not covered.

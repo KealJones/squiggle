@@ -117,9 +117,10 @@ export async function respond(conv, input, { onText } = {}) {
   // LONGDOC: A's first reply stops for length (the window filled at 380 tokens) and is handed back to finish.
   // LOOP: B says the same long thing every turn (A says something new): the repeat is thrown away, retried, then the run stops.
   const sys = (conv.cfg && conv.cfg.system) || '';
+  if (/You write the wrap-up for the person/.test(sys)) { window.__smallSpeed = { tokens: 40, finish: 'stop' }; return say('**Decision**: the wrap-up for this brainstorm.', onText); }
   const bs = /brainstorm/.test(sys) && (sys.match(/You write ([AB])'s turns/) || sys.match(/You are the (builder|critic)/));
   if (bs) {
-    await new Promise(r => setTimeout(r, 120));
+    await new Promise(r => setTimeout(r, 300));   // slow enough that a test can steer and stop before the wrap-up (turn 12)
     const v = bs[1] === 'builder' ? 'A' : bs[1] === 'critic' ? 'B' : bs[1];
     const transcript = /You write [AB]'s turns/.test(sys);
     if (/LOOP/.test(input)) {

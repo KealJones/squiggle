@@ -1654,7 +1654,7 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   assert.equal(await D.page.getAttribute('#input', 'placeholder'), 'Pitch an idea to brainstorm');
   await D.page.fill('#input', 'a coffee shop for dogs');
   await D.page.press('#input', 'Enter');
-  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) button');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .main-btn');
   await D.page.waitForFunction(() => document.querySelectorAll('#messages-inner .msg.voice-b').length >= 1);
   // Jump in while it runs: the text is queued and added before the next voice speaks.
   await D.page.fill('#input', 'focus on money');
@@ -1662,7 +1662,7 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   await D.page.press('#input', 'Enter');
   await D.page.waitForFunction(() => [...document.querySelectorAll('#messages-inner .msg.user')].some(m => /focus on money/.test(m.textContent)));
   await D.page.waitForFunction(() => [...document.querySelectorAll('#messages-inner .msg.assistant')].some(m => /brainstorm: focus on money/.test(m.textContent)));
-  await D.page.click('.brainstorm-bar button');
+  await D.page.click('.brainstorm-bar .main-btn');
   await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
   assert.match(await D.page.textContent('.brainstorm-bar'), /Brainstorm stopped.*Keep going/);
   const s = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current);
@@ -1677,16 +1677,16 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   assert.match(said[2].content, /^B answers: A: A answers: The person who started this brainstorm/);
   // Keep going picks up with the next voice.
   const before = voices.length;
-  await D.page.click('.brainstorm-bar button');
+  await D.page.click('.brainstorm-bar .main-btn');
   await D.page.waitForFunction((n) => document.querySelectorAll('#messages-inner .msg.assistant').length > n, before);
-  await D.page.click('.brainstorm-bar button');
+  await D.page.click('.brainstorm-bar .main-btn');
   await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
   // Typed to jump in right before Stop: it isn't lost (review 2026-11-12), it's in the chat for the next run.
-  await D.page.click('.brainstorm-bar button');
+  await D.page.click('.brainstorm-bar .main-btn');
   await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .btn svg');
   await D.page.fill('#input', 'late steer');
   await D.page.press('#input', 'Enter');
-  await D.page.click('.brainstorm-bar button');
+  await D.page.click('.brainstorm-bar .main-btn');
   await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
   const kept = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.filter(m => m.role === 'user' && m.content === 'late steer').length);
   assert.equal(kept, 1, 'the steer is in the chat once');
@@ -1697,7 +1697,7 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   await D.page.fill('#input', 'LONGDOC write the spec');
   await D.page.press('#input', 'Enter');
   await D.page.waitForFunction(() => document.querySelectorAll('#messages-inner .msg.voice-b').length >= 1);
-  await D.page.click('.brainstorm-bar button');
+  await D.page.click('.brainstorm-bar .main-btn');
   await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
   const long = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.find(m => m.voice === 'A').content);
   assert.equal(long, 'A answers: the first half of the spec and the second half of the spec.');
@@ -1708,7 +1708,7 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   await D.page.fill('#input', 'SCRIPT an idea');
   await D.page.press('#input', 'Enter');
   await D.page.waitForFunction(() => document.querySelectorAll('#messages-inner .msg.voice-b').length >= 1);
-  await D.page.click('.brainstorm-bar button');
+  await D.page.click('.brainstorm-bar .main-btn');
   await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
   const script = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.find(m => m.voice === 'A').content);
   assert.equal(script, 'my turn');
@@ -1722,6 +1722,21 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   const loop = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.filter(m => m.voice).map(m => m.voice + ':' + m.phase));
   assert.deepEqual(loop, ['A:diverge', 'B:diverge', 'A:diverge'], 'B\'s copy never saved, the run stopped at it');
   assert.match(await D.page.textContent('#messages-inner'), /Squiggle A · listing options/);
+  // Stuck ends with the wrap-up, like a run that finishes (s0mweal56h0007v3ch: "we gotta get a summary and final decision").
+  await D.page.waitForSelector('#messages-inner .msg.voice-s');
+  assert.match(await D.page.textContent('#messages-inner .msg.voice-s'), /Squiggle · wrap-up[^]*Decision/);
+  // Wrap up while it runs: the current turn finishes, then the wrap-up, then it stops.
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.fill('#input', 'a bike for fish');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .wrap-btn');
+  await D.page.click('.brainstorm-bar .wrap-btn');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const ended = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.filter(m => m.role === 'assistant').map(m => (m.decision ? 'wrap' : m.voice)));
+  assert.equal(ended[ended.length - 1], 'wrap');
+  assert.ok(ended.length <= 3, `wrapped up right after the turn in progress: ${ended}`);
   // The role flip is still there to compare: the other voice arrives as the user.
   await D.page.click('#new-chat');
   await D.page.click('.chat-setup > summary');
@@ -1732,7 +1747,7 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   await D.page.fill('#input', 'a hat for snakes');
   await D.page.press('#input', 'Enter');
   await D.page.waitForFunction(() => document.querySelectorAll('#messages-inner .msg.voice-b').length >= 1);
-  await D.page.click('.brainstorm-bar button');
+  await D.page.click('.brainstorm-bar .main-btn');
   await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
   const flip = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current);
   assert.equal(flip.brainstorm, 'flip');
@@ -1740,7 +1755,7 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   assert.match(flip.messages.find(m => m.voice === 'B').content, /^B answers: A answers: a hat for snakes$/);
   // Typing in a thread's composer during a run never steers the main brainstorm (review 2026-11-12); like any busy
   // composer, it's Stop.
-  await D.page.click('.brainstorm-bar button');
+  await D.page.click('.brainstorm-bar .main-btn');
   await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .btn svg');
   await D.page.hover('.msg.voice-a >> nth=0');
   await D.page.click('.msg.voice-a >> nth=0 >> [aria-label="Reply in thread"]');
