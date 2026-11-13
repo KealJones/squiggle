@@ -32,8 +32,17 @@ const ROLE = {
 // The same jobs, for the transcript framing, where the model writes a named speaker's lines.
 const PART = {
   A: 'A is the builder: pushes the idea further with new, concrete ideas, and when B criticizes something, either fixes it or says plainly why the criticism is wrong.',
-  B: 'B is the critic: starts every turn with the weakest or riskiest part of what A just said and why it would fail, then offers a fix or a different direction, and agrees only with what survives that.',
+  B: 'B is the critic: starts every turn with the weakest or riskiest part of what A just said and why it would fail, including anywhere A made the person\'s idea safer or more ordinary than they asked for, then offers a fix or a different direction, and agrees only with what survives that.',
 };
+// The person's idea is the point (chat s0mwec78t10005me61, 2026-11-12: "an app that just shows the last thing said by each
+// person… everything that gets said is replaced" became a chat app with history, search and "show last N turns";
+// Keal: "they took my fun stupid idea and make it normal ass boring normal chat").
+const PREMISE = 'The person\'s idea is the point. Take it exactly as they said it, including whatever makes it strange, impractical or funny, and push it further on its own terms. Don\'t fix it, soften it, or turn it into something ordinary.';
+
+// Sampling for brainstorm turns: LFM3's card says temperature 0.1 for chat and agents, nearly greedy, which is how two
+// voices handed almost the same transcript wrote the same turn again and kept every idea ordinary. Hotter while
+// listing, a little cooler while testing, the card's own for the wrap-up. A presence penalty against reusing words.
+export const SAMPLING = { diverge: { temperature: 0.9, presence: 0.6 }, cluster: { temperature: 0.7, presence: 0.4 }, converge: { temperature: 0.7, presence: 0.4 } };
 const other = (v) => (v === 'A' ? 'B' : 'A');
 
 // Phases, by how many voice turns came before this one ("diverge before you converge": generate options without
@@ -57,10 +66,11 @@ export function wrapUpDue(line) {
 }
 export function wrapUpSystem(topic) {
   return [
-    `This is the end of a brainstorm between two partners, A and B. The question, from the person who started it: ${clipMiddle(String(topic || ''), TOPIC)}`,
+    `This is the end of a brainstorm between two partners, A and B. What the person who started it said: ${clipMiddle(String(topic || ''), TOPIC)}`,
+    PREMISE,
     'You write the wrap-up for the person, in four short parts with these headings:',
     '**Summary**: the options the brainstorm considered, grouped, a few bullets.',
-    '**Decision**: the one answer to the question it lands on, stated plainly, even if it is a hypothesis.',
+    '**Decision**: the one take on the idea, or answer to the question, it lands on, stated plainly, even if it is a hypothesis.',
     '**Why**: the reasons, including which of B\'s objections it survives and which it doesn\'t.',
     '**Still open**: what is untested and how to test it.',
     'Write it for the person, not for A or B: no "A:" or "B:" labels.',
@@ -70,9 +80,9 @@ export function wrapUpSystem(topic) {
 // answer (Keal: "always got to keep that question in mind… even if it is just a hypothesis, get into a proposal").
 export const BEST = 'Best answer so far:';
 const PHASE_PART = {
-  diverge: (v) => `Right now both partners are only generating options. ${v} adds possible answers to the question that nobody has listed yet, as a short list with one line each on why it could work. No judging, no picking a winner, no details or recipes yet.`,
-  cluster: (v) => `Now ${v} restates the person's question in one line, groups every option listed so far into a few themes, says which best answer the question and why, and ends with a line starting "${BEST}" giving a first answer, even if it's only a hypothesis. No new options.`,
-  converge: (v) => `${PART[v]} Everything is judged by whether it answers the person's question; anything that drifts away from it gets pulled back to it. ${v} ends every turn with a line starting "${BEST}" giving its current answer to the question, even if it's only a hypothesis.`,
+  diverge: (v) => `Right now both partners are only generating options. ${v} adds directions for the person's idea (or answers to their question) that nobody has listed yet, the bolder the better, as a short list with one line each on why it could work. No judging, no picking favourites, no details yet.`,
+  cluster: (v) => `Now ${v} restates the person's idea or question in one line, groups every option listed so far into a few themes, says which fit what the person asked for best and why, and ends with a line starting "${BEST}" giving a first take, even if it's only a hypothesis. No new options.`,
+  converge: (v) => `${PART[v]} Everything is judged by whether it serves what the person asked for; anything that drifts away from it gets pulled back to it. ${v} ends every turn with a line starting "${BEST}" giving its current take, even if it's only a hypothesis.`,
 };
 // A long idea (a pasted page of notes) is cut in the middle, keeping its start and end.
 export const clipMiddle = (s, chars) => (s.length <= chars ? s : s.slice(0, Math.ceil(chars / 2)) + ' … ' + s.slice(-Math.floor(chars / 2)));
@@ -85,10 +95,11 @@ export const PERSON = 'The person who started this brainstorm';
 export function systemFor(voice, topic, steer = '', framing = 'flip', { phase = 'converge', retry = false } = {}) {
   topic = clipMiddle(String(topic || ''), TOPIC);
   if (framing === 'transcript') return [
-    `This is a brainstorm between two partners, A and B. The question, from the person who started it: ${topic}`,
+    `This is a brainstorm between two partners, A and B. What the person who started it said: ${topic}`,
+    PREMISE,
     ...(steer ? [`The person who started it just stepped in and said: "${steer}". This turn follows that direction, whatever ${other(voice)} last said.`] : []),
     `You write ${voice}'s turns. ${(PHASE_PART[phase] || PHASE_PART.converge)(voice)}`,
-    `${voice} never opens with praise or agreement: the first sentence is about the question. No repeating earlier points. Take as much space as the turn needs.`,
+    `${voice} never opens with praise or agreement: the first sentence is about the idea. No repeating earlier points, and no questions for anyone at the end. Take as much space as the turn needs.`,
     `Write ${voice}'s own words in the first person ("I'd try…"), not a description of what ${voice} says.`,
     ...(retry ? [`${voice}'s last try repeated an earlier turn almost word for word and was thrown away: this turn says something that isn't in the transcript yet.`] : []),
     `Reply with ${voice}'s next turn only: no "${voice}:" label and nothing for anyone else.`,
@@ -183,9 +194,17 @@ export function viewFor(line, voice, budget = Infinity) {
 const LEAD = /^\s*(?:\*\*)?[AB](?::\*\*|\*\*:|:)[ \t]*/;   // B:, **B:** or **B**:
 // A blank line before it, as transcriptFor joins turns: a "Q: … / A: …" list inside a turn doesn't end it.
 const NEXT = new RegExp(`\\n[ \\t]*\\n[ \\t]*(?:\\*\\*)?(?:A|B|${PERSON})(?::\\*\\*|\\*\\*:|:)`);
+// LFM3 sometimes thinks out loud with thinking off and closes it with a stray </think> (chat s0mwec78t10005me61, three
+// turns in a row): what comes after it is the turn, what came before was the draft.
+export function dropThinking(text) {
+  const t = String(text || ''), i = t.lastIndexOf('</think>');
+  if (i < 0) return t;
+  const after = t.slice(i + 8).replace(/^\s+/, '');
+  return after || t.slice(0, i).replace(/<think>/g, '').trimEnd();
+}
 export function ownTurn(text, framing = 'transcript') {
-  if (framing !== 'transcript') return { text, other: false };
-  const t = String(text || '').replace(LEAD, '');
+  if (framing !== 'transcript') return { text: dropThinking(text), other: false };
+  const t = dropThinking(text).replace(LEAD, '');
   const m = t.match(NEXT);
   return m ? { text: t.slice(0, m.index).trimEnd(), other: true } : { text: t, other: false };
 }
@@ -258,14 +277,14 @@ export async function run({ session, signal, ui = {}, takeSteer = () => '', want
   const topicOf = (line) => (turns(line).find(m => m.role === 'user') || {}).content || '';
 
   // One turn (a voice's, or the wrap-up as 'S'), continued while it's cut off and stopped where another speaker starts.
-  async function speak(line, voice, systemOf) {
+  async function speak(line, voice, systemOf, sampling = null) {
     let sofar = '';
     for (let piece = 0; piece < MAX_PIECES && !signal.aborted; piece++) {
       const r = await engine.foreground(async () => {
         const system = systemOf(sofar);
         const budget = engine.contextFor(engine.currentModel()) - PIECE - est(system) - 200;
         const { messages } = framing === 'transcript' ? transcriptFor(line, voice, budget) : viewFor(line, voice, budget);
-        const conv = await engine.conversation({ system, messages: messages.slice(0, -1), maxOutputTokens: PIECE });
+        const conv = await engine.conversation({ system, messages: messages.slice(0, -1), maxOutputTokens: PIECE, sampling });
         // This call stops as soon as the model starts another speaker's turn (ownTurn); Stop still stops it all.
         const call = new AbortController();
         const stop = () => call.abort();
@@ -322,7 +341,7 @@ export async function run({ session, signal, ui = {}, takeSteer = () => '', want
       try {
         const st = latestSteer(line);
         const opts = { phase: phase || 'converge', retry: repeats > 0 };
-        text = (await speak(line, voice, (sofar) => (sofar ? continueSystem(voice, topic, sofar, st, framing, opts) : systemFor(voice, topic, st, framing, opts)))).trim();
+        text = (await speak(line, voice, (sofar) => (sofar ? continueSystem(voice, topic, sofar, st, framing, opts) : systemFor(voice, topic, st, framing, opts)), SAMPLING[phase || 'converge'])).trim();
       } catch (e) { error = e; }
       // A repeat is thrown away, never saved, so the transcript never shows it twice; one more try, then the run stops.
       if (error || signal.aborted || !isRepeat(text, turns(line).filter(m => m.role === 'assistant').map(m => m.content))) break;
