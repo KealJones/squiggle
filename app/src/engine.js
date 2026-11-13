@@ -488,9 +488,11 @@ const GREEDY = { type: 3 };
 const litertSampler = (s) => ({ type: 2, p: s.top_p, k: s.top_k, temperature: s.temperature });
 
 // Starts a conversation from a preface: system text, prior turns, tools.
-export async function conversation({ system, messages = [], tools = [], thinking = false, maxOutputTokens = 2048, greedy = false, known = [], gate = null }) {
+// `sampling` overrides parts of the model card's profile for this conversation (brainstorm.js runs hotter).
+export async function conversation({ system, messages = [], tools = [], thinking = false, maxOutputTokens = 2048, greedy = false, known = [], gate = null, sampling = null }) {
   if (!engine) throw new Error('Model not loaded.');
-  const gen = generationFor();
+  const card = generationFor();
+  const gen = sampling ? { ...card, sampling: { ...card.sampling, ...sampling } } : card;
   const preface = {
     messages: [{ role: 'system', content: system }, ...messages],
     // A model trained without thinking (thinking: false in MODELS) gets the prompt it was trained on.

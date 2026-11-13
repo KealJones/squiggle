@@ -421,3 +421,28 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 - **Caught by:** tests/brainstorm.test.js ("a turn pasted together from two earlier turns", with this chat's turns;
   "wrap-up"); e2e "brainstorm chat" (wrap-up after stuck, Wrap up button). Whether the wrap-up's decision is any
   good is model behaviour: not covered.
+
+### 25. A fun, weird idea came back as an ordinary chat app, and the voices agreed about it
+
+- **Asked:** a transcript brainstorm (`s0mwec78t10005me61`), 2026-11-12: "An app that just shows the last thing said by
+  each person in a conversation, everything that gets said is replaced by the most recent thing said." Keal, 7 turns
+  in: "Yall stfu that's not the point."
+- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm.js after case 24 (phases, wrap-up), sampling from LFM3's card
+  (temperature 0.1).
+- **What it did:** A's first list already kept "history elsewhere"; B added a "last two turns" toggle, a timestamp badge
+  and "collapse/expand mode that reveals prior replies", and both picked favourites during the listing phase ("I'd
+  try Option 3"), ending turns with "Anything else you want added before we pick?". The converge turns specced a
+  stacked timeline with full searchable history: the premise (nothing but the latest message survives) was gone by
+  turn two, and B never objected. Three turns carried a stray `</think>` with a restarted turn after it.
+- **Why it's bad:** the person's strange constraint was the idea; treating it as a problem to fix turns every playful
+  brainstorm into a requirements meeting. The prompts were built for decision questions ("possible answers to the
+  question", "best answer"), and near-greedy sampling pulls a small model to the most ordinary continuation.
+- **Good answer:** directions that lean into the constraint (what the app feels like when every message erases the
+  last; who would use it; what breaks socially), with B calling out anything that sneaks history back in.
+- **Fix:** every prompt says the person's idea is the point, taken as stated and pushed further on its own terms
+  (`PREMISE`); the phases talk about the person's idea or question, not only a question; B's critique includes
+  anywhere A made the idea safer or more ordinary; no questions at the end of a turn. Brainstorm turns sample hotter
+  than the card (`SAMPLING`: 0.9 listing, 0.7 after, with a presence penalty; `engine.conversation({ sampling })`).
+  A stray `</think>` keeps only what comes after it (`dropThinking`).
+- **Caught by:** tests/brainstorm.test.js ("the person's idea is the point", "a stray </think>"). Whether the voices
+  now keep a weird premise is model behaviour: not covered.

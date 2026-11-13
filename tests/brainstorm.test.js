@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { viewFor, transcriptFor, framingOf, nextVoice, systemFor, continueSystem, cutOff, latestSteer, ownTurn, clipMiddle, phaseOf, isRepeat, wrapUpDue, wrapUpSystem, BEST, PIECE, PERSON } from '../app/src/brainstorm.js';
+import { viewFor, transcriptFor, framingOf, nextVoice, systemFor, continueSystem, cutOff, latestSteer, ownTurn, clipMiddle, phaseOf, isRepeat, wrapUpDue, wrapUpSystem, dropThinking, SAMPLING, BEST, PIECE, PERSON } from '../app/src/brainstorm.js';
 
 let n = 0;
 const msg = (role, content, extra = {}) => ({ id: 'm' + (++n), role, content, ts: n, thread: null, ...extra });
@@ -148,7 +148,7 @@ test('a long idea is cut in the middle and the latest turn still fits in a 4K wi
   const turnA = msg('assistant', 'A has a plan', { voice: 'A' });
   const est = (t) => Math.ceil(t.length / 3);
   const system = systemFor('B', idea, '', 'transcript');
-  assert.ok(system.length < 1500, `system prompt ${system.length} chars`);
+  assert.ok(system.length < 2000, `system prompt ${system.length} chars`);
   assert.match(system, /IDEA START[^]* … [^]*IDEA END/);
   const budget = 4096 - PIECE - est(system) - 200;
   const t = transcriptFor([longSeed, turnA], 'B', budget).messages[0].content;
@@ -172,9 +172,9 @@ test('phases: diverge for four turns, one cluster turn, then converge; each tied
   const diverge = systemFor('B', 'noodles?', '', 'transcript', { phase: 'diverge' });
   assert.match(diverge, /only generating options/);
   assert.doesNotMatch(diverge, /critic|weakest/, 'no judging while options are listed');
-  assert.match(diverge, /The question, from the person who started it: noodles\?/);
+  assert.match(diverge, /What the person who started it said: noodles\?/);
   const cluster = systemFor('A', 'noodles?', '', 'transcript', { phase: 'cluster' });
-  assert.match(cluster, /restates the person's question[^]*groups every option/);
+  assert.match(cluster, /restates the person's idea or question[^]*groups every option/);
   assert.ok(cluster.includes(BEST));
   const converge = systemFor('B', 'noodles?', '', 'transcript', { phase: 'converge' });
   assert.match(converge, /B is the critic/);
@@ -218,8 +218,28 @@ test('wrap-up: due after six testing turns (and six more after each wrap-up), wr
   assert.equal(wrapUpDue([...wrapped, ...voices(6)]), true);
   const sys = wrapUpSystem('noodles?');
   for (const part of ['**Summary**', '**Decision**', '**Why**', '**Still open**']) assert.ok(sys.includes(part), part);
-  assert.match(sys, /The question, from the person who started it: noodles\?/);
+  assert.match(sys, /What the person who started it said: noodles\?/);
   const t = transcriptFor(wrapped, 'S').messages[0].content;
   assert.match(t, /\n\nWrap-up: summary\n\nThe question: A coffee shop for dogs\nNow write the wrap-up\.$/);
   assert.match(systemFor('A', 'q', '', 'transcript'), /in the first person/);
+});
+
+// Chat s0mwec78t10005me61 (2026-11-12): "an app that just shows the last thing said by each person" came back as a
+// chat app with history, search and a "last N turns" toggle.
+test('the person\'s idea is the point: every phase and the wrap-up say to keep it as it is', () => {
+  for (const phase of ['diverge', 'cluster', 'converge']) {
+    for (const v of ['A', 'B']) assert.match(systemFor(v, 'x', '', 'transcript', { phase }), /Take it exactly as they said it[^]*Don't fix it, soften it, or turn it into something ordinary/);
+  }
+  assert.match(wrapUpSystem('x'), /Don't fix it, soften it/);
+  assert.match(systemFor('B', 'x', '', 'transcript'), /anywhere A made the person's idea safer or more ordinary/);
+  assert.match(systemFor('A', 'x', '', 'transcript'), /no questions for anyone at the end/);
+  assert.ok(SAMPLING.diverge.temperature > 0.5 && SAMPLING.converge.temperature > 0.5, 'hotter than LFM3\'s 0.1');
+});
+
+test('a stray </think> with thinking off: the turn is what comes after it', () => {
+  const leaked = 'Best answer so far: stacked timeline.</think>I\'d merge the stacked timeline with speaker labels.';
+  assert.equal(dropThinking(leaked), 'I\'d merge the stacked timeline with speaker labels.');
+  assert.equal(ownTurn(leaked).text, 'I\'d merge the stacked timeline with speaker labels.');
+  assert.equal(dropThinking('still drafting </think>'), 'still drafting', 'nothing after it yet (streaming): keep the draft');
+  assert.equal(dropThinking('no tags here'), 'no tags here');
 });
