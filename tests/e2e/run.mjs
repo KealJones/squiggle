@@ -1737,6 +1737,16 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   const ended = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.filter(m => m.role === 'assistant').map(m => (m.decision ? 'wrap' : m.voice)));
   assert.equal(ended[ended.length - 1], 'wrap');
   assert.ok(ended.length <= 3, `wrapped up right after the turn in progress: ${ended}`);
+  // A reply with no text stops the run with an error saying so, not a "nothing to add" turn and on to the next voice.
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.fill('#input', 'EMPTY idea');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const empty = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.filter(m => m.role === 'assistant'));
+  assert.equal(empty.length, 1, 'stopped at the first empty reply');
+  assert.match(empty[0].error, /sent back no text \(only 26 characters of thinking\)/);
   // The role flip is still there to compare: the other voice arrives as the user.
   await D.page.click('#new-chat');
   await D.page.click('.chat-setup > summary');

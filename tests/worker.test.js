@@ -320,3 +320,15 @@ test('search: Tavily first for "latest" questions (past year), LangSearch first 
     assert.equal((await first('latest pokemon tv series')).url, 'https://l.com/1', 'Tavily out of credits: LangSearch');
   } finally { globalThis.fetch = orig; }
 });
+
+test('cloud model: thinking on or off passes through (and nothing else from the template)', async () => {
+  const { env: e, calls } = aiEnv();
+  const f = ghUser();
+  try {
+    const body = { messages: [{ role: 'user', content: 'hi' }], max_tokens: 200, chat_template_kwargs: { enable_thinking: false, add_generation_prompt: false } };
+    assert.equal((await worker.fetch(aiReq('KealJones', body), e)).status, 200);
+    assert.deepEqual(calls[0].body.chat_template_kwargs, { enable_thinking: false });
+    assert.equal((await worker.fetch(aiReq('KealJones'), e)).status, 200);
+    assert.equal(calls[1].body.chat_template_kwargs, undefined, 'callers that don\'t say leave it to the model');
+  } finally { f.mock.restore(); }
+});

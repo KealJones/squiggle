@@ -428,6 +428,11 @@ async function aiChat(request, env) {
   const req = { messages: body.messages, max_tokens: Math.min(Number(body.max_tokens) || 1024, AI_MAX_OUTPUT) };
   if (Array.isArray(body.tools) && body.tools.length) req.tools = body.tools;
   for (const k of ['temperature', 'top_p', 'top_k']) if (typeof body[k] === 'number') req[k] = body[k];
+  // Thinking on or off, for callers that say (brainstorm turns: chat s0mwf2h9yl000pi7l4 came back empty four turns
+  // running, likely all reasoning). Only that one template switch passes through.
+  if (body.chat_template_kwargs && typeof body.chat_template_kwargs === 'object' && 'enable_thinking' in body.chat_template_kwargs) {
+    req.chat_template_kwargs = { enable_thinking: Boolean(body.chat_template_kwargs.enable_thinking) };
+  }
 
   const estimate = aiEstimate(req);
   const held = await budget(env, 'reserve', estimate);

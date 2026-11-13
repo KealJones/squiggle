@@ -123,6 +123,8 @@ export async function respond(conv, input, { onText } = {}) {
     await new Promise(r => setTimeout(r, 300));   // slow enough that a test can steer and stop before the wrap-up (turn 12)
     const v = bs[1] === 'builder' ? 'A' : bs[1] === 'critic' ? 'B' : bs[1];
     const transcript = /You write [AB]'s turns/.test(sys);
+    // EMPTY: A's reply has no text, only thinking (chat s0mwf2h9yl000pi7l4).
+    if (/EMPTY/.test(input) && v === 'A') { window.__smallSpeed = { tokens: 300, finish: 'stop' }; return { text: '', thinking: 'thought about it at length', toolCalls: [] }; }
     if (/LOOP/.test(input)) {
       window.__smallSpeed = { tokens: 40, finish: 'stop' };
       if (v === 'A') return say(`A adds option ${(String(input).match(/\n\nA: /g) || []).length + 1}`, onText);

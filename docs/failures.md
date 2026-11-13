@@ -446,3 +446,23 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   A stray `</think>` keeps only what comes after it (`dropThinking`).
 - **Caught by:** tests/brainstorm.test.js ("the person's idea is the point", "a stray </think>"). Whether the voices
   now keep a weird premise is model behaviour: not covered.
+
+### 26. Gemma 4 26B brainstorm: four empty turns, each saved as "nothing to add"
+
+- **Asked:** a transcript brainstorm on the cloud model (`s0mwf2h9yl000pi7l4`), 2026-11-13: "An app that only shows the
+  last thing said by the last person in a conversation… This is intentionally bad UX as a gag."
+- **Model:** Gemma 4 26B A4B on Workers AI through the relay, brainstorm.js after case 25.
+- **What it did:** four turns, ~20 s each, every one with no text; the harness saved each as "_(nothing to add)_" and
+  went on to the next voice. Keal read it as the model refusing to play.
+- **Why it's bad:** an empty reply is a failure, and saving it as a turn hid it; four calls of the daily cloud budget went
+  on nothing. The likely cause: Workers AI's Gemma 4 supports reasoning, the relay never said thinking was off, and
+  the reasoning used up the 1,024-token reply, leaving no content (the relay keeps reasoning apart and nothing saved
+  it, so this isn't confirmed).
+- **Good answer:** A's first list.
+- **Fix:** the relay passes `chat_template_kwargs.enable_thinking` through (only that key); the cloud engine sends it for
+  conversations opened with `strictThinking`, which brainstorm turns are (off). A reply with no text is an error that
+  stops the run and says what came back ("Gemma 4 26B (Cloudflare) sent back no text (only N characters of
+  thinking)"), so the next one shows whether thinking was the cause. The relay change needs a deploy (deploy.yml on
+  main); until then the error is what changes.
+- **Caught by:** tests/worker.test.js "thinking on or off passes through"; e2e "brainstorm chat" (EMPTY). Whether
+  Gemma then answers is model behaviour: not covered.
