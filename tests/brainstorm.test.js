@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { viewFor, transcriptFor, framingOf, nextVoice, systemFor, continueSystem, cutOff, latestSteer, ownTurn, clipMiddle, phaseOf, isRepeat, wrapUpDue, wrapUpSystem, dropThinking, SAMPLING, BEST, PIECE, PERSON } from '../app/src/brainstorm.js';
+import { viewFor, transcriptFor, framingOf, nextVoice, systemFor, continueSystem, cutOff, latestSteer, ownTurn, clipMiddle, phaseOf, isRepeat, wrapUpDue, wrapUpSystem, dropThinking, SAMPLING, LOOKUP_HOW, MAX_LOOKUPS, BEST, PIECE, PERSON } from '../app/src/brainstorm.js';
 
 let n = 0;
 const msg = (role, content, extra = {}) => ({ id: 'm' + (++n), role, content, ts: n, thread: null, ...extra });
@@ -242,4 +242,16 @@ test('a stray </think> with thinking off: the turn is what comes after it', () =
   assert.equal(ownTurn(leaked).text, 'I\'d merge the stacked timeline with speaker labels.');
   assert.equal(dropThinking('still drafting </think>'), 'still drafting', 'nothing after it yet (streaming): keep the draft');
   assert.equal(dropThinking('no tags here'), 'no tags here');
+});
+
+// Keal, 2026-11-13: "allow web search and full webpage page/grep so that it can have more concrete like data".
+test('lookups: the prompt says which tools, how many, and to say what was found in its own words; none without tools', () => {
+  const t = systemFor('B', 'x', '', 'transcript', { phase: 'converge', lookups: LOOKUP_HOW.bash });
+  assert.match(t, /B can look things up when a fact, number or real example would change the argument, with the bash tool \(search/);
+  assert.ok(t.includes(`at most ${MAX_LOOKUPS} lookups a turn`));
+  assert.match(t, /says what was found in B's own words/);
+  const f = systemFor('A', 'x', '', 'flip', { lookups: LOOKUP_HOW.tools });
+  assert.match(f, /You can look things up[^]*web_search, fetch_url[^]*say what you found in your own words/);
+  assert.doesNotMatch(systemFor('A', 'x', '', 'transcript'), /look things up/);
+  assert.doesNotMatch(wrapUpSystem('x'), /look things up/, 'the wrap-up works from the brainstorm');
 });

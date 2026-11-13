@@ -513,7 +513,7 @@ async function runBrainstorm(text, files, { wrap = false } = {}) {
   const controller = state.controller = new AbortController();
   const run = state.brainstorm = { session, steer: [], wrap: false };
   setBusy(true);
-  let live = null, body = null, smooth = null;
+  let live = null, body = null, smooth = null, trail = null;
   try {
     const why = await brainstorm.run({
       session, signal: controller.signal,
@@ -524,12 +524,14 @@ async function runBrainstorm(text, files, { wrap = false } = {}) {
         onStart: (v, phase) => {
           if (!here()) return;
           body = h('div', { class: 'body' }, squiggleWait());
-          live = h('div', { class: `msg assistant voice-${v.toLowerCase()}` }, h('div', {}, h('div', { class: 'voice-label' }, voiceLabel(v, phase)), body));
+          trail = h('div');   // what this voice looks up, as it goes
+          live = h('div', { class: `msg assistant voice-${v.toLowerCase()}` }, h('div', {}, h('div', { class: 'voice-label' }, voiceLabel(v, phase)), trail, body));
           smooth = smoothText((t) => { body.innerHTML = md(t); if (here() && live && live.isConnected) scrollDown(scroller); });
           $('#messages-inner').append(live);
           scrollDown(scroller);
         },
         onText: (t) => smooth && smooth.feed(t),
+        onTool: (recs) => { if (trail) { trail.replaceChildren(toolTrail(recs)); if (here()) scrollDown(scroller); } },
         onDone: (m) => {
           if (smooth) smooth.stop();
           // Left and came back mid-turn: the list was redrawn without the live turn, so the finished one is added.

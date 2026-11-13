@@ -16,6 +16,8 @@
 
 export const VOICES = { A: 'Squiggle A', B: 'Squiggle B', S: 'Squiggle' };   // S writes the wrap-up
 export const MAX_TURNS = 20;      // per run, so a forgotten tab doesn't brainstorm all night; "Keep going" starts another
+export const MAX_LOOKUPS = 3;     // tool calls a voice may make in one turn
+const TOOL_ROOM = 1000;           // tokens kept free in the window for what lookups bring back
 export const PIECE = 1024;        // tokens one call writes (engine-wllama's most); a longer turn is continued
 export const MAX_PIECES = 8;      // calls per turn: room for a long document, not a runaway
 const TAIL = 2400;                // characters of a cut-off turn shown back when it continues (its end is what matters)
@@ -91,8 +93,15 @@ const TOPIC = 600;                // characters of the idea in a system prompt; 
 export const framingOf = (session) => (session && (session.brainstorm === 'flip' || session.brainstorm === true) ? 'flip' : 'transcript');
 export const PERSON = 'The person who started this brainstorm';
 
-// opts.phase: the transcript framing's phase (default converge); opts.retry: the last try repeated an earlier turn.
-export function systemFor(voice, topic, steer = '', framing = 'flip', { phase = 'converge', retry = false } = {}) {
+// Voices can look things up (Keal, 2026-11-13: "allow web search and full webpage page/grep so that it can have more
+// concrete like data"): the bash tool's search, curl and grep where the model has the bash surface, else web_search,
+// fetch_url and grep. `how` says which, for the prompt.
+export const LOOKUP_HOW = { bash: 'the bash tool (search for a web search, curl to read a page, grep to pull lines out of it)', tools: 'web_search, fetch_url to read a page, and grep to pull lines out of pages already read' };
+const lookupLine = (voice, how) => `${voice} can look things up when a fact, number or real example would change the argument, with ${how}: at most ${MAX_LOOKUPS} lookups a turn, then ${voice} says what was found in ${voice}'s own words and what it means for the idea.`;
+
+// opts.phase: the transcript framing's phase (default converge); opts.retry: the last try repeated an earlier turn;
+// opts.lookups: LOOKUP_HOW's text when the voice has tools this turn.
+export function systemFor(voice, topic, steer = '', framing = 'flip', { phase = 'converge', retry = false, lookups = '' } = {}) {
   topic = clipMiddle(String(topic || ''), TOPIC);
   if (framing === 'transcript') return [
     `This is a brainstorm between two partners, A and B. What the person who started it said: ${topic}`,
@@ -102,6 +111,7 @@ export function systemFor(voice, topic, steer = '', framing = 'flip', { phase = 
     `${voice} never opens with praise or agreement: the first sentence is about the idea. No repeating earlier points, and no questions for anyone at the end. Take as much space as the turn needs.`,
     `Write ${voice}'s own words in the first person ("I'd try…"), not a description of what ${voice} says.`,
     ...(retry ? [`${voice}'s last try repeated an earlier turn almost word for word and was thrown away: this turn says something that isn't in the transcript yet.`] : []),
+    ...(lookups ? [lookupLine(voice, lookups)] : []),
     `Reply with ${voice}'s next turn only: no "${voice}:" label and nothing for anyone else.`,
   ].join('\n');
   return [
@@ -111,6 +121,7 @@ export function systemFor(voice, topic, steer = '', framing = 'flip', { phase = 
     ROLE[voice],
     'Never open with praise or agreement: your first sentence is about the idea. Don\'t repeat earlier points. Take as much space as the turn needs.',
     'When the person who started this steps in, follow their direction.',
+    ...(lookups ? [`You can look things up when a fact, number or real example would change the argument, with ${lookups}: at most ${MAX_LOOKUPS} lookups a turn, then say what you found in your own words and what it means for the idea.`] : []),
   ].join('\n');
 }
 
@@ -272,32 +283,74 @@ export function transcriptFor(line, voice, budget = Infinity) {
  * (done, limit, stuck) ends with a wrap-up; Stop and errors don't.
  */
 export async function run({ session, signal, ui = {}, takeSteer = () => '', wantsWrap = () => false, wrapOnly = false }) {
-  const [engine, sessions, { replyModel }] = await Promise.all([import('./engine.js'), import('./sessions.js'), import('./agent.js')]);
+  const [engine, sessions, agent, tools, { UNTRUSTED_RULES }] = await Promise.all([import('./engine.js'), import('./sessions.js'), import('./agent.js'), import('./tools.js'), import('./untrusted.js')]);
+  const { replyModel } = agent;
+  const lookupSpecs = () => tools.toolSpecs(new Set(agent.bashSurface() ? ['bash'] : ['web_search', 'fetch_url', 'grep']));
+  const lookupHow = () => (agent.bashSurface() ? LOOKUP_HOW.bash : LOOKUP_HOW.tools);
   const framing = framingOf(session);
   const topicOf = (line) => (turns(line).find(m => m.role === 'user') || {}).content || '';
 
   // One turn (a voice's, or the wrap-up as 'S'), continued while it's cut off and stopped where another speaker starts.
-  async function speak(line, voice, systemOf, sampling = null) {
+  // With `lookups`, the turn's first call has the lookup tools: up to MAX_LOOKUPS calls, each result cut to the room
+  // left in the window, then the turn is written. Returns { text, tools } (tools: what was looked up, for the reply).
+  async function speak(line, voice, systemOf, sampling = null, { lookups = false } = {}) {
     let sofar = '';
+    const done = [];
     for (let piece = 0; piece < MAX_PIECES && !signal.aborted; piece++) {
+      const withTools = lookups && piece === 0;
       const r = await engine.foreground(async () => {
-        const system = systemOf(sofar);
-        const budget = engine.contextFor(engine.currentModel()) - PIECE - est(system) - 200;
+        const specs = withTools ? lookupSpecs() : [];
+        const system = systemOf(sofar, withTools ? lookupHow() : '') + (withTools ? '\n' + UNTRUSTED_RULES() : '');
+        const window = engine.contextFor(engine.currentModel());
+        const extra = withTools ? est(JSON.stringify(specs)) + TOOL_ROOM : 0;
+        const budget = window - PIECE - est(system) - extra - 200;
         const { messages } = framing === 'transcript' ? transcriptFor(line, voice, budget) : viewFor(line, voice, budget);
-        const conv = await engine.conversation({ system, messages: messages.slice(0, -1), maxOutputTokens: PIECE, sampling, strictThinking: true });
+        const conv = await engine.conversation({ system, messages: messages.slice(0, -1), tools: specs, maxOutputTokens: PIECE, sampling, strictThinking: true });
         // This call stops as soon as the model starts another speaker's turn (ownTurn); Stop still stops it all.
         const call = new AbortController();
         const stop = () => call.abort();
         signal.addEventListener('abort', stop, { once: true });
         if (signal.aborted) call.abort();   // Stop pressed while this waited for the generation lock
-        let other = false;
+        let other = false, text = '', thinking = '', calls = 0;
+        let used = est(system) + est(JSON.stringify(messages)) + est(JSON.stringify(specs));
+        let input = messages[messages.length - 1].content;
         try {
-          const out = await engine.respond(conv, messages[messages.length - 1].content, { signal: call.signal, onText: (t) => {
-            const own = ownTurn(sofar + t, framing);
-            if (own.other && !other) { other = true; call.abort(); }
-            ui.onText && ui.onText(own.text);
-          } });
-          return { text: out.text || '', thinking: out.thinking || '', speed: await engine.smallSpeed() };
+          for (;;) {
+            const out = await engine.respond(conv, input, { signal: call.signal, onText: (t) => {
+              const own = ownTurn(sofar + text + t, framing);
+              if (own.other && !other) { other = true; call.abort(); }
+              ui.onText && ui.onText(own.text);
+            } });
+            text += out.text || '';
+            thinking = out.thinking || thinking;
+            const asked = out.toolCalls || [];
+            if (!asked.length || call.signal.aborted || other) break;
+            used += est((out.text || '') + JSON.stringify(asked));
+            const results = [];
+            for (const c of asked) {
+              const room = (window - used - Math.floor(PIECE / 2)) * 3;   // characters
+              if (calls >= MAX_LOOKUPS || room < 1500) {
+                results.push(agent.toolResult(c, { error: 'Not run: no more lookups this turn. Write your turn now with what you found.' }));
+                continue;
+              }
+              calls++;
+              const res = await tools.runTool(c, { session, room, signal: call.signal, approve: async () => 'deny' });
+              let response = res.model && typeof res.model === 'object' ? res.model : { value: res.model };
+              let json = JSON.stringify(response);
+              if (json.length > room) { response = { truncated: 'Cut to fit your window; ask for less (grep, head).', partial: json.slice(0, room - 200) }; json = JSON.stringify(response); }
+              used += est(json);
+              if (res.observation) sessions.addObservation(session, { ...res.observation, thread: null });
+              const rec = { name: res.name, label: res.label, ok: res.ok, ...(res.args && Object.keys(res.args).length ? { args: res.args } : {}),
+                ...(res.ok === false && res.model && res.model.error ? { error: String(res.model.error).slice(0, 600) } : {}),
+                ...(agent.settings.debugTools ? { result: agent.debugText(res.model) } : {}) };
+              done.push(rec);
+              ui.onTool && ui.onTool(done);
+              results.push(agent.toolResult(c, response));
+            }
+            if (text && !/\n\s*$/.test(text)) text += '\n\n';
+            input = results;
+          }
+          return { text, thinking, speed: await engine.smallSpeed() };
         } finally { signal.removeEventListener('abort', stop); try { await conv.delete(); } catch {} }
       });
       const own = ownTurn(sofar + r.text, framing);
@@ -306,11 +359,11 @@ export async function run({ session, signal, ui = {}, takeSteer = () => '', want
       // (chat s0mwf2h9yl000pi7l4, Gemma 4 26B: four empty turns in a row).
       if (!sofar.trim() && !signal.aborted) {
         const model = (replyModel() || {}).label || 'The model';
-        throw new Error(`${model} sent back no text${r.thinking ? ` (only ${r.thinking.length} characters of thinking)` : ''}.`);
+        throw new Error(`${model} sent back no text${done.length ? ` after ${done.length} lookup${done.length > 1 ? 's' : ''}` : ''}${r.thinking ? ` (only ${r.thinking.length} characters of thinking)` : ''}.`);
       }
       if (own.other || !cutOff(r.text, r.speed)) break;
     }
-    return sofar;
+    return { text: sofar, tools: done };
   }
 
   async function wrapUp() {
@@ -321,7 +374,7 @@ export async function run({ session, signal, ui = {}, takeSteer = () => '', want
     try {
       text = (await speak(line, 'S', (sofar) => sofar
         ? `${wrapUpSystem(topic)}\n\nThe wrap-up was cut off by the length limit. It ends like this:\n\n${sofar.length > TAIL ? '…' + sofar.slice(-TAIL) : sofar}\n\nContinue it from exactly where it stops. Don't repeat any of it.`
-        : wrapUpSystem(topic))).trim();
+        : wrapUpSystem(topic))).text.trim();
     } catch (e) { error = e; }
     if (signal.aborted && !text) { ui.onDone && ui.onDone(null); return 'stopped'; }
     const msg = sessions.addMessage(session, { role: 'assistant', decision: true, content: text || '_(nothing to add)_', ...(error ? { error: String(error.message || error) } : {}), model: replyModel() });
@@ -340,14 +393,16 @@ export async function run({ session, signal, ui = {}, takeSteer = () => '', want
     const voice = nextVoice(line);
     const phase = wraps ? phaseOf(line) : null;
     const topic = topicOf(line);
-    let text = '', error = null, repeats = 0;
+    let text = '', looked = [], error = null, repeats = 0;
     for (;;) {
       ui.onStart && ui.onStart(voice, phase);
       error = null;
       try {
         const st = latestSteer(line);
         const opts = { phase: phase || 'converge', retry: repeats > 0 };
-        text = (await speak(line, voice, (sofar) => (sofar ? continueSystem(voice, topic, sofar, st, framing, opts) : systemFor(voice, topic, st, framing, opts)), SAMPLING[phase || 'converge'])).trim();
+        const said = await speak(line, voice, (sofar, lookups) => (sofar ? continueSystem(voice, topic, sofar, st, framing, opts) : systemFor(voice, topic, st, framing, { ...opts, lookups })), SAMPLING[phase || 'converge'], { lookups: true });
+        text = said.text.trim();
+        looked = said.tools;
       } catch (e) { error = e; }
       // A repeat is thrown away, never saved, so the transcript never shows it twice; one more try, then the run stops.
       if (error || signal.aborted || !isRepeat(text, turns(line).filter(m => m.role === 'assistant').map(m => m.content))) break;
@@ -356,7 +411,7 @@ export async function run({ session, signal, ui = {}, takeSteer = () => '', want
     }
     if (signal.aborted && !text) { ui.onDone && ui.onDone(null); return 'stopped'; }
     // An error is shown under the turn, not written into it, so the next voice doesn't read it as A's or B's words.
-    const msg = sessions.addMessage(session, { role: 'assistant', voice, content: text || '_(nothing to add)_', ...(phase ? { phase } : {}), ...(error ? { error: String(error.message || error) } : {}), model: replyModel() });
+    const msg = sessions.addMessage(session, { role: 'assistant', voice, content: text || '_(nothing to add)_', ...(phase ? { phase } : {}), ...(looked.length ? { tools: looked } : {}), ...(error ? { error: String(error.message || error) } : {}), model: replyModel() });
     ui.onDone && ui.onDone(msg);
     if (error) return 'error';
   }

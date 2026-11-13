@@ -1747,6 +1747,20 @@ await check('brainstorm chat: the model answers itself in two voices, the person
   const empty = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.filter(m => m.role === 'assistant'));
   assert.equal(empty.length, 1, 'stopped at the first empty reply');
   assert.match(empty[0].error, /sent back no text \(only 26 characters of thinking\)/);
+  // A voice can look things up: web_search through the relay, the result back as a tool turn, the lookup on the reply.
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.fill('#input', 'LOOKUP an idea');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => document.querySelectorAll('#messages-inner .msg.voice-b').length >= 1);
+  await D.page.click('.brainstorm-bar .main-btn');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const looked = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.find(m => m.voice === 'A'));
+  assert.equal(looked.content, 'A found example.com/docs/squiggle');
+  assert.deepEqual(looked.tools.map(t => [t.name, t.ok]), [['web_search', true]]);
+  assert.match(looked.tools[0].label, /searched the web for "squiggle relay"/);
+  assert.match(await D.page.textContent('#messages-inner .msg.voice-a .tool-trail'), /searched the web/);
   // The role flip is still there to compare: the other voice arrives as the user.
   await D.page.click('#new-chat');
   await D.page.click('.chat-setup > summary');

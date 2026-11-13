@@ -123,6 +123,15 @@ export async function respond(conv, input, { onText } = {}) {
     await new Promise(r => setTimeout(r, 300));   // slow enough that a test can steer and stop before the wrap-up (turn 12)
     const v = bs[1] === 'builder' ? 'A' : bs[1] === 'critic' ? 'B' : bs[1];
     const transcript = /You write [AB]'s turns/.test(sys);
+    // LOOKUP: A searches the web on its first turn, then says what it found (the result comes back as a tool turn).
+    if (Array.isArray(input)) {
+      window.__smallSpeed = { tokens: 40, finish: 'stop' };
+      const hit = JSON.stringify(input).match(/example\.com\/[a-z/]+/);
+      return say(`${v} found ${hit ? hit[0] : 'nothing'}`, onText);
+    }
+    if (v === 'A' && /LOOKUP/.test(input) && !/\n\nA: /.test(input) && ((conv.cfg && conv.cfg.tools) || []).some(t => t.name === 'web_search')) {
+      return { text: '', thinking: '', toolCalls: [{ function: { name: 'web_search', arguments: { query: 'squiggle relay' } } }] };
+    }
     // EMPTY: A's reply has no text, only thinking (chat s0mwf2h9yl000pi7l4).
     if (/EMPTY/.test(input) && v === 'A') { window.__smallSpeed = { tokens: 300, finish: 'stop' }; return { text: '', thinking: 'thought about it at length', toolCalls: [] }; }
     if (/LOOP/.test(input)) {
