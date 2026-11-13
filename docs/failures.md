@@ -304,3 +304,165 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 - **Caught by:** tests/failures.test.js case 19; tests/tasks.test.js "prompt dialects"; e2e "step mode through the
   UI" (ASKTEST: a plain-text question pauses the task, a thinking-only step restarts, every step and final user
   turn is the request).
+
+### 20. The brainstorm critic only praised, and its spec sheet was cut off mid-word
+
+- **Asked:** a brainstorm chat (`s0mwdzez4u000gv6fi`), 2026-11-12: "How would you design an elevator for cats?"
+- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm chat (brainstorm.js), first version: voice B told it "lean[s] toward
+  testing: poke holes", both told to keep a turn to "a short paragraph or a few bullets", 400 tokens a call.
+- **What it did:** B opened its turns with "Great start —", "Excellent —", "Great additions —", "Perfect —",
+  "Absolutely —"; by B4 both voices were agreeing on next steps and drafting a spec sheet together. B5's spec sheet
+  stopped at the 400-token limit mid-word ("Individual scent markers (catnip/pher"), and A's next turn opened with
+  "Looks like your draft got cut off — let me finish it".
+- **Why it's bad:** a brainstorm with two voices that agree is one voice twice: nothing in the idea gets tested.
+  And the cut-off was the harness's limit, not the model's choice: the other voice spent its turn finishing the
+  document instead of answering it.
+- **Good answer:** B starts each turn with what's weakest in A's last turn and why it would fail, then a fix; a long
+  document comes out whole, in the voice that started it.
+- **Fix:** roles instead of leanings (A the builder, B the critic who starts with the weakest part), no opening with
+  praise, no length rule in the prompt ("take as much space as the turn needs"). A call that stops at its limit
+  (`cutOff`, from the engine's token count) is handed back to the same voice with the end of what it wrote in the
+  system prompt (`continueSystem`), up to 8 calls a turn, stitched into one message; a turn longer than the window
+  shows the next voice its end.
+- **Caught by:** tests/brainstorm.test.js (the prompts, `cutOff`, `continueSystem`, a turn longer than the budget);
+  e2e "brainstorm chat" (LONGDOC: a cut-off turn is finished in the same message). Whether B actually criticizes is
+  model behaviour: not covered.
+
+### 21. Brainstorm: cut off by the window, a steer ignored, and two assistants serving each other
+
+- **Asked:** a brainstorm chat (`s0mwe2h0vm000lwbud`), 2026-11-12: "what noodle shape give the optimal cheese to
+  noodle ratio for mac n cheese?", then, 13 turns in, Keal stepped in: "Lets get back to pasta shapes".
+- **Model:** LFM3 1.7B QAD on WebLLM (4K window), brainstorm.js after case 20 (builder/critic roles, 1,024 tokens a
+  call, continued when the token count hit 1,024).
+- **What it did:** (1) four turns stopped mid-word ("…sketch the **pancetta + breadcrumb combo**… **", "Mix
+  breadcru", "merge into one \"Advanced\" ver", "If you ever want to swap") at 1,200–1,900 characters, about
+  300–450 tokens, and none was continued. (2) B answered the steer with "Great — I'll go with the single
+  \"Advanced\" version", the answer to A's closing question ("Which format do you prefer?"), and the pasta-shape
+  question never came back. (3) The critic still opened with praise ("The elbow macaroni ratio is solid and
+  well-reasoned", "Exactly right", "Spot on"), B's second turn restated A's almost line for line, and both voices
+  ended turns serving the other as a user ("Want me to walk through a quick step-by-step…?").
+- **Why it's bad:** (1) a 4K model's reply ends when prompt plus reply fill the window, long before max_tokens; the
+  harness only counted tokens against 1,024, so it never saw these as cut off. Its prompt estimate (3.5 characters a
+  token) also ran low for markdown tables, leaving less room than planned. (2) the steer was merged after A's long
+  reply in B's user turn, behind a question B felt bound to answer. (3) the other voice arrives in the user role,
+  and LFM3 treats the user role as someone to agree with and serve, whatever the system prompt says.
+- **Good answer:** every turn finished; after "Lets get back to pasta shapes" the next turn is about pasta shapes; B
+  disagrees with something.
+- **Fix:** (1) the runtime's own stop reason (`finish_reason`, now forwarded by the WebLLM shim and kept in
+  engine-wllama's `lastSpeed().finish`) decides `cutOff`; 'length' is continued whatever the count; prompt
+  estimates use 3 characters a token. (2) the person's latest steer goes in both voices' system prompts until both
+  have answered it (`latestSteer`). (3) prompt wording didn't move it twice (cases 20 and 21), so new brainstorms use
+  a transcript framing (`transcriptFor`): the whole brainstorm as one labelled user turn and "write B's next turn",
+  so the other voice is a speaker in a script, not a user to serve; the role flip stays as a per-chat option to
+  compare. Untested on LFM3 yet.
+- **Caught by:** tests/toolformats.test.js "why WebLLM stopped reaches lastSpeed"; tests/brainstorm.test.js
+  ("cut off: the runtime's own reason first", "the person's latest steer"); e2e "brainstorm chat" (LONGDOC stops for
+  length at 380 tokens and is finished); (3) the framing is covered (tests/brainstorm.test.js "transcript", e2e
+  both framings), whether B then disagrees is model behaviour: not covered.
+
+### 22. Transcript brainstorm: each voice wrote the whole script
+
+- **Asked:** a brainstorm chat in the transcript framing (`s0mwe3d6wm000gl4py`), 2026-11-12: "Let's find a new way to
+  build an ai chat bot that is substantially better than neural nets."
+- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm.js transcript framing (case 21's fix).
+- **What it did:** A's first turn (5,002 characters) finished its part, then went on with "A: Let me flesh out the core
+  idea…"; B's first turn was "B: … A: … B: …", three speakers in one message. Turns ran until the window filled and
+  were continued, so the brainstorm crawled. (The framing did help otherwise: B's sixth turn was the first real
+  critique in any brainstorm, "a scaffold with placeholder methods… can't produce meaningful scores".)
+- **Why it's bad:** one voice speaking for both is no brainstorm, and the other voice's lines it writes are then
+  answered as if the other voice had said them.
+- **Good answer:** A writes A's turn and stops.
+- **Fix:** like any transcript prompt, a turn ends where the next speaker's label starts at a line start (A, B, its own
+  label again, or the person), and a leading label of its own is dropped (`ownTurn`); the call is stopped as soon as
+  that shows up, and a turn that ended there isn't continued.
+- **Caught by:** tests/brainstorm.test.js "a turn ends where another speaker starts"; e2e "brainstorm chat" (SCRIPT).
+
+### 23. Asked which noodle shape, it argued one cheese ratio, then looped
+
+- **Asked:** a transcript brainstorm (`s0mwe4yoqe000frhk4`), 2026-11-12: "what noodle shape give the optimal cheese to
+  noodle ratio for mac n cheese?"
+- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm.js transcript framing (builder/critic from the first turn).
+- **What it did:** A's first turn named a couple of shapes and closed on "the key is matching the noodle's thickness to
+  how much sauce you pour"; from then on B attacked the numbers and A refined them, so the brainstorm became a cheese
+  ratio (1:2–3, 1:4, ¼ cup per cup, 10 g per 30 g handful) and then a recipe. Shells, cavatappi or any comparison of
+  shapes never came up. From 15:46 B posted the same 685-character turn four times and A its recipe three times
+  nearly word for word.
+- **Why it's bad:** the question was which shape; a brainstorm that critiques from turn two narrows onto whatever the
+  first turn said, and once the transcript shows a turn twice the likeliest next turn is that text again, whatever
+  the prompt says about repeating.
+- **Good answer:** a list of shapes first (elbows, shells, cavatappi, rigatoni…) with why each holds cheese, then the
+  most promising ones compared, ending in a proposed answer.
+- **Fix:** phases ("diverge before you converge"): four turns where both voices only add possible answers, a cluster
+  turn that restates the question, groups the options and gives a first answer, then builder/critic; from the
+  cluster turn on, every turn ends with "Best answer so far:", and the question is repeated right before the ask.
+  A turn that repeats an earlier one (`isRepeat`) is never saved: it's retried once with a note, and a second repeat
+  stops the run and says so; repeats already saved are left out of the transcript.
+- **Caught by:** tests/brainstorm.test.js ("phases", "repeats", which uses this chat's own looping turns); e2e
+  "brainstorm chat" (LOOP). Whether the voices now list shapes first is model behaviour: not covered.
+
+### 24. A brainstorm with no ending, and a testing turn pasted from two old ones
+
+- **Asked:** a transcript brainstorm with phases (`s0mweal56h0007v3ch`), 2026-11-12: "What would an alternative
+  architecture to Neural Nets be like that is as good?"
+- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm.js after case 23.
+- **What it did:** the phases worked: four real lists (spiking nets, liquid/neural ODEs, tensor networks, neuromorphic
+  hardware…) and a grouping turn with a "Best answer so far". Then B's first testing turn was its own listing turn
+  word for word with A's best-answer line pasted after it, and A's next turn restated the grouping. The voices
+  narrated themselves ("A suggests…", "A adds…"). Nothing ever closed the brainstorm: Keal stepped in with "we gotta
+  get a summary and final decision message".
+- **Why it's bad:** the repeat check compared a turn with one earlier turn at a time, so a turn stitched from two
+  passed. A brainstorm that stops without a decision leaves the person to read every turn to find the answer.
+- **Good answer:** B's testing turn tests the grouping's answer; the brainstorm ends with what was considered, what
+  it decided and why.
+- **Fix:** `isRepeat` measures against everything said before together and leaves "Best answer so far" lines out (an
+  answer that holds may repeat); the turn prompt says to write in the first person. A wrap-up by "Squiggle"
+  (Summary, Decision, Why, Still open; `wrapUpSystem`) after six testing turns (`wrapUpDue`), when a run gets
+  stuck or hits the turn limit, or on the bar's Wrap up button after the turn in progress.
+- **Caught by:** tests/brainstorm.test.js ("a turn pasted together from two earlier turns", with this chat's turns;
+  "wrap-up"); e2e "brainstorm chat" (wrap-up after stuck, Wrap up button). Whether the wrap-up's decision is any
+  good is model behaviour: not covered.
+
+### 25. A fun, weird idea came back as an ordinary chat app, and the voices agreed about it
+
+- **Asked:** a transcript brainstorm (`s0mwec78t10005me61`), 2026-11-12: "An app that just shows the last thing said by
+  each person in a conversation, everything that gets said is replaced by the most recent thing said." Keal, 7 turns
+  in: "Yall stfu that's not the point."
+- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm.js after case 24 (phases, wrap-up), sampling from LFM3's card
+  (temperature 0.1).
+- **What it did:** A's first list already kept "history elsewhere"; B added a "last two turns" toggle, a timestamp badge
+  and "collapse/expand mode that reveals prior replies", and both picked favourites during the listing phase ("I'd
+  try Option 3"), ending turns with "Anything else you want added before we pick?". The converge turns specced a
+  stacked timeline with full searchable history: the premise (nothing but the latest message survives) was gone by
+  turn two, and B never objected. Three turns carried a stray `</think>` with a restarted turn after it.
+- **Why it's bad:** the person's strange constraint was the idea; treating it as a problem to fix turns every playful
+  brainstorm into a requirements meeting. The prompts were built for decision questions ("possible answers to the
+  question", "best answer"), and near-greedy sampling pulls a small model to the most ordinary continuation.
+- **Good answer:** directions that lean into the constraint (what the app feels like when every message erases the
+  last; who would use it; what breaks socially), with B calling out anything that sneaks history back in.
+- **Fix:** every prompt says the person's idea is the point, taken as stated and pushed further on its own terms
+  (`PREMISE`); the phases talk about the person's idea or question, not only a question; B's critique includes
+  anywhere A made the idea safer or more ordinary; no questions at the end of a turn. Brainstorm turns sample hotter
+  than the card (`SAMPLING`: 0.9 listing, 0.7 after, with a presence penalty; `engine.conversation({ sampling })`).
+  A stray `</think>` keeps only what comes after it (`dropThinking`).
+- **Caught by:** tests/brainstorm.test.js ("the person's idea is the point", "a stray </think>"). Whether the voices
+  now keep a weird premise is model behaviour: not covered.
+
+### 26. Gemma 4 26B brainstorm: four empty turns, each saved as "nothing to add"
+
+- **Asked:** a transcript brainstorm on the cloud model (`s0mwf2h9yl000pi7l4`), 2026-11-13: "An app that only shows the
+  last thing said by the last person in a conversation… This is intentionally bad UX as a gag."
+- **Model:** Gemma 4 26B A4B on Workers AI through the relay, brainstorm.js after case 25.
+- **What it did:** four turns, ~20 s each, every one with no text; the harness saved each as "_(nothing to add)_" and
+  went on to the next voice. Keal read it as the model refusing to play.
+- **Why it's bad:** an empty reply is a failure, and saving it as a turn hid it; four calls of the daily cloud budget went
+  on nothing. The likely cause: Workers AI's Gemma 4 supports reasoning, the relay never said thinking was off, and
+  the reasoning used up the 1,024-token reply, leaving no content (the relay keeps reasoning apart and nothing saved
+  it, so this isn't confirmed).
+- **Good answer:** A's first list.
+- **Fix:** the relay passes `chat_template_kwargs.enable_thinking` through (only that key); the cloud engine sends it for
+  conversations opened with `strictThinking`, which brainstorm turns are (off). A reply with no text is an error that
+  stops the run and says what came back ("Gemma 4 26B (Cloudflare) sent back no text (only N characters of
+  thinking)"), so the next one shows whether thinking was the cause. The relay change needs a deploy (deploy.yml on
+  main); until then the error is what changes.
+- **Caught by:** tests/worker.test.js "thinking on or off passes through"; e2e "brainstorm chat" (EMPTY). Whether
+  Gemma then answers is model behaviour: not covered.

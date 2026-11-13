@@ -61,7 +61,7 @@ export const foreground = (fn) => lock(fn);
 export const background = (fn) => lock(fn);
 
 export async function conversation(cfg) {
-  log.push({ type: 'conversation', system: cfg.system, messages: cfg.messages, tools: cfg.tools.map(t => t.name), known: cfg.known || [] });
+  log.push({ type: 'conversation', system: cfg.system, messages: cfg.messages, tools: (cfg.tools || []).map(t => t.name), known: cfg.known || [] });
   return { cfg, delete: async () => {}, cancel() {}, replaceResult(msg, response) { log.push({ type: 'replace', name: msg.content[0].name, response }); return true; } };
 }
 
@@ -112,6 +112,43 @@ function stepScript(conv, input, onText) {
 
 export async function respond(conv, input, { onText } = {}) {
   log.push({ type: 'respond', input, system: conv.cfg && conv.cfg.system });
+  // Brainstorm chats (brainstorm.js): each voice says who it is and what it answered, a little slowly so a test can steer and stop.
+  // Role flip: says what it answered (the end of its user turn). Transcript: the start of the last turn in the transcript.
+  // LONGDOC: A's first reply stops for length (the window filled at 380 tokens) and is handed back to finish.
+  // LOOP: B says the same long thing every turn (A says something new): the repeat is thrown away, retried, then the run stops.
+  const sys = (conv.cfg && conv.cfg.system) || '';
+  if (/You write the wrap-up for the person/.test(sys)) { window.__smallSpeed = { tokens: 40, finish: 'stop' }; return say('**Decision**: the wrap-up for this brainstorm.', onText); }
+  const bs = /brainstorm/.test(sys) && (sys.match(/You write ([AB])'s turns/) || sys.match(/You are the (builder|critic)/));
+  if (bs) {
+    await new Promise(r => setTimeout(r, 300));   // slow enough that a test can steer and stop before the wrap-up (turn 12)
+    const v = bs[1] === 'builder' ? 'A' : bs[1] === 'critic' ? 'B' : bs[1];
+    const transcript = /You write [AB]'s turns/.test(sys);
+    // LOOKUP: A searches the web on its first turn, then says what it found (the result comes back as a tool turn).
+    if (Array.isArray(input)) {
+      window.__smallSpeed = { tokens: 40, finish: 'stop' };
+      const hit = JSON.stringify(input).match(/example\.com\/[a-z/]+/);
+      return say(`${v} found ${hit ? hit[0] : 'nothing'}`, onText);
+    }
+    if (v === 'A' && /LOOKUP/.test(input) && !/\n\nA: /.test(input) && ((conv.cfg && conv.cfg.tools) || []).some(t => t.name === 'web_search')) {
+      return { text: '', thinking: '', toolCalls: [{ function: { name: 'web_search', arguments: { query: 'squiggle relay' } } }] };
+    }
+    // EMPTY: A's reply has no text, only thinking (chat s0mwf2h9yl000pi7l4).
+    if (/EMPTY/.test(input) && v === 'A') { window.__smallSpeed = { tokens: 300, finish: 'stop' }; return { text: '', thinking: 'thought about it at length', toolCalls: [] }; }
+    if (/LOOP/.test(input)) {
+      window.__smallSpeed = { tokens: 40, finish: 'stop' };
+      if (v === 'A') return say(`A adds option ${(String(input).match(/\n\nA: /g) || []).length + 1}`, onText);
+      return say('The same critique again: '.concat('this idea has a weak spot that nobody has tested yet and it will fail in practice unless we check it first. '.repeat(3)), onText);
+    }
+    const cont = /cut off by the length limit/.test(conv.cfg.system);
+    const firstA = v === 'A' && /LONGDOC/.test(input) && !/\n\nA: /.test(input);
+    window.__smallSpeed = firstA && !cont ? { tokens: 380, finish: 'length' } : { tokens: 40, finish: 'stop' };   // the window ran out well short of 1,024
+    if (firstA) return say(cont ? ' and the second half of the spec.' : 'A answers: the first half of the spec', onText);
+    // SCRIPT: A writes the rest of the script too, B's line and another of its own.
+    if (v === 'A' && /SCRIPT/.test(input) && !/\n\nA: /.test(input)) return say('A: my turn\n\nB: your turn\n\nA: again', onText);
+    const parts = String(input).split('\n\n');
+    const said = transcript ? parts[parts.length - 2].split(' ').slice(0, 12).join(' ') : String(input).slice(-40);   // 12 words: echoes don't nest and grow
+    return say(`${v} answers: ${said}`, onText);
+  }
   // The script answers the person's words, not the recalled block smart context appends.
   if (typeof input === 'string') input = input.split('\n\n---\nPossibly relevant earlier messages')[0];
   // Fresh context: the first input is the result of the lookup the agent made for the model.

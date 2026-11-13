@@ -1643,6 +1643,194 @@ await check('the prompt follows the model, with no switches: a big model gets th
   assert.doesNotMatch(small.system || '', /^You are Squiggle, a personal AI agent/, 'Squiggle Small never gets the full prompt');
 });
 
+await check('brainstorm chat: the model answers itself in two voices, the person steers in between, Stop ends it', async () => {
+  const D = await device('brainstorm');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  assert.match(await D.page.textContent('.chat-setup > summary'), /· BrainstormChange$/);
+  assert.equal(await D.page.$('.chat-setup input[name="chat-context"]'), null, 'no context type to pick for a brainstorm');
+  assert.ok(await D.page.isChecked('.chat-setup input[name="chat-framing"][value="transcript"]'), 'transcript is the default');
+  assert.equal(await D.page.getAttribute('#input', 'placeholder'), 'Pitch an idea to brainstorm');
+  await D.page.fill('#input', 'a coffee shop for dogs');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .main-btn');
+  await D.page.waitForFunction(() => document.querySelectorAll('#messages-inner .msg.voice-b').length >= 1);
+  // Jump in while it runs: the text is queued and added before the next voice speaks.
+  await D.page.fill('#input', 'focus on money');
+  assert.equal(await D.page.getAttribute('#send', 'aria-label'), 'Send', 'typed text turns Stop into Send');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => [...document.querySelectorAll('#messages-inner .msg.user')].some(m => /focus on money/.test(m.textContent)));
+  await D.page.waitForFunction(() => [...document.querySelectorAll('#messages-inner .msg.assistant')].some(m => /brainstorm: focus on money/.test(m.textContent)));
+  await D.page.click('.brainstorm-bar .main-btn');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  assert.match(await D.page.textContent('.brainstorm-bar'), /Brainstorm stopped.*Keep going/);
+  const s = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current);
+  const said = s.messages.filter(m => !m.deleted);
+  assert.equal(s.brainstorm, 'transcript');
+  assert.equal(said[0].content, 'a coffee shop for dogs');
+  const voices = said.filter(m => m.role === 'assistant').map(m => m.voice);
+  assert.ok(voices.length >= 2 && voices.length < 20, `stopped early (${voices.length} turns)`);
+  voices.forEach((v, i) => assert.equal(v, i % 2 ? 'B' : 'A', 'voices alternate'));
+  // Each voice wrote its turn from the transcript: A from the person's idea, B from A's labelled turn.
+  assert.equal(said[1].content, 'A answers: The person who started this brainstorm: a coffee shop for dogs');
+  assert.match(said[2].content, /^B answers: A: A answers: The person who started this brainstorm/);
+  // Keep going picks up with the next voice.
+  const before = voices.length;
+  await D.page.click('.brainstorm-bar .main-btn');
+  await D.page.waitForFunction((n) => document.querySelectorAll('#messages-inner .msg.assistant').length > n, before);
+  await D.page.click('.brainstorm-bar .main-btn');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  // Typed to jump in right before Stop: it isn't lost (review 2026-11-12), it's in the chat for the next run.
+  await D.page.click('.brainstorm-bar .main-btn');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .btn svg');
+  await D.page.fill('#input', 'late steer');
+  await D.page.press('#input', 'Enter');
+  await D.page.click('.brainstorm-bar .main-btn');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const kept = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.filter(m => m.role === 'user' && m.content === 'late steer').length);
+  assert.equal(kept, 1, 'the steer is in the chat once');
+  // A turn cut off at the length limit is handed back to the same voice and finished in the same message.
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.fill('#input', 'LONGDOC write the spec');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => document.querySelectorAll('#messages-inner .msg.voice-b').length >= 1);
+  await D.page.click('.brainstorm-bar .main-btn');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const long = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.find(m => m.voice === 'A').content);
+  assert.equal(long, 'A answers: the first half of the spec and the second half of the spec.');
+  // A voice that writes the rest of the script keeps only its own turn.
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.fill('#input', 'SCRIPT an idea');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => document.querySelectorAll('#messages-inner .msg.voice-b').length >= 1);
+  await D.page.click('.brainstorm-bar .main-btn');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const script = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.find(m => m.voice === 'A').content);
+  assert.equal(script, 'my turn');
+  // A voice repeating an earlier turn: the copy is thrown away and tried again, then the run stops by itself (s0mwe4yoqe000frhk4).
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.fill('#input', 'LOOP an idea');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted', { timeout: 15000 });
+  const loop = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.filter(m => m.voice).map(m => m.voice + ':' + m.phase));
+  assert.deepEqual(loop, ['A:diverge', 'B:diverge', 'A:diverge'], 'B\'s copy never saved, the run stopped at it');
+  assert.match(await D.page.textContent('#messages-inner'), /Squiggle A · listing options/);
+  // Stuck ends with the wrap-up, like a run that finishes (s0mweal56h0007v3ch: "we gotta get a summary and final decision").
+  await D.page.waitForSelector('#messages-inner .msg.voice-s');
+  assert.match(await D.page.textContent('#messages-inner .msg.voice-s'), /Squiggle · wrap-up[^]*Decision/);
+  // Wrap up while it runs: the current turn finishes, then the wrap-up, then it stops.
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.fill('#input', 'a bike for fish');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .wrap-btn');
+  await D.page.click('.brainstorm-bar .wrap-btn');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const ended = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.filter(m => m.role === 'assistant').map(m => (m.decision ? 'wrap' : m.voice)));
+  assert.equal(ended[ended.length - 1], 'wrap');
+  assert.ok(ended.length <= 3, `wrapped up right after the turn in progress: ${ended}`);
+  // A reply with no text stops the run with an error saying so, not a "nothing to add" turn and on to the next voice.
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.fill('#input', 'EMPTY idea');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const empty = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.filter(m => m.role === 'assistant'));
+  assert.equal(empty.length, 1, 'stopped at the first empty reply');
+  assert.match(empty[0].error, /sent back no text \(only 26 characters of thinking\)/);
+  // A voice can look things up: web_search through the relay, the result back as a tool turn, the lookup on the reply.
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.fill('#input', 'LOOKUP an idea');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => document.querySelectorAll('#messages-inner .msg.voice-b').length >= 1);
+  await D.page.click('.brainstorm-bar .main-btn');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const looked = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.find(m => m.voice === 'A'));
+  assert.equal(looked.content, 'A found example.com/docs/squiggle');
+  assert.deepEqual(looked.tools.map(t => [t.name, t.ok]), [['web_search', true]]);
+  assert.match(looked.tools[0].label, /searched the web for "squiggle relay"/);
+  assert.match(await D.page.textContent('#messages-inner .msg.voice-a .tool-trail'), /searched the web/);
+  // The role flip is still there to compare: the other voice arrives as the user.
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.click('.chat-setup > summary');   // picking a kind redraws the settings closed
+  await D.page.check('.chat-setup input[name="chat-framing"][value="flip"]');
+  assert.match(await D.page.textContent('.chat-setup > summary'), /Brainstorm \(role flip\)/);
+  await D.page.fill('#input', 'a hat for snakes');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => document.querySelectorAll('#messages-inner .msg.voice-b').length >= 1);
+  await D.page.click('.brainstorm-bar .main-btn');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const flip = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current);
+  assert.equal(flip.brainstorm, 'flip');
+  assert.match(flip.messages.find(m => m.voice === 'A').content, /^A answers: a hat for snakes$/);
+  assert.match(flip.messages.find(m => m.voice === 'B').content, /^B answers: A answers: a hat for snakes$/);
+  // Typing in a thread's composer during a run never steers the main brainstorm (review 2026-11-12); like any busy
+  // composer, it's Stop.
+  await D.page.click('.brainstorm-bar .main-btn');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .btn svg');
+  await D.page.hover('.msg.voice-a >> nth=0');
+  await D.page.click('.msg.voice-a >> nth=0 >> [aria-label="Reply in thread"]');
+  await D.page.fill('#drawer textarea', 'thread question');
+  await D.page.press('#drawer textarea', 'Enter');
+  await D.page.waitForSelector('.brainstorm-bar:not([hidden]) .muted');
+  const leaked = await D.page.evaluate(async () => (await import('/src/ui/state.js')).state.current.messages.filter(m => /thread question/.test(m.content)).length);
+  assert.equal(leaked, 0, 'not a steer');
+  assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+});
+
+await check('scrolling: streamed text follows the bottom only while you are there; scrolling up lets go', async () => {
+  const D = await device('scroll');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  await D.page.click('.chat-setup > summary');
+  await D.page.check('.chat-setup input[name="chat-kind"][value="true"]');
+  await D.page.setViewportSize({ width: 1000, height: 480 });   // short, so a few turns overflow
+  await D.page.fill('#input', 'a hat that only fits on Tuesdays, with lots of extra words so the turns wrap and the chat overflows the screen quickly');
+  await D.page.press('#input', 'Enter');
+  const gap = () => D.page.evaluate(() => { const el = document.querySelector('#messages'); return el.scrollHeight - el.scrollTop - el.clientHeight; });
+  await D.page.waitForFunction(() => { const el = document.querySelector('#messages'); return el.scrollHeight > el.clientHeight + 200; });
+  assert.ok(await gap() <= 40, 'following the bottom while there');
+  // Scroll up with the wheel: new turns keep coming, and the view stays where it was.
+  await D.page.hover('#messages');
+  await D.page.mouse.wheel(0, -600);
+  await D.page.waitForTimeout(100);
+  const top = await D.page.evaluate(() => document.querySelector('#messages').scrollTop);
+  const n = await D.page.evaluate(() => document.querySelectorAll('#messages-inner .msg.assistant').length);
+  await D.page.waitForFunction((k) => document.querySelectorAll('#messages-inner .msg.assistant').length >= k + 2, n);
+  assert.equal(await D.page.evaluate(() => document.querySelector('#messages').scrollTop), top, 'not pulled back down');
+  // Back at the bottom: it follows again.
+  await D.page.mouse.wheel(0, 100000);
+  await D.page.waitForTimeout(100);
+  const m = await D.page.evaluate(() => document.querySelectorAll('#messages-inner .msg.assistant').length);
+  await D.page.waitForFunction((k) => document.querySelectorAll('#messages-inner .msg.assistant').length >= k + 1, m);
+  await D.page.waitForTimeout(100);
+  assert.ok(await gap() <= 40, 'following again');
+  await D.page.evaluate(async () => { const { state } = await import('/src/ui/state.js'); if (state.controller) state.controller.abort(); });   // Stop
+  assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
+});
+
 await check('small models: a long page comes back as a card saved in /web, grep finds the answer, and used results shrink to what the model took', async () => {
   const D = await device('cards');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));

@@ -21,7 +21,7 @@ app/                    static app, plain ES modules, no build step
     main.js             entry: settings, config, sign-in state → setup wizard or the app (or the demo)
     demo.js             demo mode: local-only storage (storage.js useLocalStorage), seeded sample chat/facts/file, the "Try" prompts, clearSamples
     ui/                 the UI, one module per area (plain DOM, no framework)
-      dom.js            h(), icon(), md(), toast(), number formatting
+      dom.js            h(), icon(), md(), toast(), number formatting; scrollDown follows the bottom only while the reader is there (scrolling up lets go; `force` for opening a chat or sending)
       state.js          the shared UI state object (current session, busy, model state, call, …)
       settings.js       per-device settings (localStorage) and their one-time migrations
       setup.js          first-run wizard: sign in, install the GitHub App, storage, model picker
@@ -33,6 +33,7 @@ app/                    static app, plain ES modules, no build step
       model-ui.js       model download/load with progress, crash-loop guard, banners, composer note
       voice-ui.js       read aloud, voice calls (call bar)
       links.js          chat links: the open chat's id in the URL hash (#chat=<id>); a link opens that chat if this account has it (else the usual one, after the first sync), back/forward between chats, Copy link in the sidebar
+    brainstorm.js       brainstorm chats (`session.brainstorm`, picked before the first message): the person sends an idea, then voices A and B take turns (hotter than the model card, `SAMPLING` via `engine.conversation({ sampling })`; every prompt says the person's idea is the point, kept as stated, `PREMISE`; a stray `</think>` with thinking off is dropped, `dropThinking`; thinking is off for the cloud model too, `strictThinking`; a reply with no text stops the run with an error saying so; voices can look things up, `MAX_LOOKUPS` (3) a turn: `bash` (search, curl, grep) on the bash surface, else web_search, fetch_url and grep, through `runTool` with approvals denied, results cut to the window's room, with `TOOL_ROOM` kept free and the lookups saved as the reply's `tools`; the wrap-up doesn't look anything up) in one of two framings (`framingOf`): `transcript` (default: the whole brainstorm as one labelled user turn, the model writes one speaker's next turn; `transcriptFor`; the turn ends where another speaker's label starts, `ownTurn`; phases by turn count, `phaseOf`: 4 diverge turns where both only add options, 1 cluster turn that groups them and gives a first answer, then converge where A builds and B criticizes; from the cluster turn on every turn ends with "Best answer so far:"; the question is in the system prompt and again right before the ask; after 6 converge turns (`wrapUpDue`) "Squiggle" writes the wrap-up, `wrapUpSystem`: Summary, Decision, Why, Still open; also when a run gets stuck or hits the turn limit, and on the bar's Wrap up button, after the turn in progress) or `flip` (each voice sees its own turns as the assistant and everything else as the user; `viewFor`); the person can jump in between turns (queued while one runs) and Stop; A builds, B criticizes (starts with the weakest part); no thinking; a turn is as long as the voice wants: one call writes up to 1,024 tokens and a turn cut off (`cutOff`: the runtime's `finish_reason` 'length' via smallSpeed, which on a 4K model usually means the window filled first; else the token count) goes back to the same voice with its end in the system prompt to finish (`continueSystem`, up to 8 calls); the person's latest steer sits in both voices' system prompts until both have answered it (`latestSteer`); 20 turns a run; oldest turns dropped to fit the window, and a turn longer than the window keeps its end; the idea is cut in the middle to 600 characters in system prompts and a third of the budget in the transcript (`clipMiddle`); text typed to jump in is kept if the run ends first; only the main composer steers; a turn that repeats what was said before (`isRepeat`: 85% of its word triples found in the earlier turns together, best-answer lines left out, 30+ words) is thrown away and retried once with a note, then the run stops ('stuck'), and repeats saved before that are left out of the transcript
     agent.js            turn loop (docs/harness.md): chat phase → plan → one fresh prompt per step → final reply; ask_user (need for Squiggle Small)/find; recipes learned after
     tasks.js            step-mode task state, step/final prompts (budgeted), resume rules, DIALECT (v2 frozen fenced text / v3 harness text kept out of user turns in steps)
     recipes.js          memory/recipes.jsonl: how finished tasks were solved; saved pending, matched only once the user approves; forgotten after 90 days unused
@@ -132,7 +133,7 @@ panel is open at ≤1500 px. Replies saved before this show just the total.
 ## Data model
 
 Session file `sessions/<id>.json`: `{ v, id, title, created, updated, deleted?, archived?, model?,
-messages[{id, role, content, ts, mts?, thread, tools?, context?, model?, pinned?, deleted?, attachments?[{name, path, type, size, chars, lines?, error?}]}],
+messages[{id, role, content, ts, mts?, thread, voice?, tools?, context?, model?, pinned?, deleted?, attachments?[{name, path, type, size, chars, lines?, error?}]}],
 threads{id: {parent, title, summary?}}, observations[], summaries{main|threadId} }`.
 `deleted`/`archived` on the session and `deleted` on a message are tombstones (content emptied) so the change
 syncs; `sessions.list()` leaves archived chats out (`listArchived`), `lineMessages` leaves deleted messages out.
@@ -140,7 +141,7 @@ syncs; `sessions.list()` leaves archived chats out (`listArchived`), `lineMessag
 device default from Settings) and `settings.model` is whatever is loaded right now. `contextMode` on the session
 works the same way (`sessionContextMode` / `useSessionContext`, applied with the model when a chat opens and before
 each turn; `settings.defaultContextMode` is the saved default, `settings.contextMode` the mode in effect). `model` on a reply is which
-model wrote it (`agent.js replyModel`: `{ id, label, how, smallMode?, contextSize, contextMode }`). A session seeded by the
+model wrote it (`agent.js replyModel`: `{ id, label, how, smallMode?, contextSize, contextMode }`). `brainstorm: 'transcript' | 'flip'` marks a brainstorm chat and its framing (brainstorm.js; `true`, from before the switch, means flip) and `voice` ('A' | 'B') which voice wrote a reply in one (`phase` on a reply: diverge / cluster / converge, shown in its label; `decision: true` on the wrap-up, which has no `voice`; `error` on a reply: what went wrong, shown under it, kept out of what the next voice reads). A session seeded by the
 demo carries `demo: true` (demo.js `clearSamples` removes those).
 Attachments: storage only holds text, so text files are saved as-is and PDFs as
 their extract (`<name>.txt`) under `home/attachments/<session>/`; images as the text
@@ -307,3 +308,5 @@ measure what a full window costs; the auto run skips bigger models only within a
   that would pass AI_DAILY_NEURONS (default 9000, clamped to 9900 — under the free 10,000/day).
   Settled with the real `usage.neurons` afterwards. Resets 00:00 UTC, like Cloudflare's.
 - The app shows the limit as a plain message; it never retries or falls back to billing.
+- Thinking: the relay passes `chat_template_kwargs.enable_thinking` (only that key) to Workers AI; the app sends it only
+  for conversations opened with `strictThinking` (brainstorm turns, off), so other calls still leave it to the model.

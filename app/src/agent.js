@@ -354,7 +354,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
 
 // The model behind a reply, saved on the message: its id, label and how it ran (on this device, on the GPU or
 // CPU, or on the relay). Labels are kept because MODELS entries come and go.
-function replyModel() {
+export function replyModel() {
   const id = settings.model;
   const m = engine.MODELS[id] || {};
   const info = engine.smallInfo && engine.smallInfo();
@@ -1291,13 +1291,13 @@ const DEBUG_MAX = 12000;
 // One line, cut to max characters (truncate() adds a note on its own line).
 const oneLine = (s, max) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > max ? t.slice(0, max - 1) + '…' : t; };
 
-function debugText(result) {
+export function debugText(result) {
   const s = (typeof result === 'string' ? result : JSON.stringify(result, null, 1)).replace(STRIP_UNTRUSTED, '');
   return s.length > DEBUG_MAX ? `${s.slice(0, DEBUG_MAX)}\n… (${s.length - DEBUG_MAX} more characters not saved)` : s;
 }
 
 const LOOPED = /\n*_\(stopped: the model was repeating itself\)_/;
-const toolResult = (call, response) => ({ role: 'tool', content: [{ name: (call.function && call.function.name) || 'unknown', response }] });
+export const toolResult = (call, response) => ({ role: 'tool', content: [{ name: (call.function && call.function.name) || 'unknown', response }] });
 
 // Past chats for `find`: every session's messages, ranked by BM25.
 function searchChats(query, k, skip = null) {
