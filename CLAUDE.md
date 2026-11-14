@@ -64,6 +64,8 @@ app/                    static app, plain ES modules, no build step
                         an env var, never templated into the script; read-only token), then status / wait (≤50 s, the bash
                         limit is 60 s) / logs / cancel by run id. Logs come through the relay (github.js `jobLogs`, worker
                         /api/gh/logs: GitHub's log redirect has no CORS); gh's `run view --log` and `workflow run` use the same
+                        Stand-ins (bash.js `ELSEWHERE`): npm, npx, pnpm, yarn, tsc, python(3), pip(3), sqlite3 exit 127 with the
+                        `job run -- "…"` line to copy (npm ci / corepack + install first), so the model learns `job` when it needs it
       wiki.js           wiki_lookup: Wikipedia search → article + Wikidata item → every fact (ranked by the question via property aliases) and newest links, straight from the browser (CORS); wikidata_query: raw SPARQL, big models only (agent.js BIG_ONLY)
     calc.js             `calculate` tool: safe math expression parser (no eval), % and money-friendly
     guard.js            hard limits: push policy, workflow-file check, workspace path resolution
