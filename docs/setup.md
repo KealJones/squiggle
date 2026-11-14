@@ -19,7 +19,7 @@ Go to **GitHub → Settings → Developer settings → GitHub Apps → New GitHu
 - **Repository permissions**:
   - Contents: **Read and write** (clone, commit, push)
   - Pull requests: **Read and write** (open PRs)
-  - Actions: **Read and write** (start background jobs and read their results; used by scheduled jobs, coming soon)
+  - Actions: **Read and write** (start background jobs and read their results: the `job` command runs long commands on GitHub Actions)
   - Workflows: **Read and write** (write the job files in `.github/workflows/`; every push that changes a workflow file still asks you first)
   - Metadata: Read-only (set automatically)
 - **Repository creation** (if your GitHub shows this permission): **Read and write**. It lets setup create your storage repo for you; without it, setup opens a pre-filled "new private repo" page instead.

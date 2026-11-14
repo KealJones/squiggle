@@ -62,6 +62,34 @@ test('git relay forwards auth to github.com and nothing else', async () => {
   } finally { globalThis.fetch = orig; }
 });
 
+test('job logs relay: the token goes to api.github.com only, the redirect is followed without it, the end is kept', async () => {
+  const orig = globalThis.fetch;
+  const calls = [];
+  const big = 'x'.repeat(1024 * 1024) + '\n';
+  globalThis.fetch = mock.fn(async (url, init = {}) => {
+    calls.push({ url, auth: init.headers && (init.headers.Authorization || (init.headers.get && init.headers.get('Authorization'))), redirect: init.redirect });
+    if (url.startsWith('https://api.github.com/')) return new Response(null, { status: 302, headers: { Location: 'https://results.blob.core.windows.net/logs/1.txt?sig=abc' } });
+    return new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('first line\n')); for (let i = 0; i < 3; i++) c.enqueue(new TextEncoder().encode(big)); c.enqueue(new TextEncoder().encode('the end\n')); c.close(); } }));
+  });
+  try {
+    const r = await worker.fetch(req('/api/gh/logs/k/bubbles/123', { headers: { Authorization: 'Bearer ghu_x', Origin: 'https://sq.example.workers.dev' } }), env);
+    assert.equal(r.status, 200);
+    assert.equal(calls[0].url, 'https://api.github.com/repos/k/bubbles/actions/jobs/123/logs');
+    assert.equal(calls[0].auth, 'Bearer ghu_x');
+    assert.equal(calls[0].redirect, 'manual');
+    assert.equal(calls[1].url, 'https://results.blob.core.windows.net/logs/1.txt?sig=abc');
+    assert.equal(calls[1].auth, undefined, 'the pre-signed URL gets no token');
+    const text = await r.text();
+    assert.ok(text.endsWith('the end\n'));
+    assert.ok(!text.includes('first line'), 'a log over 2 MB keeps its end');
+    assert.equal(r.headers.get('X-Logs-Cut'), 'start');
+    assert.equal(r.headers.get('access-control-allow-origin'), 'https://sq.example.workers.dev');
+    assert.equal((await worker.fetch(req('/api/gh/logs/k/bubbles/123'), env)).status, 401);
+    assert.equal((await worker.fetch(req('/api/gh/logs/k/bubbles/abc', { headers: { Authorization: 'Bearer x' } }), env)).status, 400);
+    assert.equal((await worker.fetch(req('/api/gh/logs/a..b/x/1', { headers: { Authorization: 'Bearer x' } }), env)).status, 400);
+  } finally { globalThis.fetch = orig; }
+});
+
 test('fetch relay is opt-in and needs a browser same-origin request', async () => {
   const off = await worker.fetch(req('/api/fetch?url=https://example.com'), { ...env, ENABLE_FETCH: 'false' });
   assert.equal(off.status, 404);

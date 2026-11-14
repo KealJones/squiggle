@@ -7,6 +7,7 @@
 //   POST /api/auth/token                 poll device flow for the user token
 //   POST /api/auth/refresh               rotate an expiring user token
 //   ANY  /api/git/github.com/<o>/<r>/... git smart-HTTP relay (clone/fetch/push)
+//   GET  /api/gh/logs/<o>/<r>/<job id>  an Actions job's log (GitHub redirects to storage without CORS)
 //   GET  /api/fetch?url=...              optional readable-web relay (ENABLE_FETCH)
 //   GET  /api/search?q=...               web search (ENABLE_FETCH): LangSearch and Tavily when
 //                                        their secrets are set (LANGSEARCH_API_SECRET_KEY,
@@ -23,6 +24,8 @@
 
 const GITHUB = 'https://github.com';
 const GIT_PATH = /^\/api\/git\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(\.git)?\/(info\/refs|git-upload-pack|git-receive-pack)$/;
+const LOGS_PATH = /^\/api\/gh\/logs\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/(\d+)$/;
+const LOGS_MAX_BYTES = 2 * 1024 * 1024;
 const FETCH_MAX_BYTES = 2 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 15000;
 
@@ -108,6 +111,7 @@ async function route(request, url, env) {
   }
 
   if (p.startsWith('/api/git/')) return gitRelay(request, url);
+  if (p.startsWith('/api/gh/logs/')) return logsRelay(request, url);
 
   if (p === '/api/fetch') {
     if (env.ENABLE_FETCH !== 'true') return json({ error: 'Web fetch relay is disabled.' }, 404);
@@ -340,6 +344,44 @@ async function gitRelay(request, url) {
   return new Response(upstream.body, { status: upstream.status, headers: out });
 }
 
+// GET /repos/<o>/<r>/actions/jobs/<id>/logs with the caller's token, then the storage URL GitHub redirects to
+// without it (the URL is pre-signed). Keeps the end of a long log: that's where a job says how it went.
+async function logsRelay(request, url) {
+  if (request.method !== 'GET') return json({ error: 'Method not allowed.' }, 405);
+  const m = url.pathname.match(LOGS_PATH);
+  const auth = request.headers.get('Authorization');
+  if (!m || m[1].includes('..') || m[2].includes('..')) return json({ error: 'Expected /api/gh/logs/<owner>/<repo>/<job id>.' }, 400);
+  if (!auth) return json({ error: 'Sign in first.' }, 401);
+  const gh = await fetch(`https://api.github.com/repos/${m[1]}/${m[2]}/actions/jobs/${m[3]}/logs`, {
+    headers: { Authorization: auth, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'User-Agent': 'squiggle-relay' },
+    redirect: 'manual',
+  });
+  let res = gh;
+  if (gh.status >= 300 && gh.status < 400) {
+    const to = gh.headers.get('Location');
+    if (!to || !/^https:\/\//.test(to)) return json({ error: 'GitHub gave no log location.' }, 502);
+    res = await fetch(to, { headers: { 'User-Agent': 'squiggle-relay' } });
+  }
+  if (!res.ok) {
+    const data = await res.json().catch(() => null);
+    return json({ error: 'logs', message: (data && data.message) || `GitHub answered ${res.status}` }, res.status === 410 ? 404 : res.status);
+  }
+  const reader = res.body ? res.body.getReader() : null;
+  const chunks = [];
+  let size = 0, cut = false;
+  while (reader) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value); size += value.length;
+    while (size - chunks[0].length >= LOGS_MAX_BYTES) { size -= chunks.shift().length; cut = true; }
+  }
+  const buf = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) { buf.set(c, at); at += c.length; }
+  const text = new TextDecoder().decode(buf);
+  return new Response(cut ? text.slice(text.indexOf('\n') + 1) : text, { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', ...(cut ? { 'X-Logs-Cut': 'start' } : {}) } });
+}
+
 async function webRelay(raw) {
   let target;
   try { target = new URL(raw || ''); } catch { return json({ error: 'A full http(s) URL is required.' }, 400); }
@@ -502,4 +544,4 @@ function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
-export const _test = { GIT_PATH, route, parseDdgLite, instantAnswer, aiEstimate, AiBudget };
+export const _test = { GIT_PATH, LOGS_PATH, route, parseDdgLite, instantAnswer, aiEstimate, AiBudget };

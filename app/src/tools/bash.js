@@ -17,12 +17,13 @@
 // through the relay, results still come back as outside content.
 //   git (real git: tools/gitcli.js)     gh (GitHub's CLI: tools/ghcli.js)
 //   curl URL (the page as readable text)    search QUERY (web search)    wiki NAME (Wikipedia + Wikidata)
-//   node -e CODE (the run_js sandbox)
+//   node -e CODE (the run_js sandbox)     job (long commands on GitHub Actions: tools/jobs.js)
 import { defineTool, params, str, runTool } from './registry.js';
 import { pfs, writeFile as gitWriteFile, rmrf, mkdirp, walk, git as isoGit, fs as gitFs, net as gitNet, author as gitAuthor, writtenIn, noteWritten, exists as gitExists } from '../git.js';
-import { gh as githubApi, getUser } from '../github.js';
+import { gh as githubApi, getUser, jobLogs } from '../github.js';
 import { runGit } from './gitcli.js';
 import { runGh } from './ghcli.js';
+import { runJob, JOB_HELP } from './jobs.js';
 import * as storage from '../storage.js';
 import { resolveAgentPath, agentBranchName } from '../guard.js';
 import { REPOS, readAgentFile, listAgentDir } from './workspace.js';
@@ -325,7 +326,8 @@ export function commands(defineCommand, toolCtx, seen) {
     return runGit(args, env);
   }));
 
-  const gh = defineCommand('gh', helped(HELP.gh, async (argv, ctx) => {
+  // What gh and job get: the repo the shell is in (its origin), the GitHub API, the approval card, the relay's logs.
+  const ghEnv = async (ctx) => {
     const name = repoFrom(ctx.cwd);
     const genv = await gitEnv(ctx, name);
     let repo = null, branch = null;
@@ -336,16 +338,18 @@ export function commands(defineCommand, toolCtx, seen) {
       branch = await isoGit.currentBranch({ fs: gitFs, dir: genv.dir, fullname: false }).catch(() => null);
     }
     const cfg = storage.storageConfig();
-    return runGh(argv, {
-      gh: githubApi, repo, branch, login: async () => (await getUser()).login,
+    return {
+      gh: githubApi, repo, branch, login: async () => (await getUser()).login, logs: jobLogs, sleep: (ms) => new Promise(r => setTimeout(r, ms)),
       approve: toolCtx.approve, call: (n, a) => call(n, a), stdin: ctx.stdin || '', help: HELP.gh,
       exec: ctx.exec ? (cmd, opts = {}) => ctx.exec(cmd, { cwd: ctx.cwd, ...opts }) : null,
       git: genv.dir ? (args) => runGit(args, genv) : null,
       readFile: async (p) => { try { return await ctx.fs.readFile(ctx.fs.resolvePath(ctx.cwd, p)); } catch { return null; } },
       isStorage: (o, n) => Boolean(cfg && String(o).toLowerCase() === cfg.owner.toLowerCase() && String(n).toLowerCase() === cfg.name.toLowerCase()),
       storageName: cfg ? cfg.name : null,   // the name alone: a graphql query names owner and repo apart
-    });
-  }));
+    };
+  };
+  const gh = defineCommand('gh', helped(HELP.gh, async (argv, ctx) => runGh(argv, await ghEnv(ctx))));
+  const job = defineCommand('job', helped(HELP.job, async (argv, ctx) => runJob(argv, await ghEnv(ctx))));
 
   const curl = defineCommand('curl', helped(HELP.curl, async (argv) => {
     const f = flags(argv, ['o', 'output', 'H', 'header', 'X', 'request', 'd', 'data', 'A', 'user-agent', 'm', 'max-time']);
@@ -404,7 +408,7 @@ export function commands(defineCommand, toolCtx, seen) {
     return { stdout: (HELP[page] || HELP.all).trim() + '\n', stderr: '', exitCode: 0 };
   });
 
-  return [git, gh, curl, search, wiki, node, bc, man];
+  return [git, gh, job, curl, search, wiki, node, bc, man];
 }
 
 // ── Help ──────────────────────────────────────────────────────────────────
@@ -413,6 +417,7 @@ export const HELP = {
   all: `Custom commands here (each has --help):
   git      real git on /repos/<name>: status, add, commit, diff, log, show, branch, switch, merge, push, pull, …
   gh       GitHub's CLI: pr list/view/create/edit/merge/…, issue …, repo …, run …, api
+  job      job run -- COMMAND: run something long (builds, tests, Python) on GitHub Actions; job logs ID later
   curl     curl URL: a web page as readable text (pipe it: curl URL | grep -i word)
   search   search WORDS: web search results with links
   wiki     wiki NAME: Wikipedia and Wikidata facts about something
@@ -444,10 +449,12 @@ Files: /home (yours, synced to the user's devices), /repos/<name> (git clones), 
   pr close <n> [--comment "…"] [--delete-branch]   pr reopen <n>   pr merge <n> [--merge|--squash|--rebase] [--delete-branch]
   issue list|view|create|edit|comment|close|reopen   (same flags as pr; close --reason "not planned")
   repo list   repo view [owner/name]   repo clone <owner/name>   browse
-  run list [--branch b] [--workflow f]   run view [<id>] [-v]   run rerun <id> [--failed]   workflow list
+  run list [--branch b] [--workflow f]   run view [<id>] [-v] [--log|--log-failed]   run rerun <id> [--failed]   run cancel <id>
+  workflow list   workflow run <file|name> [--ref b] [-f key=value]   (for long commands of your own: job --help)
   release list   release view [<tag>]   search repos|issues|prs <words>   auth status
   api <path> [-X METHOD] [-f k=v] [-F k=v] [--jq expr] [--paginate]   ({owner} {repo} {branch} fill in)
-  Asks the user first: pr merge, deleting a branch, any gh api call that isn't a read.`,
+  Asks the user first: pr merge, deleting a branch, workflow run, any gh api call that isn't a read.`,
+  job: JOB_HELP,
   curl: `curl URL: fetch a web page and print it as readable text (not HTML). GET only.
   A URL that doesn't exist fails (404 or no such host): prefer links from search results or the user.
   curl https://example.com | grep -i -m5 word     find a line without reading the whole page`,
@@ -464,7 +471,7 @@ Files: /home (yours, synced to the user's devices), /repos/<name> (git clones), 
 // ── The tool ──────────────────────────────────────────────────────────────
 
 export const BASH_DESCRIPTION = 'Run bash: pipes, cat, ls, grep, sed, awk, find, jq, the usual tools. Files: /home (yours), /repos (git clones), /web, /tmp. ' +
-  'Custom commands: git, gh, curl, search, wiki, node, bc (`man` lists them, `<command> --help` explains one).';
+  'Custom commands: git, gh, job, curl, search, wiki, node, bc (`man` lists them, `<command> --help` explains one).';
 
 export const bash = defineTool({
   name: 'bash',
