@@ -408,7 +408,36 @@ export function commands(defineCommand, toolCtx, seen) {
     return { stdout: (HELP[page] || HELP.all).trim() + '\n', stderr: '', exitCode: 0 };
   });
 
-  return [git, gh, job, curl, search, wiki, node, bc, man];
+  // Toolchains the browser doesn't have: instead of "command not found", say where it does run, with the line to copy.
+  const standins = Object.keys(ELSEWHERE).map(name => defineCommand(name, async (argv, ctx) => {
+    const env = await ghEnv(ctx);
+    return { stdout: '', stderr: elsewhere(name, argv, env.repo), exitCode: 127 };
+  }));
+
+  return [git, gh, job, curl, search, wiki, node, bc, man, ...standins];
+}
+
+// ── Not here: run it with job ────────────────────────────────────────────
+
+// What a command needs first on a fresh Actions machine (a clean checkout, no node_modules).
+const NPM = 'npm ci && ', PNPM = 'corepack enable && pnpm install && ', YARN = 'corepack enable && yarn install && ';
+export const ELSEWHERE = {
+  npm: (line, a) => (/^(i|install|ci|add)$/.test(a[0] || '') ? line : NPM + line),
+  npx: (line) => NPM + line, tsc: (line) => NPM + 'npx ' + line,
+  pnpm: (line, a) => (/^(i|install|add)$/.test(a[0] || '') ? 'corepack enable && ' + line : PNPM + line),
+  yarn: (line, a) => (!a.length || /^(install|add)$/.test(a[0]) ? 'corepack enable && ' + line : YARN + line),
+  python: (line) => line, python3: (line) => line, pip: (line) => line, pip3: (line) => line,
+  sqlite3: (line) => 'sudo apt-get install -y sqlite3 >/dev/null && ' + line,
+};
+const shq = (a) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`);
+export function elsewhere(name, argv, repo) {
+  const line = [name, ...argv].map(shq).join(' ');
+  const cmd = ELSEWHERE[name](line, argv).replace(/["\\$`]/g, '\\$&');
+  const where = repo ? `-R ${repo.owner}/${repo.name} ` : '';
+  return `${name}: doesn't run here (the browser has no ${/^(python|pip)/.test(name) ? 'Python' : name === 'sqlite3' ? 'sqlite3' : 'Node toolchain'}). ` +
+    `Run it on GitHub Actions in a checkout of the repo instead:\n  job run ${where}-- "${cmd}"\n` +
+    (repo ? '' : 'Add -R owner/name (or cd into /repos/<name> first) to say which repo.\n') +
+    `Then: job wait <id>, job logs <id>. The first time in a repo, job setup adds the runner. job --help has the rest.\n`;
 }
 
 // ── Help ──────────────────────────────────────────────────────────────────
@@ -423,6 +452,7 @@ export const HELP = {
   wiki     wiki NAME: Wikipedia and Wikidata facts about something
   node     node -e CODE: run JavaScript
   bc       echo "5*5/129" | bc -l: maths with decimals and %
+Not here: npm, npx, pnpm, yarn, tsc, python, pip, sqlite3. Run them on GitHub Actions with job run (they say how).
 Everything else is ordinary bash: cat, ls, grep, sed, awk, find, head, tail, wc, sort, jq, pipes, loops.
 Files: /home (yours, synced to the user's devices), /repos/<name> (git clones), /web (saved pages), /tmp.`,
   git: `git (Squiggle): real git on clones in /repos/<name> (cd there first, or git -C /repos/<name> …).
