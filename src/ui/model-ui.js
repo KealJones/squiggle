@@ -310,6 +310,7 @@ export function smallHow() {
   const i = engine.isLite() ? engine.smallInfo() : null;
   if (!i) return '';
   const parts = [i.webllm ? `GPU, WebLLM${i.webllmVersion ? ' ' + i.webllmVersion : ''}` : i.gpu ? 'GPU' : `${i.threads} CPU core${i.threads === 1 ? '' : 's'}`];
+  if (i.reuse) parts.push('prompt reuse on');
   if (i.compat) parts.push('Safari compatibility build');
   if (i.asked && i.asked.gpu && !i.gpu) parts.push('no WebGPU here');
   if (i.asked && i.asked.threads && i.threads === 1) parts.push(i.asked.isolated ? 'threads unavailable' : 'cores need a reload');
