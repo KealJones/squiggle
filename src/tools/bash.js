@@ -338,7 +338,9 @@ export function commands(defineCommand, toolCtx, seen) {
     }
     const cfg = storage.storageConfig();
     return runGh(argv, {
-      tty: Boolean(ctx.env && ctx.env.get && ctx.env.get(TTY_VAR)),   // tty.js: stdout reaches the terminal
+      // tty.js: stdout reaches the terminal. Like gh (go-gh term.FromEnv): a number is the width, else 80.
+      tty: Boolean(ctx.env && ctx.env.get && ctx.env.get(TTY_VAR)),
+      ttyWidth: (n => (n > 0 ? n : 80))(parseInt(ctx.env && ctx.env.get ? ctx.env.get(TTY_VAR) : '', 10)),
       gh: githubApi, repo, branch, login: async () => (await getUser()).login, repos: accessibleRepos,
       approve: toolCtx.approve, call: (n, a) => call(n, a), stdin: ctx.stdin || '', help: HELP.gh,
       exec: ctx.exec ? (cmd, opts = {}) => ctx.exec(cmd, { cwd: ctx.cwd, ...opts }) : null,
