@@ -253,7 +253,7 @@ off (the crash-loop guard). The WebLLM models made the GPU switch moot for phone
 - **Recipes injected into the prompt; other chats in smart context by default; recalled messages inside the
   user turn without a marker.** Each one made a small model answer something the person didn't ask.
 
-### Reuse the prompt already in the cache — reverted, back as a trial (`?reuse=1`)
+### Reuse the prompt already in the cache — reverted, then shipped on by default
 
 **Idea.** Keal, 2026-11-11, on hearing every turn re-reads the whole prompt: "I'm more concerned about not meeting the
 cache every turn." On an iPhone 16 the prompt is read at roughly 100 tokens a second, so a reply with five tool
@@ -275,6 +275,11 @@ off. `engine-webllm.js routeSelfCopies` sends any same-buffer copy through a scr
 raised. The composer note says "prompt reuse on"; a GPU lost with it on turns it off until the page is reloaded and
 writes the reuse counts on the `gpu-lost` line. Whether the copy was the whole problem is what the trial is for:
 not yet run on a phone.
+
+**Result (2026-11-15).** On Keal's iPhone (Safari 27.2, LFM3 1.7B, PR #15's preview driven through the phone relay),
+one Compress reply with three bc steps: the three model calls reused 1029 of 1630, 1030 of 2058 and 1333 of 1848
+prompt tokens (3392 of 5536, 61% not read again), no GPU loss, right answers, first word after 7.2 s. Merged and
+on by default; `?reuse=0` turns it off for a browser.
 
 ### One model, picked for the device — shipped
 

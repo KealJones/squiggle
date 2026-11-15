@@ -399,14 +399,16 @@ test('a copy from a GPU buffer to itself goes through a scratch buffer; every ot
   assert.equal(routeSelfCopies({}, Encoder), false);
 });
 
-test('prompt reuse is off unless this browser asked for it (?reuse=1 is remembered, ?reuse=0 forgets)', () => {
+test('prompt reuse is on unless this browser turned it off (?reuse=0 is remembered, ?reuse=1 forgets)', () => {
   const kept = new Map();
   const store = { getItem: (k) => (kept.has(k) ? kept.get(k) : null), setItem: (k, v) => kept.set(k, v), removeItem: (k) => kept.delete(k) };
-  assert.equal(reuseWanted('', store), false);
-  assert.equal(reuseWanted('?reuse=1', store), true);
-  assert.equal(reuseWanted('', store), true, 'remembered: a Home Screen app has no address bar');
+  assert.equal(reuseWanted('', store), true);
   assert.equal(reuseWanted('?x=1&reuse=0', store), false);
-  assert.equal(reuseWanted('', store), false);
+  assert.equal(reuseWanted('', store), false, 'remembered: a Home Screen app has no address bar');
+  assert.equal(reuseWanted('?reuse=1', store), true);
+  assert.equal(reuseWanted('', store), true);
+  kept.set('squiggle-reuse', '1');
+  assert.equal(reuseWanted('', store), true, 'a browser that opted in during the trial stays on');
   assert.equal(reuseWanted(undefined, undefined), false, 'no page (tests, workers): off');
 });
 

@@ -186,14 +186,14 @@ export function routeSelfCopies(device, Encoder = globalThis.GPUCommandEncoder) 
   return true;
 }
 
-// Prompt reuse (prefix-cache.js) is a trial, off unless asked for: open the app once with ?reuse=1 and this browser
-// keeps it on (a Home Screen app has no address bar), ?reuse=0 turns it off again.
+// Prompt reuse (prefix-cache.js) is on by default since 2026-11-15 (passed on Keal's iPhone): open the app once with
+// ?reuse=0 and this browser keeps it off (a Home Screen app has no address bar), ?reuse=1 turns it back on.
 const REUSE_KEY = 'squiggle-reuse';
 export function reuseWanted(search = globalThis.location && location.search, store = globalThis.localStorage) {
   try {
     const q = new URLSearchParams(search || '').get('reuse');
-    if (q !== null) { if (q === '0' || q === 'off') store.removeItem(REUSE_KEY); else store.setItem(REUSE_KEY, '1'); }
-    return store.getItem(REUSE_KEY) === '1';
+    if (q !== null) { if (q === '0' || q === 'off') store.setItem(REUSE_KEY, '0'); else store.removeItem(REUSE_KEY); }
+    return store.getItem(REUSE_KEY) !== '0';
   } catch { return false; }
 }
 
@@ -265,7 +265,7 @@ export function paceGpu(engine, chunk = PACED_CHUNK, gap = PACED_GAP_MS) {
 // when the GPU device is lost (tests pass a fake; by default the same CreateMLCEngine call, from WebLLM's cache).
 // watch: which GPU device is in use and when one is lost (tests pass a fake). waits: pauses between reload tries.
 // reuse: keep a prompt prefix in the model's cache between calls (prefix-cache.js), for formats that say where a
-// prompt can be cut (cacheMark). A trial: off unless this browser asked for it (reuseWanted).
+// prompt can be cut (cacheMark). On unless this browser turned it off (reuseWanted).
 export async function createShim(mlc, contextSize, onStage = () => {}, { format = null, engine: given = null, makeEngine = null, pace = pacedGpu(), watch = deviceWatch, waits = REVIVE_WAITS, reuse: wantReuse = reuseWanted() } = {}) {
   const id = given ? mlc : await pickId(mlc);
   const fmt = toolFormat(format) || PLAIN;
