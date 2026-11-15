@@ -9,6 +9,7 @@
 // Qwen3, Qwen3.5, Gemma 4, LFM2) that renders its template and reads its calls back. WebLLM keeps its
 // files in Cache Storage (webllm/config, /model, /wasm); sw.js keeps those caches across updates.
 import { report, gpu, trackBuffers } from './incidents.js';
+import { reusePrefix } from './prefix-cache.js';
 import { toolFormat, PLAIN } from './toolformats/index.js';
 import { heldBack } from './toolformats/text.js';
 
@@ -137,6 +138,7 @@ function watchDevices() {
     try {
       const notes = gpuNotes = { lost: null, error: null };
       const drop = trackBuffers(device);
+      routeSelfCopies(device);
       device.lost.then((info) => {
         drop();
         notes.lost = { reason: info && info.reason, message: info && info.message, at: Date.now(), gpuBytes: gpu.atLoss };
@@ -150,6 +152,51 @@ function watchDevices() {
     return device;
   };
 }
+// WebGPU refuses a copy from a buffer to itself ("copyBufferToBuffer: source equals destination not valid"), even
+// between two parts that don't touch. TVM makes exactly that copy when one of the model's states is copied inside
+// its own storage: forking a sequence, which prompt reuse does (prefix-cache.js). On Keal's iPhone that error was
+// the first thing wrong before the GPU was lost for good (incident 2026-11-11 19:35, three minutes before reuse
+// was reverted). So such a copy goes through a scratch buffer instead: out, then back in, in the same encoder.
+// Every other copy is passed on untouched. Old scratch buffers are left to the garbage collector, not destroyed:
+// an encoder that hasn't been submitted yet may still name one.
+const encoderDevice = new WeakMap();   // encoder → the device that made it
+const scratchOf = new WeakMap();       // device → { buffer, size }
+export const selfCopies = { routed: 0 };
+export function routeSelfCopies(device, Encoder = globalThis.GPUCommandEncoder) {
+  const proto = Encoder && Encoder.prototype;
+  if (!device || typeof device.createCommandEncoder !== 'function' || !proto || typeof proto.copyBufferToBuffer !== 'function') return false;
+  const create = device.createCommandEncoder.bind(device);
+  device.createCommandEncoder = (...args) => { const enc = create(...args); try { encoderDevice.set(enc, device); } catch {} return enc; };
+  if (proto.squiggleSelfCopy) return true;
+  const copy = proto.copyBufferToBuffer;
+  proto.copyBufferToBuffer = function (src, srcOffset, dst, dstOffset, size) {
+    const dev = encoderDevice.get(this);
+    if (arguments.length < 5 || src !== dst || !dev || !(size > 0)) return copy.apply(this, arguments);
+    let s = scratchOf.get(dev);
+    if (!s || s.size < size) {
+      const bytes = Math.max(65536, Math.ceil(size / 4) * 4);
+      s = { size: bytes, buffer: dev.createBuffer({ size: bytes, usage: 0x4 | 0x8 }) };   // COPY_SRC | COPY_DST
+      scratchOf.set(dev, s);
+    }
+    selfCopies.routed += 1;
+    copy.call(this, src, srcOffset, s.buffer, 0, size);
+    return copy.call(this, s.buffer, 0, dst, dstOffset, size);
+  };
+  proto.squiggleSelfCopy = true;
+  return true;
+}
+
+// Prompt reuse (prefix-cache.js) is a trial, off unless asked for: open the app once with ?reuse=1 and this browser
+// keeps it on (a Home Screen app has no address bar), ?reuse=0 turns it off again.
+const REUSE_KEY = 'squiggle-reuse';
+export function reuseWanted(search = globalThis.location && location.search, store = globalThis.localStorage) {
+  try {
+    const q = new URLSearchParams(search || '').get('reuse');
+    if (q !== null) { if (q === '0' || q === 'off') store.removeItem(REUSE_KEY); else store.setItem(REUSE_KEY, '1'); }
+    return store.getItem(REUSE_KEY) === '1';
+  } catch { return false; }
+}
+
 const deviceWatch = {
   current: () => gpuNotes,
   onLost(fn) { lostListeners.add(fn); return () => lostListeners.delete(fn); },
@@ -217,7 +264,9 @@ export function paceGpu(engine, chunk = PACED_CHUNK, gap = PACED_GAP_MS) {
 // engine: an already-made engine with WebLLM's API (tests pass a fake). makeEngine: how to make another one
 // when the GPU device is lost (tests pass a fake; by default the same CreateMLCEngine call, from WebLLM's cache).
 // watch: which GPU device is in use and when one is lost (tests pass a fake). waits: pauses between reload tries.
-export async function createShim(mlc, contextSize, onStage = () => {}, { format = null, engine: given = null, makeEngine = null, pace = pacedGpu(), watch = deviceWatch, waits = REVIVE_WAITS } = {}) {
+// reuse: keep a prompt prefix in the model's cache between calls (prefix-cache.js), for formats that say where a
+// prompt can be cut (cacheMark). A trial: off unless this browser asked for it (reuseWanted).
+export async function createShim(mlc, contextSize, onStage = () => {}, { format = null, engine: given = null, makeEngine = null, pace = pacedGpu(), watch = deviceWatch, waits = REVIVE_WAITS, reuse: wantReuse = reuseWanted() } = {}) {
   const id = given ? mlc : await pickId(mlc);
   const fmt = toolFormat(format) || PLAIN;
   const manifest = Boolean((custom.get(id) || {}).model_manifest);
@@ -229,6 +278,10 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
   onStage('loading the model onto the GPU');
   let engine = given || await make();
   let device = watch.current();       // the device this engine runs on (WebLLM asks for one per engine)
+  // Before pacing: the caches are made again with the build's own prefill chunk size.
+  let reuse = wantReuse && fmt.cacheMark ? reusePrefix(engine, fmt.cacheMark) : null;
+  let reuseOn = Boolean(reuse);
+  if (wantReuse) console.info(reuse ? 'Squiggle: prompt reuse is on (trial).' : 'Squiggle: prompt reuse was asked for, but this model or this WebLLM can\'t do it.');
   if (pace && !paceGpu(engine)) console.warn('Squiggle: could not pace WebLLM\'s GPU work (its internals changed); long prompts may lose the GPU on Safari or stall the screen on Android.');
   let reloads = 0, reviving = null, stale = false, closed = false, lostNotes = null;
 
@@ -245,6 +298,9 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
       console.info('Squiggle: the GPU device was lost; loading the model onto the GPU again.');
       const was = lostNotes || device, started = Date.now();
       const old = engine;
+      // A GPU lost with prompt reuse on: the reload runs without it (it may be why), and the incident says it was on.
+      const hadReuse = reuse;
+      if (reuse) { reuse = null; reuseOn = false; console.warn('Squiggle: the GPU was lost with prompt reuse on; it stays off until the page is reloaded.'); }
       engine = null;
       try { old && await old.unload(); } catch {}
       let last = null, tries = 0;
@@ -260,6 +316,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
       }
       report('gpu-lost', {
         model: id, lost: was && was.lost, firstGpuError: was && was.error, reloads, tries, reloadMs: Date.now() - started,
+        reuse: hadReuse ? { ...hadReuse.totals, last: hadReuse.last, selfCopies: selfCopies.routed } : undefined,
         backAgain: Boolean(engine), loadError: engine ? undefined : String((last && last.message) || last).slice(0, 300),
         visible: globalThis.document ? document.visibilityState : undefined,
       });
@@ -334,7 +391,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
         // if it had thought that (the thinking budget, engine-wllama.js). The reply then starts after the close.
         if (opts.think_prefill && f.thinkClose && thinking && prompt.endsWith(f.thinkOpen)) prompt += opts.think_prefill + f.thinkClose;
         noteRendered('raw prompt', prompt);   // the exact text the model reads ("What the model saw", trace.js)
-        try { await engine.resetChat(); } catch {}         // raw completions need an empty KV cache
+        try { await engine.resetChat(); } catch {}         // raw completions need an empty KV cache (a kept prefix snapshot survives: prefix-cache.js)
         chunks = await engine.completions.create({ prompt, stream: true, max_tokens: opts.max_tokens, ...sampling(opts), stop: f.stop });
       } else {
         let messages = f.messages(history, tools, { thinking });
@@ -388,9 +445,11 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
   return {
     async createChatCompletion(opts) { return stream(opts, opts.abortSignal); },
     async exit() { closed = true; unwatch(); try { engine && await engine.unload(); } catch {} },
-    info: { gpu: true, threads: 1, compat: false, webllm: true, closesThinking: Boolean(fmt.mode === 'raw' && fmt.thinkClose), webllmVersion: versionFor(id), toolFormat: fmt.id, toolNames: Boolean(fmt.listsNames), id },
+    info: { gpu: true, threads: 1, compat: false, webllm: true, closesThinking: Boolean(fmt.mode === 'raw' && fmt.thinkClose), get reuse() { return reuseOn; }, webllmVersion: versionFor(id), toolFormat: fmt.id, toolNames: Boolean(fmt.listsNames), id },
     get reloads() { return reloads; },
     get paced() { return Boolean(pace); },
+    // Prompt tokens reused from the cache vs read, last call and in all (null when reuse is off, or was turned off).
+    get reuse() { return reuse ? { ...reuse.totals, last: reuse.last, selfCopies: selfCopies.routed } : null; },
   };
 }
 
@@ -402,7 +461,9 @@ export async function createEngine(mlc, contextSize, onStage = () => {}, { nativ
   const { Conversation, NativeConversation } = await import('./engine-wllama.js');
   const w = await createShim(mlc, contextSize, onStage, { format: native ? format : null });
   return {
-    info: { ...w.info, asked: { gpu: true, threads: false, isolated: Boolean(globalThis.crossOriginIsolated), webgpu: true } },
+    // `reuse` stays live: it goes off for good when the GPU is lost with it on.
+    info: Object.defineProperty({ ...w.info, asked: { gpu: true, threads: false, isolated: Boolean(globalThis.crossOriginIsolated), webgpu: true } },
+      'reuse', { get: () => w.info.reuse, enumerable: true }),
     createConversation: async (cfg) => (native ? new NativeConversation(w, cfg) : new Conversation(w, cfg)),
     delete: async () => { try { await w.exit(); } catch {} },
   };

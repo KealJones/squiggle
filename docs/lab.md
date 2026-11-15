@@ -253,6 +253,29 @@ off (the crash-loop guard). The WebLLM models made the GPU switch moot for phone
 - **Recipes injected into the prompt; other chats in smart context by default; recalled messages inside the
   user turn without a marker.** Each one made a small model answer something the person didn't ask.
 
+### Reuse the prompt already in the cache — reverted, back as a trial (`?reuse=1`)
+
+**Idea.** Keal, 2026-11-11, on hearing every turn re-reads the whole prompt: "I'm more concerned about not meeting the
+cache every turn." On an iPhone 16 the prompt is read at roughly 100 tokens a second, so a reply with five tool
+steps over a 3K prompt spent most of its time re-reading the same 3K.
+
+**What happened.** Two walls: WebLLM empties the cache before every raw completion, and its KV checkpoints only take
+pure KV caches; LFM3's conv layers keep a running state that can't be rewound. Forking a sequence at its end works
+on both kinds of state. `prefix-cache.js` keeps a snapshot in a second sequence and starts each call from it when
+it's an exact token prefix; in a scripted tool loop (tests/prefix-cache.test.js) the prompt tokens read drop by
+about half. Shipped 2026-11-11 15:19 without ever running on a real GPU (SwiftShader can't run LFM3), and reverted
+at 19:38 the same day (02bb766, no reason in the message). The reason is in the incident log: 19:35 on Keal's
+iPhone, `gpu-lost`, first GPU error "GPUCommandEncoder.copyBufferToBuffer: source equals destination not valid",
+device destroyed, no GPU back after five tries. It's the only time that error appears. WebGPU refuses a copy from a
+buffer to itself, and a fork copies a state inside its own storage. It landed the same day as the iOS 27 watchdog
+work, so the two were easy to take for one problem.
+
+**Now (2026-11-14).** Back behind a switch, off by default: `?reuse=1` once turns it on for that browser, `?reuse=0`
+off. `engine-webllm.js routeSelfCopies` sends any same-buffer copy through a scratch buffer, so that error can't be
+raised. The composer note says "prompt reuse on"; a GPU lost with it on turns it off until the page is reloaded and
+writes the reuse counts on the `gpu-lost` line. Whether the copy was the whole problem is what the trial is for:
+not yet run on a phone.
+
 ### One model, picked for the device — shipped
 
 **Idea.** Keal, 2026-11-10, after LFM3 1.7B on our WebLLM build carried the bash tool well on a phone and a desktop:

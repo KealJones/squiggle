@@ -47,6 +47,7 @@ app/                    static app, plain ES modules, no build step
     recall.js           smart mode's recalled block: earlier messages (this chat + other chats) and memory, quoted after the request; time phrases, size caps
     search.js           BM25 (light stemmer: -ing/-ies/-ed/-s and a trailing e) + blend with optional embeddings (embed.js, MiniLM on CPU in embed-worker.js, terminated after 15 s idle on phones / 3 min on computers so its memory is freed)
     engine-webllm.js    WebLLM (MLC on WebGPU) under engine-wllama.js's conversations; per-model WebLLM version (`webllm`); streams any tool format
+    prefix-cache.js     trial, off unless ?reuse=1: keeps a prompt prefix in the model's cache between raw completions (two sequences, fork at a safe cut); reverted once, see docs/lab.md "Reuse the prompt already in the cache"
     toolformats/        how each model family's template writes tools, calls and results, for WebLLM (docs/extending.md "Tool formats")
       index.js          the registry and the format interface; text.js: shared <think> split and marker hold-back
       qwen.js gemma4.js lfm2.js   Qwen3/Qwen3.5 (chat API), Gemma 4 and LFM2 (raw prompts; fixtures pin them to the real templates)
