@@ -66,3 +66,30 @@ test('case 19 (plan mode couldn\'t ask the user): a question asks, ask_user exis
   assert.match(t.stepPrompt('B', task, [], { dialect: t.DIALECT.v3, now: t.stepNow(task, { dialect: t.DIALECT.v3 }) }).text,
     /## Goal \(your own one-line summary of what the user asked\)\nCreate a new repository for the user\n[^]*## Now\nWork on step 1 now: Ask for the name$/m);
 });
+
+test('case 20 ("you don\'t have a bubbles repo"): gh repo list shows every repo newest first, the prompt says gh is signed in, find names real tools', async () => {
+  const { runGh } = await import('../app/src/tools/ghcli.js');
+  const { nothingFor, NOTHING } = await import('../app/src/find.js');
+  // 40 old repos (lowest ids, listed first by the App's endpoint) and the new one last, as GitHub returns them.
+  const mk = (name, pushed, priv = false) => ({ name, full_name: `KealJones/${name}`, owner: { login: 'KealJones' }, private: priv, description: `${name} repo`, pushed_at: pushed, default_branch: 'main', html_url: `https://github.com/KealJones/${name}` });
+  const repos = [...Array.from({ length: 40 }, (_, i) => mk(`old${i}`, `2016-01-${String(i % 28 + 1).padStart(2, '0')}T00:00:00Z`)), mk('squiggle-state', '2026-11-15T19:00:00Z', true), mk('bubbles', '2026-11-10T00:00:00Z', true)];
+  const env = { repos: async () => repos, login: async () => 'KealJones', isStorage: (o, n) => n === 'squiggle-state', gh: async (p) => { if (p === '/repos/KealJones/bubbles') return repos.at(-1); throw Object.assign(new Error('Not Found'), { status: 404 }); } };
+  const list = await runGh(['repo', 'list'], env);
+  assert.match(list.stdout, /^Showing 30 of 41 repositories \(newest push first; -L 100 for more, or gh repo view NAME\)\n\nKealJones\/bubbles\tbubbles repo\tprivate\n/);
+  assert.doesNotMatch(list.stdout, /squiggle-state/, 'the storage repo stays hidden');
+  assert.equal((await runGh(['repo', 'list', '-L', '100'], env)).stdout.trim().split('\n').length, 2 + 41);
+  const all = await runGh(['repo', 'list', '--all'], env);
+  assert.equal(all.exitCode, 1, 'a made-up flag fails like gh instead of printing the same list');
+  assert.match(all.stderr, /^unknown flag: --all/);
+  assert.match((await runGh(['repo', 'view', 'bubbles'], env)).stdout, /^name:\tKealJones\/bubbles\n/, 'a bare name is the user\'s, like gh');
+  // The small bash prompt says git and gh act as the user; demo mode drops that line.
+  const src = readFileSync(new URL('../app/src/agent.js', import.meta.url), 'utf8');
+  assert.match(src, /const GITHUB_LINE = "git and gh are signed in as the user: \\"my repo X\\" is theirs, so gh repo clone X/);
+  assert.match(src, /LITE_SYSTEM_BASH = \[[^\]]*GITHUB_LINE,/);
+  assert.match(src, /storage\.isLocal\(\) \? LITE_SYSTEM_BASH\.replace\(GITHUB_LINE/);
+  // find's empty answer names tools the model has: bash and ask_user for LFM3; Squiggle Small's text is unchanged.
+  assert.doesNotMatch(nothingFor({ bash: true, ask: 'ask_user' }), /web_search|need/);
+  assert.match(nothingFor({ bash: true, ask: 'ask_user' }), /use bash .*gh.*ask_user/);
+  assert.equal(nothingFor({ ask: 'need' }), NOTHING);
+  assert.match(src, /if \(text === NOTHING\) text = nothingFor\(\{ bash: bashSurface\(\), ask: askName\(\) \}\);/);
+});

@@ -438,20 +438,29 @@ issue.reopen = async (env, o) => {
 // ── repo, run, workflow, release, search, api, auth ────────────────────────
 
 const repo = {};
+// Like gh: newest push first, 30 unless -L, and a "Showing N of M" line so the model knows there's more. It used
+// to list only the GitHub App's first page in id order (oldest first) and cut it at 30, so every repo made in
+// the last few years was missing and LFM3 told Keal he had no "bubbles" repo (failures.md case 20).
+const REPO_LIST_FLAGS = new Set(['_', 'paths', 'multi', 'L', 'limit', 'json', 'q', 'jq', 'visibility']);
 repo.list = async (env, o) => {
-  const res = await env.call('github_list_repos', {});
-  if (res.model && res.model.error) return fail(res.model.error);
-  let rows = (res.model.repos || []).map(x => ({ full_name: x.repo, name: x.repo.split('/')[1], owner: { login: x.repo.split('/')[0] }, description: String(x.description || '').replace(/<\/?untrusted[^>]*>\n?/g, '').trim(), private: x.private, visibility: x.private ? 'private' : 'public', default_branch: x.default_branch, html_url: `https://github.com/${x.repo}` }));
+  const bad = Object.keys(o).find(k => !REPO_LIST_FLAGS.has(k));
+  if (bad) return fail(`unknown flag: ${bad.length === 1 ? '-' : '--'}${bad}\n\nUsage:  gh repo list [<owner>] [flags]\nFlags here: -L/--limit, --visibility, --json, -q/--jq`);
+  let rows = (await env.repos()).filter(x => !(env.isStorage && env.isStorage(x.owner.login, x.name)))
+    .map(x => ({ ...x, description: x.description || '', visibility: x.visibility || (x.private ? 'private' : 'public') }))
+    .sort((a, b) => String(b.pushed_at || '').localeCompare(String(a.pushed_at || '')));
   const owner = o._[0];
   if (owner) rows = rows.filter(x => x.owner.login.toLowerCase() === owner.toLowerCase());
   if (o.visibility) rows = rows.filter(x => x.visibility === o.visibility);
+  const total = rows.length;
   rows = rows.slice(0, limitOf(o));
   const j = await jsonOut(env, o, rows, REPO_FIELDS);
   if (j) return j;
-  return ok(rows.map(x => [x.full_name, x.description, x.private ? 'private' : 'public'].join('\t')).join('\n'));
+  const head = `Showing ${rows.length} of ${total} repositories${owner ? ` in @${owner}` : ''}${rows.length < total ? ' (newest push first; -L 100 for more, or gh repo view NAME)' : ''}\n\n`;
+  return ok(head + rows.map(x => [x.full_name, x.description.replace(/\s+/g, ' ').trim(), x.visibility].join('\t')).join('\n'));
 };
 repo.view = async (env, o) => {
-  const r = repoOf(env, o._[0] ? { ...o, R: o._[0] } : o);
+  const arg = o._[0] && !o._[0].includes('/') ? `${await env.login()}/${o._[0]}` : o._[0];   // like gh: a bare name is yours
+  const r = repoOf(env, arg ? { ...o, R: arg } : o);
   const info = await env.gh(r.path);
   const j = await jsonOut(env, o, info, REPO_FIELDS, true);
   if (j) return j;
