@@ -208,8 +208,8 @@ window. A shell is one tool every model has seen millions of times. `bash` (verc
 same workspace the other tools use (/home syncs through storage.js, /repos and /web through LightningFS), with
 git, gh, curl, search, wiki, node and bc as custom commands that call the existing tools, so approvals and URL
 rules hold. `man` lists them, `<command> --help` explains one. The prompt tells the model its window is small
-and to pipe, grep or save to a file; output that still won't fit is saved whole to /tmp/out-N.txt and the model
-gets the start and the path. Settings → Lab → "One bash tool (experimental)".
+and to pipe, grep or save to a file; output that still wouldn't fit was saved whole to /tmp/out-N.txt and the model
+got the start and the path (removed 2026-11-15: no tool cuts output; the model limits it itself). Settings → Lab → "One bash tool (experimental)".
 
 **What happened.** Tool definitions shrink from ~1,250–1,600 tokens to ~720–810. On LFM2.5 1.2B (10 tasks,
 tests/eval/tasks-tools.json, compact, native llama.cpp, 2026-11-10) bash passed 2 of 10 against 3 of 9 for the
@@ -252,6 +252,34 @@ off (the crash-loop guard). The WebLLM models made the GPU switch moot for phone
   one got the tab killed.
 - **Recipes injected into the prompt; other chats in smart context by default; recalled messages inside the
   user turn without a marker.** Each one made a small model answer something the person didn't ask.
+
+### Reuse the prompt already in the cache — reverted, then shipped on by default
+
+**Idea.** Keal, 2026-11-11, on hearing every turn re-reads the whole prompt: "I'm more concerned about not meeting the
+cache every turn." On an iPhone 16 the prompt is read at roughly 100 tokens a second, so a reply with five tool
+steps over a 3K prompt spent most of its time re-reading the same 3K.
+
+**What happened.** Two walls: WebLLM empties the cache before every raw completion, and its KV checkpoints only take
+pure KV caches; LFM3's conv layers keep a running state that can't be rewound. Forking a sequence at its end works
+on both kinds of state. `prefix-cache.js` keeps a snapshot in a second sequence and starts each call from it when
+it's an exact token prefix; in a scripted tool loop (tests/prefix-cache.test.js) the prompt tokens read drop by
+about half. Shipped 2026-11-11 15:19 without ever running on a real GPU (SwiftShader can't run LFM3), and reverted
+at 19:38 the same day (02bb766, no reason in the message). The reason is in the incident log: 19:35 on Keal's
+iPhone, `gpu-lost`, first GPU error "GPUCommandEncoder.copyBufferToBuffer: source equals destination not valid",
+device destroyed, no GPU back after five tries. It's the only time that error appears. WebGPU refuses a copy from a
+buffer to itself, and a fork copies a state inside its own storage. It landed the same day as the iOS 27 watchdog
+work, so the two were easy to take for one problem.
+
+**Now (2026-11-14).** Back behind a switch, off by default: `?reuse=1` once turns it on for that browser, `?reuse=0`
+off. `engine-webllm.js routeSelfCopies` sends any same-buffer copy through a scratch buffer, so that error can't be
+raised. The composer note says "prompt reuse on"; a GPU lost with it on turns it off until the page is reloaded and
+writes the reuse counts on the `gpu-lost` line. Whether the copy was the whole problem is what the trial is for:
+not yet run on a phone.
+
+**Result (2026-11-15).** On Keal's iPhone (Safari 27.2, LFM3 1.7B, PR #15's preview driven through the phone relay),
+one Compress reply with three bc steps: the three model calls reused 1029 of 1630, 1030 of 2058 and 1333 of 1848
+prompt tokens (3392 of 5536, 61% not read again), no GPU loss, right answers, first word after 7.2 s. Merged and
+on by default; `?reuse=0` turns it off for a browser.
 
 ### One model, picked for the device — shipped
 

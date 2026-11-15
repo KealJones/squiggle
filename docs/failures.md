@@ -305,7 +305,35 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   UI" (ASKTEST: a plain-text question pauses the task, a thinking-only step restarts, every step and final user
   turn is the request).
 
-### 20. The brainstorm critic only praised, and its spec sheet was cut off mid-word
+### 20. "You don't have a bubbles repo"
+
+- **Asked:** "Clone my repo bubbles down", then "Use the gh bash command", then "You can use gh to identify me and
+  list my repos", then "Just clone GitHub.com/Kealjones/bubbles".
+- **Model:** LFM3 1.7B (WLF3QAD on WebLLM), Compress, bash surface, 2026-11-15 (chat `s0mwi8efe8000d9sz5` in
+  squiggle-state; traces in `prompts/s0mwi8efe8000d9sz5/`).
+- **What it did:** called `find("bubbles repo")` and asked Keal for the URL and what "down" meant. Told to use gh,
+  it called `find("bubbles")` again. Told to list his repos, it ran `gh repo list`, got 30 repos from 2013–2019
+  with no bubbles, called `find` a third time, ran `gh repo list --all` (not a gh flag; it printed the same list),
+  concluded the repo didn't exist or was private, and ran out of its 4K window on `gh search repos bubbles`. It
+  never tried `gh repo clone bubbles`. Each empty `find` told it to "use web_search; to ask the user, use need",
+  two tools it didn't have.
+- **Why it's bad:** half of it was the harness lying. (1) `gh repo list` read only the GitHub App's first page, in
+  id order (oldest first), and cut it at 30, so every repo made in the last years was missing; real gh shows
+  newest push first. (2) `--all` was silently accepted. (3) Nothing in the small bash prompt said git and gh are
+  signed in as the user, so "my repo bubbles" read as an unknown name to look up in memory. (4) find's empty
+  answer named tools from another surface. The model's own part: three memory searches for a repo name, and no
+  direct `gh repo clone bubbles` attempt.
+- **Good answer:** `gh repo clone bubbles` (a bare name is the user's), then "Cloned to /repos/bubbles."
+- **Fix:** gh repo list (ghcli.js) works like the real one: every page (`env.repos` = github.js `accessibleRepos`),
+  the user's own repos, newest push first, 30 unless -L; at a terminal gh's header ("Showing 30 of N repositories
+  in @owner") and table, piped gh's tab-separated rows (tools/tty.js works out which from the parsed script); gh's filters (--visibility, --fork, --source, --archived,
+  --language, --topic) and an error for unknown flags. `gh repo view NAME` takes a bare name as the user's.
+  `github_list_repos` reads every page newest first too. LITE_SYSTEM_BASH gets one line: git and gh are signed in
+  as the user, "my repo X" is theirs, `gh repo clone X` (left out in demo mode). find's empty answer names bash and
+  `ask_user` on the bash surface (`nothingFor`; Squiggle Small keeps `NOTHING`, its training text).
+- **Caught by:** tests/failures.test.js case 20.
+
+### 21. The brainstorm critic only praised, and its spec sheet was cut off mid-word
 
 - **Asked:** a brainstorm chat (`s0mwdzez4u000gv6fi`), 2026-11-12: "How would you design an elevator for cats?"
 - **Model:** LFM3 1.7B QAD on WebLLM, brainstorm chat (brainstorm.js), first version: voice B told it "lean[s] toward
@@ -328,11 +356,11 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   e2e "brainstorm chat" (LONGDOC: a cut-off turn is finished in the same message). Whether B actually criticizes is
   model behaviour: not covered.
 
-### 21. Brainstorm: cut off by the window, a steer ignored, and two assistants serving each other
+### 22. Brainstorm: cut off by the window, a steer ignored, and two assistants serving each other
 
 - **Asked:** a brainstorm chat (`s0mwe2h0vm000lwbud`), 2026-11-12: "what noodle shape give the optimal cheese to
   noodle ratio for mac n cheese?", then, 13 turns in, Keal stepped in: "Lets get back to pasta shapes".
-- **Model:** LFM3 1.7B QAD on WebLLM (4K window), brainstorm.js after case 20 (builder/critic roles, 1,024 tokens a
+- **Model:** LFM3 1.7B QAD on WebLLM (4K window), brainstorm.js after case 21 (builder/critic roles, 1,024 tokens a
   call, continued when the token count hit 1,024).
 - **What it did:** (1) four turns stopped mid-word ("…sketch the **pancetta + breadcrumb combo**… **", "Mix
   breadcru", "merge into one \"Advanced\" ver", "If you ever want to swap") at 1,200–1,900 characters, about
@@ -351,7 +379,7 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 - **Fix:** (1) the runtime's own stop reason (`finish_reason`, now forwarded by the WebLLM shim and kept in
   engine-wllama's `lastSpeed().finish`) decides `cutOff`; 'length' is continued whatever the count; prompt
   estimates use 3 characters a token. (2) the person's latest steer goes in both voices' system prompts until both
-  have answered it (`latestSteer`). (3) prompt wording didn't move it twice (cases 20 and 21), so new brainstorms use
+  have answered it (`latestSteer`). (3) prompt wording didn't move it twice (cases 21 and 22), so new brainstorms use
   a transcript framing (`transcriptFor`): the whole brainstorm as one labelled user turn and "write B's next turn",
   so the other voice is a speaker in a script, not a user to serve; the role flip stays as a per-chat option to
   compare. Untested on LFM3 yet.
@@ -360,11 +388,11 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   length at 380 tokens and is finished); (3) the framing is covered (tests/brainstorm.test.js "transcript", e2e
   both framings), whether B then disagrees is model behaviour: not covered.
 
-### 22. Transcript brainstorm: each voice wrote the whole script
+### 23. Transcript brainstorm: each voice wrote the whole script
 
 - **Asked:** a brainstorm chat in the transcript framing (`s0mwe3d6wm000gl4py`), 2026-11-12: "Let's find a new way to
   build an ai chat bot that is substantially better than neural nets."
-- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm.js transcript framing (case 21's fix).
+- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm.js transcript framing (case 22's fix).
 - **What it did:** A's first turn (5,002 characters) finished its part, then went on with "A: Let me flesh out the core
   idea…"; B's first turn was "B: … A: … B: …", three speakers in one message. Turns ran until the window filled and
   were continued, so the brainstorm crawled. (The framing did help otherwise: B's sixth turn was the first real
@@ -377,7 +405,7 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   that shows up, and a turn that ended there isn't continued.
 - **Caught by:** tests/brainstorm.test.js "a turn ends where another speaker starts"; e2e "brainstorm chat" (SCRIPT).
 
-### 23. Asked which noodle shape, it argued one cheese ratio, then looped
+### 24. Asked which noodle shape, it argued one cheese ratio, then looped
 
 - **Asked:** a transcript brainstorm (`s0mwe4yoqe000frhk4`), 2026-11-12: "what noodle shape give the optimal cheese to
   noodle ratio for mac n cheese?"
@@ -400,11 +428,11 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 - **Caught by:** tests/brainstorm.test.js ("phases", "repeats", which uses this chat's own looping turns); e2e
   "brainstorm chat" (LOOP). Whether the voices now list shapes first is model behaviour: not covered.
 
-### 24. A brainstorm with no ending, and a testing turn pasted from two old ones
+### 25. A brainstorm with no ending, and a testing turn pasted from two old ones
 
 - **Asked:** a transcript brainstorm with phases (`s0mweal56h0007v3ch`), 2026-11-12: "What would an alternative
   architecture to Neural Nets be like that is as good?"
-- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm.js after case 23.
+- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm.js after case 24.
 - **What it did:** the phases worked: four real lists (spiking nets, liquid/neural ODEs, tensor networks, neuromorphic
   hardware…) and a grouping turn with a "Best answer so far". Then B's first testing turn was its own listing turn
   word for word with A's best-answer line pasted after it, and A's next turn restated the grouping. The voices
@@ -422,12 +450,12 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   "wrap-up"); e2e "brainstorm chat" (wrap-up after stuck, Wrap up button). Whether the wrap-up's decision is any
   good is model behaviour: not covered.
 
-### 25. A fun, weird idea came back as an ordinary chat app, and the voices agreed about it
+### 26. A fun, weird idea came back as an ordinary chat app, and the voices agreed about it
 
 - **Asked:** a transcript brainstorm (`s0mwec78t10005me61`), 2026-11-12: "An app that just shows the last thing said by
   each person in a conversation, everything that gets said is replaced by the most recent thing said." Keal, 7 turns
   in: "Yall stfu that's not the point."
-- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm.js after case 24 (phases, wrap-up), sampling from LFM3's card
+- **Model:** LFM3 1.7B QAD on WebLLM, brainstorm.js after case 25 (phases, wrap-up), sampling from LFM3's card
   (temperature 0.1).
 - **What it did:** A's first list already kept "history elsewhere"; B added a "last two turns" toggle, a timestamp badge
   and "collapse/expand mode that reveals prior replies", and both picked favourites during the listing phase ("I'd
@@ -447,11 +475,11 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 - **Caught by:** tests/brainstorm.test.js ("the person's idea is the point", "a stray </think>"). Whether the voices
   now keep a weird premise is model behaviour: not covered.
 
-### 26. Gemma 4 26B brainstorm: four empty turns, each saved as "nothing to add"
+### 27. Gemma 4 26B brainstorm: four empty turns, each saved as "nothing to add"
 
 - **Asked:** a transcript brainstorm on the cloud model (`s0mwf2h9yl000pi7l4`), 2026-11-13: "An app that only shows the
   last thing said by the last person in a conversation… This is intentionally bad UX as a gag."
-- **Model:** Gemma 4 26B A4B on Workers AI through the relay, brainstorm.js after case 25.
+- **Model:** Gemma 4 26B A4B on Workers AI through the relay, brainstorm.js after case 26.
 - **What it did:** four turns, ~20 s each, every one with no text; the harness saved each as "_(nothing to add)_" and
   went on to the next voice. Keal read it as the model refusing to play.
 - **Why it's bad:** an empty reply is a failure, and saving it as a turn hid it; four calls of the daily cloud budget went

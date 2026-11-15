@@ -9,7 +9,7 @@ import * as memory from './memory.js';
 import * as storage from './storage.js';
 import * as recipes from './recipes.js';
 import * as tasks from './tasks.js';
-import { find as findAll, renderFind, PAST_CHAT, PUSHBACK, checkQuery, rerankWeb, urlLedger, rankTools } from './find.js';
+import { find as findAll, renderFind, nothingFor, NOTHING, PAST_CHAT, PUSHBACK, checkQuery, rerankWeb, urlLedger, rankTools } from './find.js';
 import * as prefetchLib from './prefetch.js';
 import { buildEntities, resolve as resolveRefs, renderRefs } from './refs.js';
 import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes, chunk, resultGist } from './context.js';
@@ -42,8 +42,8 @@ export const settings = {
 };
 
 const MAX_OUTPUT = 1536;
-// A tool call is refused only below this much free room (characters, after the reply's reserve): every tool sizes
-// its output to the room it's given, and bash saves what doesn't fit to /tmp/out-N.txt. It was 2,500, which
+// A tool call is refused only below this much free room (characters, after the reply's reserve). Tools never cut
+// their output (2026-11-15): keeping it small with grep, head or a file is the model's job. It was 2,500, which
 // refused LFM3 1.7B's `head -n 80 README.md` with ~1,600 tokens free (2026-11-10).
 const FULL_ROOM = 1200;
 const CHAT_PLAN_NUDGE = 6;  // tool calls without a plan before the model is reminded it can make one
@@ -76,11 +76,15 @@ export const LITE_SYSTEM_NATIVE = [
   "Don't go round in circles: after three options or attempts, stop and use the best one; if you're still unsure, say so and ask the user.",
 ].join('\n');
 
-// The same for the bash surface (tools/bash.js): the lookups are commands in the shell.
+// The same for the bash surface (tools/bash.js): the lookups are commands in the shell. The GitHub line is there
+// because LFM3, told "clone my repo bubbles", searched memory three times and asked Keal for the URL: nothing said
+// git and gh are already signed in as him (failures.md case 20). Left out in demo mode (no account).
+const GITHUB_LINE = "git and gh are signed in as the user: \"my repo X\" is theirs, so gh repo clone X (it lands in /repos/X).";
 export const LITE_SYSTEM_BASH = [
   ...LITE_SYSTEM.split('\n').slice(0, 3),
   'Use bash for files, the web, GitHub and maths: search WORDS, curl URL | grep -i WORD, git, gh, bc; `man` lists',
   'the custom commands. find(query) searches recipes, memory and past chats; ask_user(question) asks the user something only they know and waits.',
+  GITHUB_LINE,
   'Your context window is small: never cat a whole file or curl a whole page. Pipe into grep, head, tail, sed -n or wc,',
   'or save it to a file (> /tmp/page.txt) and work on the file in small pieces.',
   'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
@@ -156,7 +160,7 @@ function toolNamesLine(phase, known = []) {
 function systemPrompt(threadId, session, phase = 'chat', known = []) {
   if (plain() || noPrompt()) return '';
   const names = toolNamesLine(phase, known);
-  if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : bashSurface() ? LITE_SYSTEM_BASH : LITE_SYSTEM_NATIVE}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
+  if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : bashSurface() ? (storage.isLocal() ? LITE_SYSTEM_BASH.replace(GITHUB_LINE + '\n', '') : LITE_SYSTEM_BASH) : LITE_SYSTEM_NATIVE}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
   const thread = threadId && session.threads[threadId];
   // Kept short on purpose: with every tool schema this prompt was 99% of a 4K window (2026-11-04), and
   // a phone CPU reads it at ~13 tokens/s before the first reply token.
@@ -565,7 +569,6 @@ class Turn {
     if (managed()) pending += `\n\n${tasks.budgetLine(used, settings.contextSize, reserve, dialect())}`;
     this.setWindow(windowOf(ctx.report, { system: plain() ? 0 : estTokens(ctx.system), tools: toolTokens, message: estTokens(this.shown) + estTokens(att.text) }), used);
     let chatCalls = 0, full = false, askedForAnswer = false, lastThink = 0;
-    this.seenCalls = new Map();
     let messages = ctx.messages;
     if (seed) {
       // The question is the only user turn; the lookup is the model's own find call and its result.
@@ -575,11 +578,6 @@ class Turn {
       const found = { found: seed.text, ...(seed.tools.length ? { tools: seed.tools } : {}) };
       pending = [toolResult(call, found)];
       used += this.declare(tools, call, found);
-      this.seenCalls.set(`find:${JSON.stringify({ query: seed.query })}`, 1);
-    }
-    if (fresh()) {
-      for (const q of (this.prefetched || [])) this.seenCalls.set(`web_search:${JSON.stringify({ query: q })}`, 1);
-      for (const k of (this.prefetchedCalls || [])) this.seenCalls.set(k, 1);
     }
     if (seed) chatCalls = 1;   // the lookup counts as a call (an empty reply after it gets the nudge)
     await this.open('Chat', { system: ctx.system, messages, tools, thinking: tools.length > 0, maxOutputTokens: MAX_OUTPUT, known: [...new Set([...preloaded(tools), ...fit])], gate: gated() ? GATE : null });
@@ -634,8 +632,6 @@ class Turn {
           full = true;
           continue;
         }
-        const again = this.repeated(call);
-        if (again) { results.push(toolResult(call, again)); continue; }
         if (chatCalls >= maxChatCalls) {
           // A small model that keeps looking things up never answers; bound the turn.
           results.push(toolResult(call, { error: `Not run: you have made ${chatCalls} tool calls this turn. Answer now with what you have, or call plan if there is more to do.` }));
@@ -802,30 +798,9 @@ class Turn {
   // Gated models: a call to an undeclared tool, or a find/tool_info result naming tools, declares them from the
   // next request on (NativeConversation does the same). Returns their schema tokens, which also go on the
   // window's tool definitions.
-  // The same tool with the same arguments twice in one phase: small models do this instead of reading the
-  // result they already have (Qwen3.5 ran web_search five times for one question). Not run again.
-  // The same call in an earlier step of this task (a 0.6B model fetched the same made-up URL in two
-  // steps): not run again; the earlier result comes back instead, since a new step doesn't show it.
-  ranInTask(task, step, call) {
-    const fn = (call && call.function) || {};
-    if (!task || ['plan', 'done', 'checkpoint', 'need', 'ask_user', 'tool_info'].includes(fn.name)) return null;
-    const args = JSON.stringify(fn.arguments || {});
-    const prev = [...(task.log || [])].reverse().find(l => l.step !== (step && step.id) && l.name === fn.name && JSON.stringify(l.args || {}) === args);
-    if (!prev) return null;
-    this.toolEvent({ name: fn.name, label: `${fn.name} already ran in an earlier step (not run again)`, ok: false });
-    return { error: `You already called ${fn.name} with exactly these arguments in an earlier step${prev.ok === false ? ', and it failed' : ''}. Its result: ${prev.text || prev.label}. Use that, change the arguments, or call done.` };
-  }
-
-  repeated(call) {
-    const fn = (call && call.function) || {};
-    if (['plan', 'done', 'checkpoint', 'need', 'ask_user'].includes(fn.name)) return null;
-    const key = `${fn.name}:${JSON.stringify(fn.arguments || {})}`;
-    const n = (this.seenCalls.get(key) || 0) + 1;
-    this.seenCalls.set(key, n);
-    if (n === 1) return null;
-    this.toolEvent({ name: fn.name, label: `${fn.name} repeated with the same arguments (not run again)`, ok: false });
-    return { error: `You already called ${fn.name} with exactly these arguments in this turn; its result is above. Use that result, change the arguments, or answer now.` };
-  }
+  // Repeating a call is allowed (Keal, 2026-11-12): the same command can rightly give a new answer (date, ls
+  // after a write, git status), and blocking it left models stuck. Runaway lookups are still bounded by the call
+  // caps (maxChatCalls per turn, STEP_SOFT_CAP per step).
 
   // What the last try at this step did, for the step's restart (v3): why it stopped, its calls and results so far
   // (tool output stays wrapped as untrusted), and what it said.
@@ -859,7 +834,6 @@ class Turn {
   }
 
   async runStep(task, step) {
-    this.seenCalls = new Map();
     const tools = phaseTools(true);
     const known = [...new Set([...preloaded(tools), ...(task.tools || []), ...fitTools(`${step.text}\n${task.goal}`, tools).map(t => t.name)])];
     const toolTokens = toolCost(tools, known);
@@ -984,8 +958,6 @@ class Turn {
               : 'Not run: your context for this step is almost full. Call done now with what you found (the next step starts fresh).' }));
             continue;
           }
-          const again = this.repeated(call) || this.ranInTask(task, step, call);
-          if (again) { results.push(toolResult(call, again)); continue; }
           const out = await this.exec(call, { room: Math.floor(room() / r.toolCalls.length), task, step });
           if (out.ask) return 'ask';
           let response = out.response;
@@ -1161,9 +1133,10 @@ class Turn {
     const answers = r.facts.length > 0 || r.recipes.length > 0
       || r.chats.some(c => c.session !== this.session.id && (c.hits || 0) >= Math.min(2, words));
     let text = renderFind(inside);
+    if (text === NOTHING) text = nothingFor({ bash: bashSurface(), ask: askName() });
     if (outside.length) {
       const block = wrapUntrusted('earlier tool output', outside.map(t => t.text.replace(STRIP_UNTRUSTED, '')).join('\n\n'));
-      text = (text === renderFind({}) ? '' : text + '\n\n') + 'Earlier tool output in this task:\n' + block;
+      text = (text.startsWith('Nothing in your memory') ? '' : text + '\n\n') + 'Earlier tool output in this task:\n' + block;
     }
     // Nothing of theirs: search the web with the same words, unless a tool clearly matched (named, or an intent
     // phrase; above the description-only cap). A word like "recent" alone matched git_log ("Recent commits…")
@@ -1206,7 +1179,6 @@ class Turn {
   async webTop(query, why = 'for find') {
     const call = { function: { name: 'web_search', arguments: { query } } };
     const res = await runTool(call, { session: this.session, threadId: this.threadId });
-    this.seenCalls && this.seenCalls.set(`web_search:${JSON.stringify({ query })}`, 1);
     this.noteUrls(res);
     this.toolEvent({ name: 'web_search', label: `${res.label} (${why})`, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
     if (!res.ok) return { query, error: res.model.error, items: [] };
@@ -1221,8 +1193,6 @@ class Turn {
   async wikiTop(query, why = 'looked up first') {
     const call = { function: { name: 'wiki_lookup', arguments: { query } } };
     const res = await runTool(call, { session: this.session, threadId: this.threadId, pageCards: lite() });
-    this.seenCalls && this.seenCalls.set(`wiki_lookup:${JSON.stringify({ query })}`, 1);
-    (this.prefetchedCalls = this.prefetchedCalls || []).push(`wiki_lookup:${JSON.stringify({ query })}`);
     this.noteUrls(res);
     this.toolEvent({ name: 'wiki_lookup', label: `${res.label} (${why})`, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
     if (!res.ok || !res.model || !res.model.found) return null;
@@ -1283,7 +1253,6 @@ class Turn {
       const answer = pushback ? [...line].reverse().find(m => m.role === 'assistant' && m.content) : null;
       const q = pushback ? checkQuery(said, { question: prevQ && prevQ.content, answer: answer && answer.content }) || query : query;
       web = await this.webTop(q, 'looked up first');
-      this.prefetched = [q];
       if (pushback) check = 'The user is questioning or checking an earlier answer, so the web was searched first. Answer only from these results; if they don\'t settle it, say so plainly, and don\'t agree just because the user said it.';
     }
     if (wikiP) wiki = await wikiP;

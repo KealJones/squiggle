@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Iframe Memory Split</title>
+<!--
+  Can a cross-site iframe add memory to a page? On iPhone Safari one tab gets one ~1.9 GB budget shared by
+  JS, WebAssembly and GPU (memcap.html). If WebKit's site isolation puts a cross-site iframe in its own
+  WebContent process, that iframe gets its own budget, and a model could be split across the two.
+
+  The same file is served from two sites so the iframe is truly cross-site:
+    https://kealjones.com/squiggle/iframecap.html          (GitHub Pages)
+    https://squiggle-iframecap.kealjones.workers.dev/       (a Worker that mirrors this file)
+  Each one frames the other. The mirror Worker (deployed by hand, `squiggle-iframecap`):
+
+    export default { async fetch(req) {
+      const r = await fetch('https://kealjones.com/squiggle/iframecap.html', { cf: { cacheTtl: 0 } });
+      const h = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' };
+      if (new URL(req.url).searchParams.get('role') === 'child')   // embeddable by an isolated Squiggle page
+        Object.assign(h, { 'cross-origin-embedder-policy': 'require-corp', 'cross-origin-resource-policy': 'cross-origin' });
+      return new Response(r.body, { status: r.status, headers: h });
+    } };
+-->
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --fg: #1b1f27; --muted: #5d6675; --line: #dde1e8; --track: #eceff4;
+    --accent: #2f5bd3; --ok: #1f7a4a; --bad: #b3261e; --warn: #8a5a00;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12151b; --panel: #1a1e26; --fg: #e6e9ef; --muted: #9aa3b2; --line: #2b313c; --track: #242a35;
+            --accent: #7fa2ff; --ok: #5cc98d; --bad: #ff8a80; --warn: #e3b55b; color-scheme: dark; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 var(--sans);
+         padding: max(16px, env(safe-area-inset-top, 0px)) 16px 32px; }
+  body.child { padding: 8px 10px; font-size: 13px; }
+  main { max-width: 760px; margin: 0 auto; display: grid; gap: 16px; }
+  h1 { font-size: 1.35rem; margin: 0 0 4px; }
+  h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
+  p { margin: 0; color: var(--muted); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; min-width: 0; display: grid; gap: 10px; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+  label { display: grid; gap: 4px; font-size: .85rem; color: var(--muted); flex: 1 1 150px; }
+  select, button, input { font: inherit; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .5; }
+  #status, .mono { font: 13px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+  iframe { width: 100%; height: 64px; border: 1px dashed var(--line); border-radius: 8px; background: var(--panel); }
+  #verdict p { color: var(--fg); margin: 0 0 6px; }
+  .tablewrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font: 12px/1.35 var(--mono); font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: .9rem; }
+</style>
+</head>
+<body>
+<script type="module">
+const MB = 2 ** 20;
+const Q = new URLSearchParams(location.search);
+const ROLE = Q.get('role') === 'child' ? 'child' : 'parent';
+const PAGES = 'https://kealjones.com/squiggle/iframecap.html';
+const MIRROR = 'https://squiggle-iframecap.kealjones.workers.dev/';
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+const fmt = (mb) => mb == null ? '–' : mb >= 1024 ? `${(mb / 1024).toFixed(2)} GB` : `${Math.round(mb)} MB`;
+const STEP_MB = 32, PAUSE_MS = 120;
+
+// ── Memory holders (same as memcap.html) ──────────────────────────────────
+// Incompressible bytes: iOS compresses memory, so zeros would let the tab hold far more than real data.
+function fillNoise(view, salt) {
+  const B = 65536, n = view.length;
+  crypto.getRandomValues(view.subarray(0, Math.min(B, n)));
+  for (let off = B; off < n; off += B) {
+    view.copyWithin(off, 0, Math.min(B, n - off));
+    view[off] ^= (off >>> 16) & 255; view[off + 1] ^= (off >>> 8) & 255; view[off + 2] ^= salt & 255;
+  }
+}
+class Refused extends Error {}
+function jsHolder() {
+  const keep = [];
+  return {
+    async add(bytes) {
+      let a;
+      try { a = new Uint8Array(bytes); } catch { throw new Refused('JavaScript allocation refused'); }
+      fillNoise(a, keep.length); keep.push(a);
+    },
+    release() { keep.length = 0; },
+  };
+}
+async function gpuHolder() {
+  if (!navigator.gpu) throw new Error('no WebGPU here');
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error('no WebGPU adapter');
+  const device = await adapter.requestDevice();
+  let lost = null;
+  device.lost.then((i) => { lost = i.message || 'GPU device lost'; });
+  const CHUNK = 8 * MB, src = new Uint8Array(CHUNK), bufs = [];
+  return {
+    async add(bytes) {
+      device.pushErrorScope('out-of-memory');
+      const b = device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      for (let off = 0; off < bytes; off += CHUNK) { fillNoise(src, bufs.length + off / CHUNK); device.queue.writeBuffer(b, off, src, 0, Math.min(CHUNK, bytes - off)); }
+      await device.queue.onSubmittedWorkDone();
+      const err = await device.popErrorScope();
+      if (err || lost) throw new Refused(lost ? `GPU device lost (${lost})` : 'GPU out of memory');
+      bufs.push(b);
+    },
+    release() { for (const b of bufs) b.destroy(); device.destroy(); },
+  };
+}
+const makeHolder = (probe) => probe === 'js' ? jsHolder() : gpuHolder();
+
+// Fill until refused or capped. `before(mb, step)` runs (and is awaited) before every step, so the
+// progress reaches storage before the step that gets the tab killed.
+async function fill(holder, { capMB, before, onHeld, stop }) {
+  let mb = 0;
+  try {
+    for (;;) {
+      if (stop()) return { mb, outcome: 'stopped' };
+      if (mb + STEP_MB > capMB) return { mb, outcome: `reached ${fmt(capMB)}` };
+      await before(mb, STEP_MB);
+      await holder.add(STEP_MB * MB);
+      mb += STEP_MB;
+      onHeld(mb);
+      await sleep(PAUSE_MS);
+    }
+  } catch (e) {
+    return { mb, outcome: e instanceof Refused ? e.message : `error: ${e?.message || e}` };
+  }
+}
+
+if (ROLE === 'child') runChild(); else runParent();
+
+// ══ Child: lives in the iframe, does what the page asks ═══════════════════
+function runChild() {
+  document.body.className = 'child';
+  document.body.innerHTML = `<div class="mono" id="s"></div>`;
+  const s = document.getElementById('s');
+  let held = 0, state = 'idle', holder = null, stopping = false;
+  const show = () => { s.textContent = `iframe · ${location.host}\n${state} · holding ${fmt(held)}`; };
+  show();
+  const send = (m) => parent.postMessage({ iframecap: 1, ...m }, '*');
+
+  // A timer that should tick every 20 ms. If this iframe shares the page's process (and main thread),
+  // the page blocking its thread stalls these ticks too.
+  let last = performance.now(), maxGap = 0;
+  setInterval(() => { const now = performance.now(); maxGap = Math.max(maxGap, now - last); last = now; }, 20);
+
+  const acks = new Map();
+  let nextId = 1;
+  const askAck = (m) => new Promise((resolve) => {
+    const id = nextId++; acks.set(id, resolve); send({ ...m, id });
+    setTimeout(() => { if (acks.delete(id)) resolve(); }, 1500);
+  });
+
+  setInterval(() => send({ t: 'beat', mb: held, state }), 250);
+
+  addEventListener('message', async (e) => {
+    const m = e.data;
+    if (e.source !== parent || !m || !m.iframecap) return;
+    if (m.t === 'ack') { acks.get(m.id)?.(); acks.delete(m.id); return; }
+    if (m.t === 'mark') { maxGap = 0; last = performance.now(); send({ t: 'reply', rid: m.rid }); return; }
+    if (m.t === 'gaps') {
+      const sinceTick = performance.now() - last;   // catches a stall whose tick hasn't fired yet
+      send({ t: 'reply', rid: m.rid, maxGap: Math.max(maxGap, sinceTick) });
+      return;
+    }
+    if (m.t === 'stop') { stopping = true; return; }
+    if (m.t === 'release') { try { holder?.release(); } catch { /* ignore */ } holder = null; held = 0; state = 'idle'; show(); return; }
+    if (m.t === 'fill') {
+      stopping = false; state = 'filling'; show();
+      try { holder = await makeHolder(m.probe); }
+      catch (err) { send({ t: 'done', mb: 0, outcome: `error: ${err.message}` }); state = 'idle'; show(); return; }
+      const r = await fill(holder, {
+        capMB: m.capMB,
+        before: (mb, step) => askAck({ t: 'trying', mb, step }),
+        onHeld: (mb) => { held = mb; show(); },
+        stop: () => stopping,
+      });
+      state = 'done'; show();
+      send({ t: 'done', ...r });
+    }
+  });
+  send({ t: 'hello', host: location.host });
+}
+
+// ══ Parent: the test page ═════════════════════════════════════════════════
+function runParent() {
+  const onMirror = location.host.endsWith('workers.dev');
+  const crossURL = Q.get('child') || (onMirror ? PAGES : MIRROR) + '?role=child';   // ?child= for local testing
+  const sameURL = location.pathname + '?role=child';
+  document.body.innerHTML = `
+<main>
+  <header>
+    <h1>Iframe Memory Split</h1>
+    <p>Does a cross-site iframe get its own memory budget, separate from this page's? If it does, a model could be split across the page and an iframe.</p>
+  </header>
+  <section>
+    <h2>Setup</h2>
+    <div class="row">
+      <label>Iframe from<select id="site">
+        <option value="cross">other site: ${new URL(crossURL, location.href).host}</option>
+        <option value="same">this site (control)</option>
+      </select></label>
+      <label>Memory<select id="probe"><option value="gpu">GPU buffers</option><option value="js">JavaScript</option></select></label>
+      <label>Page holds first (split)<input id="pageMB" type="number" step="64" min="0"></label>
+    </div>
+    <iframe id="frame" allow="webgpu" title="test iframe"></iframe>
+  </section>
+  <section>
+    <h2>Tests</h2>
+    <div class="row">
+      <button class="primary" id="check">1 · Process check</button>
+      <button id="solo">2 · Page alone</button>
+      <button id="split">3 · Page + iframe</button>
+      <button id="stop" hidden>Stop</button>
+    </div>
+    <div id="status">Ready.</div>
+    <ul>
+      <li><b>Process check</b> is safe: it blocks this page for 2 s and asks the iframe whether its timers stalled too. Stalled = same process.</li>
+      <li><b>Page alone</b> fills this page until Safari kills the tab. It reloads and saves the number.</li>
+      <li><b>Page + iframe</b>: the page holds the amount above, then the iframe fills until something dies. If the total beats "page alone", the iframe had its own budget.</li>
+      <li>Run each with "this site (control)" too. Keep the tab on screen.</li>
+    </ul>
+  </section>
+  <section><h2>Verdict</h2><div id="verdict"><p>No results yet.</p></div></section>
+  <section>
+    <h2>Results</h2>
+    <div class="tablewrap"><table><thead><tr><th>when</th><th>test</th><th>iframe</th><th>mem</th><th>page</th><th>iframe</th><th>total</th><th>outcome</th></tr></thead><tbody id="rows"></tbody></table></div>
+    <div class="row"><button id="copy">Copy results</button><button id="clear">Clear</button></div>
+  </section>
+  <p class="mono">${navigator.userAgent}</p>
+</main>`;
+  const $ = (id) => document.getElementById(id);
+  const say = (t) => { $('status').textContent = t; };
+  const KEY = { run: 'iframecap-run', results: 'iframecap-results', opts: 'iframecap-options' };
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } },
+    del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } },
+  };
+  const opts = { site: 'cross', probe: 'gpu', pageMB: '', ...store.get(KEY.opts, {}) };
+  $('site').value = opts.site; $('probe').value = opts.probe; $('pageMB').value = opts.pageMB;
+  const saveOpts = () => { opts.site = $('site').value; opts.probe = $('probe').value; opts.pageMB = $('pageMB').value; store.set(KEY.opts, opts); };
+  for (const id of ['site', 'probe', 'pageMB']) $(id).onchange = () => { saveOpts(); if (id === 'site') loaded = null; render(); };
+  const CAP_MB = 8192;
+
+  const results = () => store.get(KEY.results, []);
+  const addResult = (r) => { const rows = results(); rows.push(r); store.set(KEY.results, rows); render(); };
+  const bestSolo = (probe) => Math.max(0, ...results().filter(r => r.test === 'solo' && r.probe === probe && r.counted).map(r => r.total));
+
+  // ── Talking to the iframe ──
+  let loaded = null, frameWin = null, lastBeat = 0, childHeld = 0;
+  const handlers = new Set();
+  addEventListener('message', (e) => {
+    const m = e.data;
+    if (!m || !m.iframecap || e.source !== frameWin) return;
+    if (m.t === 'beat') { lastBeat = Date.now(); childHeld = m.mb; }
+    for (const h of handlers) h(m);
+  });
+  const post = (m) => frameWin.postMessage({ iframecap: 1, ...m }, '*');
+  const waitFor = (pred, ms) => new Promise((resolve, reject) => {
+    const h = (m) => { if (pred(m)) { handlers.delete(h); clearTimeout(t); resolve(m); } };
+    const t = setTimeout(() => { handlers.delete(h); reject(new Error('timed out')); }, ms);
+    handlers.add(h);
+  });
+  let rid = 0;
+  const ask = (t) => { const id = ++rid; const p = waitFor(m => m.t === 'reply' && m.rid === id, 10000); post({ t, rid: id }); return p; };
+
+  async function loadChild() {
+    const url = opts.site === 'cross' ? crossURL : sameURL;
+    if (loaded === url && Date.now() - lastBeat < 2000) return;
+    const f = $('frame');
+    frameWin = null;
+    const hello = new Promise((resolve, reject) => {
+      const h = (e) => { if (e.data?.iframecap && e.data.t === 'hello' && e.source === f.contentWindow) { removeEventListener('message', h); frameWin = e.source; resolve(e.data); } };
+      addEventListener('message', h);
+      setTimeout(() => { removeEventListener('message', h); reject(new Error(`the iframe (${new URL(url, location.href).host}) never said hello`)); }, 20000);
+    });
+    f.src = url;
+    await hello;
+    lastBeat = Date.now();
+    loaded = url;
+  }
+
+  // ── Crash bookkeeping ──
+  function mark(run, patch) { Object.assign(run, patch, { at: Date.now() }); store.set(KEY.run, run); }
+  function recoverCrash() {
+    const run = store.get(KEY.run, null);
+    if (!run) return;
+    store.del(KEY.run);
+    const pageMB = run.pageMB || 0, childMB = run.childMB || 0;
+    const base = { ts: run.ts, test: run.test, site: run.site, probe: run.probe, pageMB, childMB: run.test === 'split' ? childMB : null, total: pageMB + childMB };
+    const stale = Date.now() - run.at > 10 * 60 * 1000;
+    let r;
+    if (run.hidden) r = { ...base, counted: false, cls: 'warn', outcome: 'tab went to the background: not counted' };
+    else if (stale) r = { ...base, counted: false, cls: 'warn', outcome: 'closed mid-test and reopened later: not counted' };
+    else if (run.stage === 'page') r = { ...base, counted: true, cls: 'ok', outcome: `whole tab killed while the page added ${run.trying} MB` };
+    else if (run.stage === 'child') r = { ...base, counted: true, cls: 'ok', outcome: `whole tab killed while the iframe added ${run.trying} MB` };
+    else r = { ...base, counted: false, cls: 'bad', outcome: `tab died while ${run.stage}` };
+    addResult(r);
+    say(`Last run ended with the tab being killed: ${r.outcome}. Saved.`);
+  }
+  document.addEventListener('visibilitychange', () => {
+    const run = store.get(KEY.run, null);
+    if (document.hidden && run) { run.hidden = true; store.set(KEY.run, run); }
+  });
+
+  let running = false, stopping = false;
+  function busy(on) {
+    running = on;
+    for (const b of document.querySelectorAll('button, select, input')) if (b.id !== 'stop') b.disabled = on;
+    $('stop').hidden = !on;
+  }
+  $('stop').onclick = () => { stopping = true; if (frameWin) post({ t: 'stop' }); };
+
+  // ── 1 · Process check ──
+  $('check').onclick = async () => {
+    busy(true);
+    try {
+      say('Loading the iframe…');
+      await loadChild();
+      await ask('mark');
+      await sleep(300);
+      say('Blocking this page for 2 s…');
+      await sleep(50);
+      const t0 = performance.now();
+      while (performance.now() - t0 < 2000) { /* block the main thread */ }
+      await sleep(300);
+      const { maxGap } = await ask('gaps');
+      const shared = maxGap > 1200, separate = maxGap < 500;
+      const verdict = shared ? 'same process (its timers stalled with the page)' : separate ? 'separate process (its timers kept running)' : 'unclear';
+      addResult({ ts: new Date().toISOString(), test: 'check', site: opts.site, probe: '', gapMs: Math.round(maxGap), sep: separate, counted: !shared && !separate ? false : true,
+        cls: separate ? 'ok' : shared ? 'warn' : 'bad', outcome: `${verdict}; longest iframe stall ${Math.round(maxGap)} ms` });
+      say(`Process check: ${verdict}. Longest stall in the iframe: ${Math.round(maxGap)} ms.`);
+    } catch (e) { say(`Process check failed: ${e.message}`); }
+    busy(false);
+  };
+
+  // ── 2 · Page alone ──
+  $('solo').onclick = async () => {
+    busy(true); stopping = false;
+    const run = { ts: new Date().toISOString(), t0: Date.now(), test: 'solo', site: '', probe: opts.probe, pageMB: 0, stage: 'starting' };
+    mark(run);
+    let holder = null, r;
+    try {
+      holder = await makeHolder(opts.probe);
+      mark(run, { stage: 'page' });
+      r = await fill(holder, {
+        capMB: CAP_MB,
+        before: (mb, step) => { mark(run, { pageMB: mb, trying: step }); say(`Page alone: holding ${fmt(mb)}…`); },
+        onHeld: () => {},
+        stop: () => stopping,
+      });
+    } catch (e) { r = { mb: 0, outcome: `error: ${e.message}` }; }
+    store.del(KEY.run);
+    try { holder?.release(); } catch { /* ignore */ }
+    const counted = !/stopped|error/.test(r.outcome);
+    addResult({ ts: run.ts, test: 'solo', site: '', probe: opts.probe, pageMB: r.mb, childMB: null, total: r.mb, counted, cls: counted ? 'ok' : 'warn', outcome: r.outcome });
+    say(`Page alone: ${fmt(r.mb)} (${r.outcome}).`);
+    busy(false);
+  };
+
+  // ── 3 · Page + iframe ──
+  $('split').onclick = async () => {
+    busy(true); stopping = false;
+    const solo = bestSolo(opts.probe);
+    const pageTarget = Number(opts.pageMB) || Math.floor((solo ? solo * 0.75 : 1024) / STEP_MB) * STEP_MB;
+    const run = { ts: new Date().toISOString(), t0: Date.now(), test: 'split', site: opts.site, probe: opts.probe, pageMB: 0, childMB: 0, stage: 'loading the iframe' };
+    mark(run);
+    let holder = null, outcome = '', counted = true, cls = 'ok';
+    try {
+      await loadChild();
+      post({ t: 'release' });
+      holder = await makeHolder(opts.probe);
+      mark(run, { stage: 'page' });
+      const p = await fill(holder, {
+        capMB: pageTarget,
+        before: (mb, step) => { mark(run, { pageMB: mb, trying: step }); say(`Page filling to ${fmt(pageTarget)}: ${fmt(mb)}…`); },
+        onHeld: (mb) => { run.pageMB = mb; },
+        stop: () => stopping,
+      });
+      run.pageMB = p.mb;
+      if (!p.outcome.startsWith('reached')) throw new Error(`page stopped at ${fmt(p.mb)} before the iframe started: ${p.outcome}`);
+      mark(run, { stage: 'child', trying: STEP_MB });
+      const onTrying = (m) => {
+        if (m.t !== 'trying') return;
+        mark(run, { childMB: m.mb, trying: m.step });
+        post({ t: 'ack', id: m.id });
+        say(`Page holds ${fmt(run.pageMB)}; iframe holding ${fmt(m.mb)} (total ${fmt(run.pageMB + m.mb)})…`);
+      };
+      handlers.add(onTrying);
+      post({ t: 'fill', probe: opts.probe, capMB: CAP_MB - run.pageMB });
+      // Done when the iframe reports in, or when it goes silent while this page is still alive:
+      // that means the iframe's own process was killed, i.e. it had a budget of its own.
+      const done = await new Promise((resolve) => {
+        const h = (m) => { if (m.t === 'done') { clearInterval(watch); handlers.delete(h); resolve(m); } };
+        handlers.add(h);
+        const watch = setInterval(() => {
+          if (Date.now() - lastBeat > 3000) { clearInterval(watch); handlers.delete(h); resolve({ silent: true }); }
+        }, 250);
+      });
+      handlers.delete(onTrying);
+      if (done.silent) {
+        loaded = null;
+        outcome = `iframe died alone at ~${fmt(run.childMB)} while the page lived: separate budget`;
+        run.sep = true;
+      } else {
+        run.childMB = done.mb;
+        outcome = `iframe: ${done.outcome}`;
+        if (/stopped|error/.test(done.outcome)) { counted = false; cls = 'warn'; }
+      }
+    } catch (e) { outcome = `error: ${e.message}`; counted = false; cls = 'bad'; }
+    store.del(KEY.run);
+    try { holder?.release(); } catch { /* ignore */ }
+    try { if (frameWin) post({ t: 'release' }); } catch { /* iframe gone */ }
+    addResult({ ts: run.ts, test: 'split', site: opts.site, probe: opts.probe, pageMB: run.pageMB, childMB: run.childMB, total: run.pageMB + run.childMB, sep: run.sep, counted, cls, outcome });
+    say(`Page + iframe: ${fmt(run.pageMB)} + ${fmt(run.childMB)} = ${fmt(run.pageMB + run.childMB)} (${outcome}).`);
+    busy(false);
+  };
+
+  // ── Results ──
+  function verdictLines() {
+    const rows = results(), out = [];
+    for (const site of ['cross', 'same']) {
+      const c = rows.filter(r => r.test === 'check' && r.site === site && r.counted).at(-1);
+      if (c) out.push(`Process check, ${site === 'cross' ? 'cross-site' : 'same-site'} iframe: ${c.sep ? 'separate process' : 'same process'} (${c.gapMs} ms stall).`);
+    }
+    for (const probe of ['gpu', 'js']) {
+      const solo = bestSolo(probe);
+      const name = probe === 'gpu' ? 'GPU' : 'JS';
+      if (solo) out.push(`${name}, page alone: ${fmt(solo)}.`);
+      for (const site of ['cross', 'same']) {
+        const splits = rows.filter(r => r.test === 'split' && r.site === site && r.probe === probe && r.counted);
+        if (!splits.length) continue;
+        const best = Math.max(...splits.map(r => r.total));
+        const alone = splits.some(r => r.sep);
+        let v = `${name}, page + ${site === 'cross' ? 'cross-site' : 'same-site'} iframe: best ${fmt(best)}`;
+        if (alone) v += ' — the iframe died on its own, so it has its own budget.';
+        else if (solo && best > solo * 1.15) v += ` — beats page alone by ${fmt(best - solo)}: extra budget.`;
+        else if (solo) v += ' — no better than page alone: one shared budget.';
+        out.push(v);
+      }
+    }
+    return out;
+  }
+  function render() {
+    const v = verdictLines();
+    $('verdict').replaceChildren(...(v.length ? v : ['No results yet.']).map(t => { const p = document.createElement('p'); p.textContent = t; return p; }));
+    $('rows').replaceChildren(...results().slice().reverse().map(r => {
+      const tr = document.createElement('tr');
+      const cells = [new Date(r.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), r.test, r.site || '–', r.probe || '–',
+        r.test === 'check' ? '–' : fmt(r.pageMB), r.childMB == null ? '–' : fmt(r.childMB), r.test === 'check' ? '–' : fmt(r.total), r.outcome];
+      for (const c of cells) { const td = document.createElement('td'); td.textContent = c; tr.append(td); }
+      tr.lastChild.className = r.cls || '';
+      return tr;
+    }));
+    if (!$('pageMB').value) {
+      const solo = bestSolo(opts.probe);
+      $('pageMB').placeholder = String(Math.floor((solo ? solo * 0.75 : 1024) / STEP_MB) * STEP_MB);
+    }
+  }
+  $('copy').onclick = async () => {
+    const text = [`Iframe memory split — ${location.host}`, navigator.userAgent, '', ...verdictLines(), '',
+      ...results().map(r => `${r.ts} ${r.test} ${r.site || '-'} ${r.probe || '-'} page=${fmt(r.pageMB)} iframe=${fmt(r.childMB)} total=${fmt(r.total)} ${r.outcome}`)].join('\n');
+    try { await navigator.clipboard.writeText(text); say('Copied.'); } catch { say(text); }
+  };
+  $('clear').onclick = () => { if (confirm('Clear all results?')) { store.del(KEY.results); render(); } };
+
+  recoverCrash();
+  render();
+}
+</script>
+</body>
+</html>
