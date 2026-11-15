@@ -247,6 +247,25 @@ function checkInCard(task, calls, decide) {
 // Permission card for actions outside the agent's own space (pushing to a
 // non-agent branch). The decision comes only from these buttons.
 function approvalCard(req, decide) {
+  // Anything other than a push (gh pr merge, deleting a branch on GitHub, a gh api write): a title and a few lines,
+  // allowed once or not at all.
+  if (req.kind === 'action') {
+    const card = h('div', { class: 'approval', role: 'group', 'aria-label': 'Permission needed' },
+      h('p', { class: 'q' }, h('strong', {}, req.title), '?'),
+      (req.details || []).length ? h('ul', { class: 'commits' }, req.details.map(d => h('li', {}, d))) : '');
+    card.append(h('div', { class: 'row' },
+      h('button', { class: 'btn primary', onclick: () => card.settle('once') }, 'Allow'),
+      h('button', { class: 'btn ghost', onclick: () => card.settle('deny') }, 'Don\'t allow')));
+    let done = false;
+    card.settle = (d) => {
+      if (done) return;
+      done = true;
+      decide(d === 'always' ? 'once' : d);
+      card.replaceChildren(h('p', { class: 'muted' }, `${req.title}: ${d === 'deny' ? 'Not allowed' : 'Allowed'}.`));
+      card.classList.add('settled');
+    };
+    return card;
+  }
   const commits = req.commits || [];
   const wf = req.workflowFiles || [];
   const card = h('div', { class: 'approval', role: 'group', 'aria-label': 'Permission needed' },

@@ -81,6 +81,9 @@ export const lfm3 = {
   callStart: '<tool_call>',
   parseCalls: parseQwenCalls,
   // How its thinking opens and closes: the shim can close a thinking block itself (think_prefill).
+  // Where a prompt can be cut for reuse on WebLLM (prefix-cache.js): an assistant turn's thinking opens with
+  // `open` and ends at `close`; only the last turn's thinking is kept, so a cut never goes past it.
+  cacheMark: { open: '<|im_start|>assistant\n<think>', close: '</think>' },
   thinkOpen: '<think>',
   thinkClose: '</think>',
   // With thinking on the prompt ends inside <think>, so the reply starts as thinking until </think>.
