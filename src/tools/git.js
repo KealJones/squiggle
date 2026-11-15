@@ -7,7 +7,7 @@ import { checkBranch, pushPolicy, touchesWorkflows, agentBranchName, parseRepo, 
 import * as grants from '../grants.js';
 import { wrapUntrusted } from '../untrusted.js';
 import { defineTool, params, str, num } from './registry.js';
-import { MAX_READ, REPOS, numberedLines } from './workspace.js';
+import { REPOS, numberedLines } from './workspace.js';
 
 // ── Repo helpers ──────────────────────────────────────────────────────────
 
@@ -105,8 +105,8 @@ export const githubListRepos = defineTool({
     const cfg = storage.storageConfig();
     const all = (await accessibleRepos()).filter(r => !cfg || r.full_name !== `${cfg.owner}/${cfg.name}`)
       .sort((a, b) => String(b.pushed_at || '').localeCompare(String(a.pushed_at || '')));
-    const shown = all.slice(0, 100).map(x => ({ repo: x.full_name, private: x.private, default_branch: x.default_branch, description: wrapUntrusted('github', x.description || '') }));
-    return { model: { repos: shown, ...(all.length > shown.length ? { more: `${all.length - shown.length} older repos not shown` } : {}) }, label: 'listed GitHub repos' };
+    const shown = all.map(x => ({ repo: x.full_name, private: x.private, default_branch: x.default_branch, description: wrapUntrusted('github', x.description || '') }));
+    return { model: { repos: shown }, label: 'listed GitHub repos' };
   },
 });
 
@@ -272,10 +272,10 @@ export const gitLog = defineTool({
   name: 'git_log',
   group: 'git and GitHub',
   description: 'Recent commits on the current branch.',
-  parameters: params({ repo: str('Folder name under /repos'), count: num('How many (default 10)') }, ['repo']),
-  async run({ repo, count = 10 }) {
+  parameters: params({ repo: str('Folder name under /repos'), count: num('How many (default: all)') }, ['repo']),
+  async run({ repo, count }) {
     const dir = await repoDir(repo);
-    const log = await git.log({ fs, dir, depth: Math.min(50, count) });
+    const log = await git.log({ fs, dir, ...(count ? { depth: count } : {}) });
     const lines = log.map(c => `${c.oid.slice(0, 8)} ${new Date(c.commit.author.timestamp * 1000).toISOString().slice(0, 10)} ${c.commit.author.name}: ${c.commit.message.split('\n')[0]}`);
     return { model: { commits: wrapUntrusted('git log', lines.join('\n')) }, label: `log of ${repo}` };
   },
@@ -285,7 +285,7 @@ export const gitShow = defineTool({
   name: 'git_show',
   group: 'git and GitHub',
   description: 'Read a file as it was at an earlier commit, with line numbers. To restore it, write that content back with write_file (overwrite: true).',
-  parameters: params({ repo: str('Folder name under /repos'), path: str('File path in the repo, e.g. app/src/main.js'), ref: str('Commit id from git_log (short is fine), or HEAD~1 for the one before the latest'), start_line: num('First line (default 1)'), end_line: num('Last line (default start_line + 150)') }, ['repo', 'path', 'ref']),
+  parameters: params({ repo: str('Folder name under /repos'), path: str('File path in the repo, e.g. app/src/main.js'), ref: str('Commit id from git_log (short is fine), or HEAD~1 for the one before the latest'), start_line: num('First line (default 1)'), end_line: num('Last line (default: the last line)') }, ['repo', 'path', 'ref']),
   async run({ repo, path, ref = 'HEAD', start_line = 1, end_line }, ctx = {}) {
     const dir = await repoDir(repo);
     const name = dir.slice(REPOS.length + 1);
@@ -299,7 +299,7 @@ export const gitShow = defineTool({
     catch { return { model: { error: `${filepath} didn't exist at ${oid.slice(0, 8)}.` }, label: `git_show ${filepath} at ${oid.slice(0, 8)} (missing)` }; }
     const lines = text.split('\n');
     const start = Math.max(1, Math.floor(start_line) || 1);
-    const { out, end } = numberedLines(lines, start, Math.min(lines.length, Math.floor(end_line) || start + 149), Math.min(MAX_READ, ctx.room || MAX_READ));
+    const { out, end } = numberedLines(lines, start, Math.min(lines.length, Math.floor(end_line) || lines.length));
     return {
       model: { repo: name, path: filepath, commit: oid.slice(0, 8), total_lines: lines.length, start_line: start, end_line: end, content: wrapUntrusted(`file ${filepath} at ${oid.slice(0, 8)}`, out), ...(end < lines.length ? { more: `lines ${end + 1}-${lines.length} not shown; call again with start_line` } : {}) },
       label: `read ${filepath} at ${oid.slice(0, 8)}${start > 1 || end < lines.length ? ` lines ${start}-${end}` : ''}`,

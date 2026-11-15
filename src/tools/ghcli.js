@@ -438,25 +438,32 @@ issue.reopen = async (env, o) => {
 // ── repo, run, workflow, release, search, api, auth ────────────────────────
 
 const repo = {};
-// Like gh: newest push first, 30 unless -L, and a "Showing N of M" line so the model knows there's more. It used
-// to list only the GitHub App's first page in id order (oldest first) and cut it at 30, so every repo made in
-// the last few years was missing and LFM3 told Keal he had no "bubbles" repo (failures.md case 20).
-const REPO_LIST_FLAGS = new Set(['_', 'paths', 'multi', 'L', 'limit', 'json', 'q', 'jq', 'visibility']);
+// Like gh (pkg/cmd/repo/list): newest push first, 30 unless -L, gh's own header ("Showing N of M repositories in
+// @owner", as at a terminal) and rows of name, description, info and push time. It used to list only the GitHub
+// App's first page in id order (oldest first) cut at 30, so recent repos were missing and LFM3 told Keal he had no
+// "bubbles" repo (failures.md case 20).
+const REPO_LIST_FLAGS = new Set(['_', 'paths', 'multi', 'L', 'limit', 'json', 'q', 'jq', 'visibility', 'fork', 'source', 'archived', 'no-archived', 'l', 'language', 'topic']);
+const repoInfo = (x) => [x.visibility, x.fork && 'fork', x.archived && 'archived'].filter(Boolean).join(', ');
 repo.list = async (env, o) => {
   const bad = Object.keys(o).find(k => !REPO_LIST_FLAGS.has(k));
-  if (bad) return fail(`unknown flag: ${bad.length === 1 ? '-' : '--'}${bad}\n\nUsage:  gh repo list [<owner>] [flags]\nFlags here: -L/--limit, --visibility, --json, -q/--jq`);
+  if (bad) return fail(`unknown flag: ${bad.length === 1 ? '-' : '--'}${bad}\n\nUsage:  gh repo list [<owner>] [flags]`);
   let rows = (await env.repos()).filter(x => !(env.isStorage && env.isStorage(x.owner.login, x.name)))
-    .map(x => ({ ...x, description: x.description || '', visibility: x.visibility || (x.private ? 'private' : 'public') }))
-    .sort((a, b) => String(b.pushed_at || '').localeCompare(String(a.pushed_at || '')));
-  const owner = o._[0];
-  if (owner) rows = rows.filter(x => x.owner.login.toLowerCase() === owner.toLowerCase());
-  if (o.visibility) rows = rows.filter(x => x.visibility === o.visibility);
+    .map(x => ({ ...x, visibility: String(x.visibility || (x.private ? 'private' : 'public')).toLowerCase() }))
+    .sort((a, b) => String(b.pushed_at || b.created_at || '').localeCompare(String(a.pushed_at || a.created_at || '')));
+  const owner = o._[0] || await env.login();
+  rows = rows.filter(x => x.owner.login.toLowerCase() === owner.toLowerCase());
+  const lang = o.l || o.language;
+  const filters = [o.visibility && (x => x.visibility === o.visibility), o.fork && (x => x.fork), o.source && (x => !x.fork),
+    o.archived && (x => x.archived), o['no-archived'] && (x => !x.archived), lang && (x => String(x.language || '').toLowerCase() === String(lang).toLowerCase()),
+    o.topic && (x => (x.topics || []).includes(o.topic))].filter(Boolean);
+  for (const f of filters) rows = rows.filter(f);
   const total = rows.length;
   rows = rows.slice(0, limitOf(o));
   const j = await jsonOut(env, o, rows, REPO_FIELDS);
   if (j) return j;
-  const head = `Showing ${rows.length} of ${total} repositories${owner ? ` in @${owner}` : ''}${rows.length < total ? ' (newest push first; -L 100 for more, or gh repo view NAME)' : ''}\n\n`;
-  return ok(head + rows.map(x => [x.full_name, x.description.replace(/\s+/g, ' ').trim(), x.visibility].join('\t')).join('\n'));
+  const title = !total ? (filters.length ? 'No results match your search' : `There are no repositories in @${owner}`)
+    : `Showing ${rows.length} of ${total} repositories in @${owner}${filters.length ? ' that match your search' : ''}`;
+  return ok(`\n${title}\n\n` + rows.map(x => [x.full_name, String(x.description || '').replace(/\s+/g, ' ').trim(), repoInfo(x), x.pushed_at || x.created_at || ''].join('\t')).join('\n'));
 };
 repo.view = async (env, o) => {
   const arg = o._[0] && !o._[0].includes('/') ? `${await env.login()}/${o._[0]}` : o._[0];   // like gh: a bare name is yours
