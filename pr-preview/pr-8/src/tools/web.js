@@ -4,7 +4,7 @@ import { wrapUntrusted } from '../untrusted.js';
 import { truncate } from '../util.js';
 import { pageCard, pageText } from '../webpage.js';
 import { defineTool, params, str, num } from './registry.js';
-import { MAX_READ, saveWebPage } from './workspace.js';
+import { saveWebPage } from './workspace.js';
 
 export const fetchUrl = defineTool({
   name: 'fetch_url',
@@ -53,7 +53,8 @@ export const fetchUrl = defineTool({
       };
     }
     return {
-      model: { url: u.href, status, title, text: wrapUntrusted('web ' + u.hostname, truncate(text, MAX_READ)) },
+      model: { url: u.href, status, title, text: wrapUntrusted('web ' + u.hostname, text) },
+      page: text,   // bash's curl prints this, the whole page
       label: `read ${u.href}`,
       observation: { source: 'web', title: `${title} (${u.href})`, text: text.slice(0, 30000) },
     };

@@ -2,10 +2,8 @@
 import * as memory from '../memory.js';
 import * as sessions from '../sessions.js';
 import { wrapUntrusted } from '../untrusted.js';
-import { truncate } from '../util.js';
 import { bm25 } from '../search.js';
 import { defineTool, params, str } from './registry.js';
-import { bestPart } from './workspace.js';
 
 export const remember = defineTool({
   name: 'remember',
@@ -55,8 +53,8 @@ export const searchHistory = defineTool({
     const top = docs.filter(d => scores.has(d.id)).sort((a, b) => scores.get(b.id) - scores.get(a.id)).slice(0, 6);
     return {
       model: { results: top.map(d => d.o
-        ? { session: d.s.title, when: new Date(d.o.ts).toISOString().slice(0, 10), role: 'attachment', file: d.o.title, text: wrapUntrusted('attachment ' + d.o.title, bestPart(d.o.text, query)), this_session: d.s.id === ctx.session.id }
-        : { session: d.s.title, when: new Date(d.m.ts).toISOString().slice(0, 10), role: d.m.role, text: truncate(d.m.content, 600), this_session: d.s.id === ctx.session.id }) },
+        ? { session: d.s.title, when: new Date(d.o.ts).toISOString().slice(0, 10), role: 'attachment', file: d.o.title, text: wrapUntrusted('attachment ' + d.o.title, d.o.text), this_session: d.s.id === ctx.session.id }
+        : { session: d.s.title, when: new Date(d.m.ts).toISOString().slice(0, 10), role: d.m.role, text: d.m.content, this_session: d.s.id === ctx.session.id }) },
       label: `searched history for "${query}"`,
     };
   },
