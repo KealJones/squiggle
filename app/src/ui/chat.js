@@ -9,7 +9,8 @@ import * as attachments from '../attachments.js';
 import { checkFiles, fmtSize } from '../attachments.js';
 import * as voice from '../voice.js';
 import { bm25 } from '../search.js';
-import { $, h, icon, md, ago, squiggleWait, iconButton, scrollDown } from './dom.js';
+import { $, h, icon, md, ago, squiggleWait, iconButton, scrollDown, keepAwake } from './dom.js';
+import { smoothText } from './smooth.js';
 import { state } from './state.js';
 import { openThread, openPanel, closeDrawer, renderThreadPanel, renderNotesPanel } from './panels.js';
 import { renderSide } from './side.js';
@@ -251,6 +252,25 @@ function checkInCard(task, calls, decide) {
 // Permission card for actions outside the agent's own space (pushing to a
 // non-agent branch). The decision comes only from these buttons.
 function approvalCard(req, decide) {
+  // Anything other than a push (gh pr merge, deleting a branch on GitHub, a gh api write): a title and a few lines,
+  // allowed once or not at all.
+  if (req.kind === 'action') {
+    const card = h('div', { class: 'approval', role: 'group', 'aria-label': 'Permission needed' },
+      h('p', { class: 'q' }, h('strong', {}, req.title), '?'),
+      (req.details || []).length ? h('ul', { class: 'commits' }, req.details.map(d => h('li', {}, d))) : '');
+    card.append(h('div', { class: 'row' },
+      h('button', { class: 'btn primary', onclick: () => card.settle('once') }, 'Allow'),
+      h('button', { class: 'btn ghost', onclick: () => card.settle('deny') }, 'Don\'t allow')));
+    let done = false;
+    card.settle = (d) => {
+      if (done) return;
+      done = true;
+      decide(d === 'always' ? 'once' : d);
+      card.replaceChildren(h('p', { class: 'muted' }, `${req.title}: ${d === 'deny' ? 'Not allowed' : 'Allowed'}.`));
+      card.classList.add('settled');
+    };
+    return card;
+  }
   const commits = req.commits || [];
   const wf = req.workflowFiles || [];
   const card = h('div', { class: 'approval', role: 'group', 'aria-label': 'Permission needed' },
@@ -345,6 +365,7 @@ export function setupComposer(form, input, onSend) {
 
 function setBusy(on) {
   state.busy = on;
+  keepAwake('reply', on);   // a phone that sleeps mid-reply loses the GPU (iOS Safari)
   for (const btn of document.querySelectorAll('.composer button[type="submit"]')) {
     btn.replaceChildren(icon(on ? 'i-stop' : 'i-send'));
     btn.setAttribute('aria-label', on ? 'Stop' : 'Send');
@@ -369,6 +390,7 @@ export async function send(text, threadId, files = []) {
   const scroller = threadId ? $('#thread-scroll') : $('#messages');
   if (!threadId && !session.messages.some(m => !m.thread)) container.replaceChildren();
   let live = null, body = null, trail = null, think = null, plan = null;
+  const smooth = smoothText((t) => { body.innerHTML = md(t); scrollDown(scroller); });
   const vc = !threadId && state.call ? state.call.ctl : null; // a voice call speaks this reply as it streams
   const liveTools = [];
   if (!threadId) state.liveTurn = { ctx: null, tools: liveTools, task: null };
@@ -393,7 +415,7 @@ export async function send(text, threadId, files = []) {
         },
         onError: (error) => { modelError = error; },
         onThinking: (t) => { think.hidden = false; think.lastChild.textContent = t; },
-        onText: (t) => { const clean = agent.scrubFakeToolNotes(t); body.innerHTML = md(clean); scrollDown(scroller); if (vc) vc.feed(clean); },
+        onText: (t) => { const clean = agent.scrubFakeToolNotes(t); smooth.feed(clean); if (vc) vc.feed(clean); },
         onTool: (t) => {
           if (t.name === 'note' && !t.running && state.drawerPanel === 'notes') renderNotesPanel();
           const existing = liveTools.find(x => x.running && x.name === t.name);
@@ -418,11 +440,12 @@ export async function send(text, threadId, files = []) {
           scrollDown(scroller);
           card.querySelector('button').focus({ preventScroll: true });
         },
-        onDone: (m) => { if (vc) vc.finish(agent.scrubFakeToolNotes(m.content)); live.replaceWith(messageEl(m, { inThread: Boolean(threadId), session })); if (!threadId) $('#chat-title').textContent = session.title; state.liveTurn = null; renderSide(); },
+        onDone: (m) => { smooth.stop(); if (vc) vc.finish(agent.scrubFakeToolNotes(m.content)); live.replaceWith(messageEl(m, { inThread: Boolean(threadId), session })); if (!threadId) $('#chat-title').textContent = session.title; state.liveTurn = null; renderSide(); },
       },
     });
     if (modelError) await recoverGpuModel(modelError);
   } finally {
+    smooth.stop();
     setBusy(false);
     state.controller = null;
     if (!threadId) { state.liveTurn = null; renderSide(); }

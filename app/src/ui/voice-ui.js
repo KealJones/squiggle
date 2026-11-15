@@ -3,7 +3,7 @@
 // this is what shows it.
 import * as agent from '../agent.js';
 import * as voice from '../voice.js';
-import { $, h, icon, squiggleWait, scrollDown } from './dom.js';
+import { $, h, icon, squiggleWait, scrollDown, keepAwake } from './dom.js';
 import { state } from './state.js';
 import { send } from './chat.js';
 
@@ -67,7 +67,7 @@ export function startCall() {
   // start() must run inside this tap: iOS only lets speech begin from a gesture.
   ctl.start();
   bar.update(ctl.snapshot());
-  keepAwake(true);
+  keepAwake('call', true);
 }
 
 export function endCall() {
@@ -76,15 +76,7 @@ export function endCall() {
   state.call = null;
   ctl.end();
   bar.close();
-  keepAwake(false);
-}
-
-let wakeLock = null;
-async function keepAwake(on) {
-  try {
-    if (on) wakeLock = await navigator.wakeLock?.request('screen');
-    else { await wakeLock?.release(); wakeLock = null; }
-  } catch {}
+  keepAwake('call', false);
 }
 
 // The call bar replaces the composer while a call is on. With `message` it is
@@ -122,7 +114,7 @@ function callBar(message) {
       if (idle && snap.error) {
         // The call stopped itself (blocked microphone, ...): keep the reason on screen.
         if (state.call && state.call.bar === self) state.call = null;
-        keepAwake(false);
+        keepAwake('call', false);
         main.classList.remove('in-call'); $('#call').removeAttribute('aria-pressed');
         endBtn.textContent = 'Close'; endBtn.onclick = (e) => { e.stopPropagation(); el.remove(); };
         el.onclick = null;

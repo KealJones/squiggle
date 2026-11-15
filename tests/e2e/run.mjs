@@ -225,8 +225,8 @@ await check('agent git tools: agent/ pushes freely; other branches need approval
   assert.deepEqual(r.notes, ['tools.js: runTool at line 512']);
   assert.equal(r.noteDel.ok, true);
   assert.match(r.noteBad.error, /No note with id nope/);
-  assert.equal(r.read1.total_lines, 400); assert.equal(r.read1.end_line, 150);
-  assert.match(r.read1.more, /lines 151-400 not shown/);
+  assert.equal(r.read1.total_lines, 400); assert.equal(r.read1.end_line, 400, 'the whole file: no tool cuts output');
+  assert.equal(r.read1.more, undefined);
   assert.match(r.read2.content, /151: line 151[\s\S]*160: line 160/);
   assert.equal(r.read2.end_line, 160);
   assert.match(r.grep1.matches, /\/repos\/app\/big\.txt:1: line 1 NEEDLE[\s\S]*big\.txt:351: line 351 NEEDLE/);
@@ -892,7 +892,7 @@ await check('chat details sidebar: model, context window breakdown (live and sav
       seen: [...new Set(window.__sideSeen)],
     };
   });
-  assert.match(r.model, /Model.*Runs\s*this device.*Context\s*Compress/s, r.model);
+  assert.match(r.model, /Model.*Runs\s*this device.*Context\s*Compress/s, r.model);   // a new browser starts on Compress (settings.js compactDefault)
   assert.match(r.total, /^[\d.]+k? of [\d.]+k? tokens$/);
   assert.ok(r.rows.includes('Instructions') && r.rows.includes('Free space') && r.rows.includes('Request'), JSON.stringify(r.rows));
   assert.equal(r.bar, r.rows.length - 1, 'one bar segment per part (free space is the empty track)');
@@ -1415,8 +1415,10 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
   assert.equal(r.code, 0, JSON.stringify(r));
   assert.match(r.out, /agent\/fix-readme/);
   assert.match(git(appRepo, 'show', 'agent/fix-readme:README.md'), /# changed/, 'the agent branch was pushed to the real git server');
-  r = await run('cd /repos/app && git checkout main && echo x >> README.md && git commit -m "on main" && git push');
+  r = await run('cd /repos/app && git checkout main && echo x >> README.md && git commit -m "unstaged" ; git commit -am "on main" && git push');
   assert.notEqual(r.code, 0, 'a push to main needs the user; the test says no: ' + JSON.stringify(r));
+  assert.match(r.out, /no changes added to commit/, 'real staging: commit without add commits nothing');
+  assert.match(r.err, /did not allow pushing to main/, 'the commit went in; the push asked and was refused: ' + JSON.stringify(r));
   r = await run(`curl ${appUrl}/test-pages/injection.html | grep -i assets`);
   assert.match(r.out, /assets directory serves static files/i, JSON.stringify(r));
   r = await run('echo "5*5/129" | bc -l');
@@ -1424,23 +1426,24 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
   r = await run('echo $((17*23))');
   assert.equal(r.out.trim(), '391');
   r = await run('man');
-  assert.match(r.out, /gh repo list/);
+  assert.match(r.out, /gh +GitHub's CLI/);
   r = await run('man gh');
-  assert.match(r.out, /gh pr create/);
+  assert.match(r.out, /pr create --title/);
   r = await run('git --help | head -3');
-  assert.match(r.out, /git clone/);
+  assert.match(r.out, /real git on clones in \/repos/);
+  r = await run('cd /repos/app && git log --oneline -n 2 && git diff main..agent/fix-readme --stat && git branch -a');
+  assert.equal(r.code, 0, JSON.stringify(r));
+  assert.match(r.out, /on main[\s\S]*README\.md \| \d+ [+-]+[\s\S]*\* main[\s\S]*remotes\/origin\/agent\/fix-readme/, JSON.stringify(r));
   r = await run('cat /etc/passwd');
   assert.notEqual(r.code, 0);
   r = await run('echo scratch > /tmp/a && cat /tmp/a');
   assert.equal(r.out.trim(), 'scratch');
-  // Output too big for the window is kept whole in /tmp/out-N.txt; the model sees the start and where the rest is.
+  // No tool cuts output (2026-11-15): big output comes back whole, however small the room.
   r = await run('seq 1 20000', 2000);
-  assert.ok(r.saved && /^\/tmp\/out-\d+\.txt$/.test(r.saved), JSON.stringify(r).slice(0, 300));
-  assert.match(r.out, /^1\n2\n/);
-  assert.match(r.out, /20000 lines[\s\S]*the whole output is in \/tmp\/out-\d+\.txt/);
-  assert.ok(r.out.length < 2000, 'the preview fits the room');
-  r = await run(`wc -l < ${r.saved} && tail -1 ${r.saved}`);
-  assert.match(r.out, /20000\n20000/, 'nothing was thrown away: ' + JSON.stringify(r));
+  assert.ok(!r.saved, JSON.stringify(r).slice(0, 300));
+  const nums = r.out.trim().split('\n');
+  assert.equal(nums.length, 20000, 'nothing was thrown away: ' + JSON.stringify(r.out.slice(-200)));
+  assert.equal(nums[0], '1'); assert.equal(nums.at(-1), '20000');
   r = await run('');
   assert.match(r.error || '', /e\.g\. gh repo list/, 'an empty command gets an example back');
   assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
@@ -1733,6 +1736,8 @@ await check('small models: a long page comes back as a card saved in /web, grep 
   await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'SQ'; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
+  // Shrinking used results is Smart context's (agent.js trimJunk); a new browser starts on Compress.
+  await D.page.evaluate(async () => { (await import('/src/ui/settings.js')).setDefaultContextMode('smart'); });
   await D.page.click('#new-chat');
   // Shrinking tool results is a Smart context behavior.
   await D.page.click('.chat-setup > summary');

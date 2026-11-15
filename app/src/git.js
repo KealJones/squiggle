@@ -78,6 +78,11 @@ export async function writeFile(path, data) {
   written.add(path);
 }
 
+// The files written under dir since the page opened (repo-relative), for gitcli.js's status, which re-hashes
+// them instead of staging them; and a way to add one (a file gitcli.js wrote itself).
+export const writtenIn = (dir) => { const pre = dir.replace(/\/$/, '') + '/'; return [...written].filter(p => p.startsWith(pre)).map(p => p.slice(pre.length)); };
+export const noteWritten = (path) => { written.add(path); };
+
 export async function readText(path) {
   return pfs.readFile(path, 'utf8');
 }

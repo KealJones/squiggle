@@ -5,6 +5,9 @@ import * as sessions from '../sessions.js';
 import * as memory from '../memory.js';
 import * as grants from '../grants.js';
 import * as recipes from '../recipes.js';
+import * as incidents from '../incidents.js';
+import { parseJsonl, toJsonl } from '../merge.js';
+import { uid } from '../util.js';
 import { $, h, squiggleWait } from './dom.js';
 import { state } from './state.js';
 import { openSession, renderChat, renderSessions, setSync, setupComposer, send, closeSidebar } from './chat.js';
@@ -26,6 +29,7 @@ export async function startApp() {
   await storage.open();
   await Promise.all([sessions.loadAll(), memory.load(), grants.load(), recipes.load()]);
   recipes.prune();
+  incidents.setSink(saveIncident);
   wireApp();
   setSync();
   // A chat link (#chat=<id>) opens that chat if this account has it; else the usual one, and the link waits for
@@ -50,6 +54,25 @@ export async function startApp() {
   // even as the page goes away. In demo mode this browser is the only copy.
   addEventListener('pagehide', settle);
   checkCloud().finally(() => initModel());
+}
+
+// Problems for later (incidents.js), in the storage repo so they can be read without a screenshot: one line each in
+// debug/incidents.jsonl (the last 200), a crashed reply's prompt in its own file next to it.
+// shortcut: prompt files of lines past the last 200 stay behind; prune them if debug/incidents/ gets big.
+const INCIDENTS = 'debug/incidents.jsonl';
+let savingIncident = Promise.resolve();
+function saveIncident(rec) {
+  savingIncident = savingIncident.then(async () => {
+    const line = { id: uid('i'), ...rec, ua: navigator.userAgent, uptimeS: Math.round(performance.now() / 1000), chat: state.current && state.current.id };
+    if (line.prompt) {
+      line.promptFile = `debug/incidents/${line.id}.txt`;
+      await storage.write(line.promptFile, line.prompt);
+    }
+    delete line.prompt;
+    const all = parseJsonl(await storage.read(INCIDENTS)).slice(-199);
+    await storage.write(INCIDENTS, toJsonl([...all, line]));
+    storage.sync();
+  }).catch(e => console.warn('incident', e));
 }
 
 // Demo mode's strip: what's different, things to try (sent as messages), and the way out (demo.js).

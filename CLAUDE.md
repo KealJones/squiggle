@@ -47,6 +47,7 @@ app/                    static app, plain ES modules, no build step
     recall.js           smart mode's recalled block: earlier messages (this chat + other chats) and memory, quoted after the request; time phrases, size caps
     search.js           BM25 (light stemmer: -ing/-ies/-ed/-s and a trailing e) + blend with optional embeddings (embed.js, MiniLM on CPU in embed-worker.js, terminated after 15 s idle on phones / 3 min on computers so its memory is freed)
     engine-webllm.js    WebLLM (MLC on WebGPU) under engine-wllama.js's conversations; per-model WebLLM version (`webllm`); streams any tool format
+    prefix-cache.js     on by default (?reuse=0 turns it off for that browser): keeps a prompt prefix in the model's cache between raw completions (two sequences, fork at a safe cut); reverted once, see docs/lab.md "Reuse the prompt already in the cache"
     toolformats/        how each model family's template writes tools, calls and results, for WebLLM (docs/extending.md "Tool formats")
       index.js          the registry and the format interface; text.js: shared <think> split and marker hold-back
       qwen.js gemma4.js lfm2.js   Qwen3/Qwen3.5 (chat API), Gemma 4 and LFM2 (raw prompts; fixtures pin them to the real templates)
@@ -57,6 +58,8 @@ app/                    static app, plain ES modules, no build step
       workspace.js      /home, /repos and /web path mapping shared by the tools
       files.js notes.js git.js web.js memory.js compute.js   the tools by area (compute.js hosts the run_js sandbox)
       bash.js           `bash` (lab, settings.toolSurface 'bash'): just-bash (app/vendor/just-bash.js) on the workspace through WorkspaceFs (/home via storage.js so it syncs, /repos and /web via LightningFS, everything else in memory); custom commands git, gh, curl, search, wiki, node, bc call the tools above (approvals and URL rules kept); `man` / `--help` document them
+      gitcli.js ghcli.js diff.js   bash's `git` and `gh`, behaving like the real ones (2026-11-12; models know them): real staging (add, then commit; -a), git's own output formats (status, diff, log, show, branch, …), most subcommands and their usual options (`git --help`, `gh --help` list them); runs on isomorphic-git with everything injected, so tests/gitcli.test.js runs it on real repos in Node. Status re-hashes files Squiggle wrote and "racy" ones (changed no earlier than the index), since a size-and-seconds check misses same-size edits. Pushes, pulls and clones still go through git_push/git_pull/git_clone (push policy, never forced; `git push origin <other branch>` passes `pushBranch` in the call context, not as a model-facing parameter). gh: pr/issue/repo/run/workflow/release/search/api/auth with --json/--jq (jq via just-bash's ctx.exec); `gh pr merge`, deleting a branch on GitHub and any `gh api` that isn't a read ask the user (approval card kind 'action'); the storage repo is refused by name (owner/name, -R, search, graphql) and /repositories/<id>. diff.js: Myers line diff in git's unified format (matches `git diff --diff-algorithm=myers` on 275 of 282 random cases; the rest differ only in where a repeated line is shown) and --stat
+      tty.js            a just-bash transform plugin: gives each `gh` whose stdout reaches the terminal (not piped, redirected or in $(…)) GH_FORCE_TTY=true, real gh's own switch, since just-bash never tells a command where its output goes; ghcli prints gh's terminal formats only then (`gh repo list`: header and a table cut to 80 columns, gh's fallback width when it can't measure a terminal; GH_FORCE_TTY=<n> sets it, as in gh)
       wiki.js           wiki_lookup: Wikipedia search → article + Wikidata item → every fact (ranked by the question via property aliases) and newest links, straight from the browser (CORS); wikidata_query: raw SPARQL, big models only (agent.js BIG_ONLY)
     calc.js             `calculate` tool: safe math expression parser (no eval), % and money-friendly
     guard.js            hard limits: push policy, workflow-file check, workspace path resolution
@@ -112,6 +115,11 @@ docs/                   harness.md (the agent loop contract), failures.md (caseb
   file, web, git and maths tools. Commands that reach the network, GitHub or the sandbox go through `runTool` with the
   agent's context, so a push still needs the approval card and curl fetches any URL (the allowed-URL check stays on fetch_url for the two fine-tunes); the whole output is
   wrapped as untrusted; `.git` stays unreachable (`guard.resolveAgentPath`).
+- No tool cuts its output (Keal, 2026-11-15): bash, curl, read_file, grep, git log, run_js, wiki and the rest return
+  everything asked for. The prompts say the window is small; keeping output short (grep, head, tail, a line range,
+  `> /tmp/file`) is the model's job. Commands that mirror real ones (git, gh) keep the real tool's defaults and
+  nothing tighter: `gh repo list` shows 30 unless -L, and at a terminal cuts its table to 80 columns with "..." like
+  gh does (piped, `--json` and `gh repo view` give the full text).
 - Demo mode (`storage.isLocal()`): the git and GitHub tools are left out of the model's list (agent.js
   `modelTools`), the cloud model isn't offered, the system prompt says so. Signing in later carries the local
   files into the chosen repo (`useStorage` snapshot/restore, merging sessions and .jsonl the repo has).
@@ -187,6 +195,19 @@ reply keeps what it returned (`tools[].result`, untrusted wrappers stripped, cut
 under "Result" in the tool list and synced with the session file. Web searches say which provider answered
 (the relay's `source`: langsearch, tavily, tavily (past year), duckduckgo, wikipedia) in the label.
 
+## Incidents (incidents.js): read these before asking Keal what happened
+
+Problems are written to the storage repo (KealJones/squiggle-state) as they happen, one JSON line each in
+`debug/incidents.jsonl` (the last 200; app.js `saveIncident`), so a crash can be looked at without a screenshot:
+`gpu-lost` (engine-webllm `revive`: Safari's reason and message, the first uncaught GPU error, GPU memory held at
+the loss, whether the reload got a GPU back, how many tries), `reply-error` (agent.js: the message the user saw,
+chat and reply ids, the trace file with the exact prompt, the context window), `tab-killed` (model-ui.js, on the
+next open: the crash marker, i.e. the stage, chat, window and GPU memory when the reply started, plus the last
+prompt sent, saved as `debug/incidents/<id>.txt`) and `load-failed`, and `sync-failed` (storage.js, once per new error; it arrives with the first sync that works). Every line has the user agent, uptime and
+`gpu: { bytes, peak, atLoss }`, the WebGPU buffer bytes this page holds (`trackBuffers`): Safari has no API for a
+tab's memory, and the GPU shares the iPhone tab's ~1.9 GB, so that's the level to compare against. Lines reach
+GitHub with the next sync.
+
 ## Voice (voice.js)
 
 - Speech-to-text is the Web Speech API; text-to-speech is the browser's own speech synthesis
@@ -226,7 +247,7 @@ small-model, no-prompt, tool-surface, GPU or cores settings (settings.js `simpli
 each model gets `engine.contextFor` (its `maxContext`, else 16K), small models always get the small-model prompt, and
 bash is the tool surface wherever `agent.bashSurface()` allows (LFM3 and the cloud model; the two fine-tunes keep the
 separate tools they were trained on). Context type is per chat, picked before the first message and fixed after
-(`session.contextMode`, set at the first send), Compress by default; the model can still switch in the chat details. Squiggle Small (`SQ`, LFM2.5-350M fine-tuned on the
+(`session.contextMode`, set at the first send), Compress by default (settings.js `compactDefault`: until 2026-11-11 a new browser ran the old `harnessV2` step after `simplified` and landed on Smart); the model can still switch in the chat details. Squiggle Small (`SQ`, LFM2.5-350M fine-tuned on the
 harness format, lm-experiments experiments/squiggle-ft, kealjones/squiggle-small, Q4_0 GGUF 219 MB) is an experimental option.
 The models are LFM3 (two builds), Squiggle Small (`SQ`), Tiny Gemma 4 (`TG4A`) and the cloud model; there's no lab
 mode (`engine.listedModels`; a device that already picked one keeps it).
@@ -258,7 +279,7 @@ never turns thinking on for it. Native-tool models (`native: true`: wllama with 
 template, or WebLLM with a `toolFormat`) get gated tools (`agent.js gated()`, docs/harness.md "Tool names up front"):
 a few declared up front, the rest by name until `tool_info(names)` or `find` asks. Small models always get the short
 small-model prompt (`LITE_SYSTEM_NATIVE`, or `LITE_SYSTEM_BASH` on the bash surface; Squiggle Small its fenced v2
-text) and a thinking budget (400 reasoning tokens, `engine.generationFor`). The removed models (Gemma 4 E2B/E4B,
+text) and a thinking budget (400 reasoning tokens, `engine.generationFor`). At the budget a native model's thinking is kept and closed with a decision in its own words (`ENOUGH_THINKING`, passed as `think_prefill` to runtimes whose `info.closesThinking`: WebLLM raw formats with `thinkOpen`/`thinkClose`, i.e. LFM3); runtimes that can't continue a turn still re-ask with thinking off. Before 2026-11-11 LFM3 always re-asked cold and re-argued its thinking in the reply. The small-model prompts also say to stop after three options or attempts. The removed models (Gemma 4 E2B/E4B,
 Gemma 3 270M, Qwen3/Qwen3.5, Llama 3.2, LFM2.5 1.2B, LFM3's test builds) and what was learned from them are in
 docs/lab.md and docs/measurements-*.md. `node tests/e2e/wllama-bench.mjs [--model SQ]` loads a
 real model in headless Chromium: one thread vs all cores vs WebGPU.
@@ -274,7 +295,7 @@ small-model harness apply) and add `backend: 'webllm'` + `mlc`. `createShim` giv
 slice of wllama's API they use; WebLLM has no jinja, so each native model names a tool format (`toolFormat`, a module in
 `toolformats/`). The Qwen formats render Qwen's tool block into the system
 prompt (`toolFormat` 'qwen3' JSON or 'qwen35' XML), sends results as `<tool_response>` user turns and parses
-`<tool_call>` back into `delta.tool_calls`. It can't continue an assistant turn, so a prefilled loop retry starts fresh. Gemma 4 (`toolFormat: 'gemma4'`, tiny Gemma's own MLC build) is different: a tool call, its results and the reply share one model turn, so the shim renders the whole prompt itself (`gemma4Prompt`, a port of Gemma 4's template pinned by `tests/fixtures/gemma4-template.json`) and sends it as a raw completion (`engine.completions.create`, stop at `<turn|>` / `<|tool_response>`), parsing `<|channel>thought…<channel|>` and `<|tool_call>call:name{…}<tool_call|>` back out. Our own builds aren't in WebLLM's prebuilt list: a model's `mlcRecord` (model URL, `model_lib` .wasm, `model_manifest`) is registered (`registerModel`) and passed as `appConfig`.
+`<tool_call>` back into `delta.tool_calls`. It can't continue an assistant turn, so a prefilled loop retry starts fresh. Gemma 4 (`toolFormat: 'gemma4'`, tiny Gemma's own MLC build) is different: a tool call, its results and the reply share one model turn, so the shim renders the whole prompt itself (`gemma4Prompt`, a port of Gemma 4's template pinned by `tests/fixtures/gemma4-template.json`) and sends it as a raw completion (`engine.completions.create`, stop at `<turn|>` / `<|tool_response>`), parsing `<|channel>thought…<channel|>` and `<|tool_call>call:name{…}<tool_call|>` back out. A lost GPU device (iOS 27 Safari drops it with the tab still open: locking, switching apps, memory pressure) makes WebLLM's TVM runtime dispose itself, and every later call throws "Object has already been disposed"; the shim (`gpuGone`, `revive`) loads the model again from WebLLM's cache and retries the reply if none of it was shown yet, otherwise says so and the next message works; the error names Safari's reason (`gpuLossDetail`). The loss is caught before the next message too: the watcher keeps one record per device and tells the shim when *its* device goes (`deviceWatch.onLost`), and it reloads as soon as the page shows (`whenVisible`); every send waits for that (`ready`). Right after Safari's GPU process dies, `requestAdapter` can come back empty ("Unable to find a compatible GPU", `noAdapter`), so the reload keeps asking for ~11 s (`REVIVE_WAITS`); if it never gets one the engine stays marked stale and the next send tries again instead of hitting the unloaded engine ("Model not loaded", Keal's iPhone 2026-11-11). Why iOS 27 loses it at all: WebKit 325185 kills Safari's GPU process when one command buffer runs or waits more than ~3 s, and WebLLM queues a prompt's prefill pieces (256 tokens in our LFM3 builds, ~2.5 s each on an iPhone 16) without waiting (onnxruntime#33753 is the same crash). On phones (`pacedGpu`: WebKit, and Android since 2026-11-11, where nothing kills the long work and the whole phone's screen stalled behind it instead, Greg's phone in Chrome) `paceGpu` makes the pieces 128 tokens, syncs after each one and leaves a frame-long gap (`PACED_GAP_MS`) after each prompt piece so the system can draw, reaching into WebLLM's pipeline (`loadedModelIdToPipeline`, `prefillChunkSize`, `embedAndForward`, `sync`); confirmed on Keal's iPhone (iOS 27.2.1, 2026-11-11), where memcap still measures the same ~1.9 GB tab budget as on iOS 26. A cross-site iframe doesn't get around it (`app/iframecap.html`, Keal's iPhone, Safari 27.2, 2026-11-15): it runs in the page's process (its timers stall when the page blocks; Feature Flags has no site-isolation switch) and page + iframe died at the same 1.91 GB as the page alone. Our own builds aren't in WebLLM's prebuilt list: a model's `mlcRecord` (model URL, `model_lib` .wasm, `model_manifest`) is registered (`registerModel`) and passed as `appConfig`.
 q4f16 needs `shader-f16`, else the q4f32 build. WebLLM stores files in Cache Storage `webllm/{config,model,wasm}` (sw.js
 keeps them); "download" loads once and unloads. Measured on an iPhone with `app/memtest.html` (2026-11-02, ~2 GB tab
 budget shared by JS and GPU memory): Llama 3.2 1B ~30 tok/s and ~1.3 GB vs wllama CPU ~2.6 tok/s and ~0.6 GB; Qwen3 0.6B

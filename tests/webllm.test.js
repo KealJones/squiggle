@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseQwenCalls, toWebLLMMessages, toolSystem, splitRaw, createShim } from '../app/src/engine-webllm.js';
+import { parseQwenCalls, toWebLLMMessages, toolSystem, splitRaw, createShim, paceGpu, webkitGpu, pacedGpu, routeSelfCopies, selfCopies, reuseWanted } from '../app/src/engine-webllm.js';
 import { NativeConversation, Conversation } from '../app/src/engine-wllama.js';
 
 const TOOLS = [
@@ -91,6 +91,212 @@ test('Conversation (fenced format) over the shim passes plain text through and n
   assert.ok(fake.seen.unloaded);
 });
 
+// iOS 27 Safari takes the GPU device away with the tab still open; WebLLM's runtime then disposes itself and every
+// call throws "Object has already been disposed" (Keal's iPhone, 2026-11-11). The shim loads the model again.
+function disposedEngine({ afterChunks = 0, text = 'Hello' } = {}) {
+  const seen = { unloaded: false };
+  return {
+    seen,
+    chat: { completions: { async create() {
+      if (!afterChunks) throw new Error('Object has already been disposed');
+      return (async function* () { yield { choices: [{ delta: { content: text } }] }; throw new Error('Object has already been disposed'); })();
+    } } },
+    interruptGenerate() {},
+    async unload() { seen.unloaded = true; },
+  };
+}
+
+test('a lost GPU before the reply starts: the model is loaded again and the reply runs as if nothing happened', async () => {
+  const dead = disposedEngine();
+  const fresh = fakeEngine('Hi there!');
+  let made = 0;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, { engine: dead, makeEngine: async () => { made += 1; return fresh; } });
+  const conv = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 64 } });
+  let content = '';
+  for await (const x of conv.sendMessageStreaming('hi')) if (x.content) content += x.content;
+  assert.equal(content, 'Hi there!');
+  assert.equal(made, 1);
+  assert.equal(w.reloads, 1);
+  assert.ok(dead.seen.unloaded, 'the dead engine is let go');
+  assert.equal(fresh.seen.requests.length, 1, 'the retry sends the same request to the new engine');
+});
+
+test('a lost GPU partway through a reply: no repeated text, a plain error, and the next message works', async () => {
+  const dead = disposedEngine({ afterChunks: 1, text: 'Hel' });
+  const fresh = fakeEngine('Second try.');
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, { engine: dead, makeEngine: async () => fresh });
+  const conv = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 64 } });
+  let content = '', err = null;
+  try { for await (const x of conv.sendMessageStreaming('hi')) if (x.content) content += x.content; } catch (e) { err = e; }
+  assert.equal(content, 'Hel');
+  assert.match(String(err && err.message), /loaded again: send the message again/);
+  const conv2 = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 64 } });
+  let again = '';
+  for await (const x of conv2.sendMessageStreaming('hi')) if (x.content) again += x.content;
+  assert.equal(again, 'Second try.');
+});
+
+test('a GPU lost again right after the reload: one retry only, and the error says so', async () => {
+  let made = 0;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, { engine: disposedEngine(), makeEngine: async () => { made += 1; return disposedEngine(); } });
+  const conv = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 64 } });
+  await assert.rejects(async () => { for await (const x of conv.sendMessageStreaming('hi')) void x; }, /dropped the model again right after it was reloaded/);
+  assert.equal(made, 1);
+});
+
+// A stand-in for the device watcher: which device is in use, and a way to lose it.
+function fakeWatch() {
+  let n = 0, cur = { id: n };
+  const fns = new Set();
+  return {
+    current: () => cur,
+    onLost(fn) { fns.add(fn); return () => fns.delete(fn); },
+    newDevice() { cur = { id: ++n }; },
+    lose(notes = cur, reason = 'destroyed') { notes.lost = { reason }; for (const fn of fns) fn(notes); },
+  };
+}
+const NO_GPU = 'Unable to find a compatible GPU. This issue might be because your computer doesn\'t have a GPU';
+const tick = (ms) => new Promise((r) => setTimeout(r, ms));
+async function reply(w) {
+  const conv = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 64 } });
+  let content = '';
+  for await (const x of conv.sendMessageStreaming('hi')) if (x.content) content += x.content;
+  return content;
+}
+
+test('a GPU lost between messages is noticed before the next send: the dead engine is never asked', async () => {
+  const watch = fakeWatch();
+  const dead = disposedEngine();
+  const fresh = fakeEngine('Back again.');
+  let made = 0;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, { engine: dead, watch, waits: [0], makeEngine: async () => { made += 1; watch.newDevice(); return fresh; } });
+  watch.lose();
+  await tick(400);                      // the page is showing, so it reloads in the background
+  assert.equal(made, 1, 'reloaded before anything was sent');
+  assert.equal(await reply(w), 'Back again.');
+  assert.equal(made, 1);
+  assert.ok(dead.seen.unloaded);
+});
+
+test('a device let go on purpose (an old engine\'s, or after a reload) does not trigger a reload', async () => {
+  const watch = fakeWatch();
+  let made = 0;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, { engine: fakeEngine('Fine.'), watch, waits: [0], makeEngine: async () => { made += 1; return fakeEngine('x'); } });
+  watch.newDevice();                    // some other engine (a download) got its own device
+  watch.lose(watch.current());
+  watch.lose({ id: 'elsewhere' });
+  await tick(400);
+  assert.equal(made, 0);
+  assert.equal(await reply(w), 'Fine.');
+});
+
+test('no GPU for a while after the loss ("Unable to find a compatible GPU"): it keeps asking, then the reply runs', async () => {
+  const watch = fakeWatch();
+  let tries = 0;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, {
+    engine: disposedEngine(), watch, waits: [0, 1, 1, 1],
+    makeEngine: async () => { tries += 1; if (tries < 3) throw new Error(NO_GPU); watch.newDevice(); return fakeEngine('Made it.'); },
+  });
+  assert.equal(await reply(w), 'Made it.');
+  assert.equal(tries, 3);
+});
+
+test('no GPU at all after the loss: a plain error, and the next message tries again instead of "Model not loaded"', async () => {
+  const watch = fakeWatch();
+  let gpu = false;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, {
+    engine: disposedEngine(), watch, waits: [0, 1],
+    makeEngine: async () => { if (!gpu) throw new Error(NO_GPU); watch.newDevice(); return fakeEngine('Second time lucky.'); },
+  });
+  await assert.rejects(() => reply(w), /The GPU went away.*hasn't given it back yet/);
+  gpu = true;
+  assert.equal(await reply(w), 'Second time lucky.');
+});
+
+test('a load that fails for another reason is not retried and says what it was', async () => {
+  const watch = fakeWatch();
+  let tries = 0;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, {
+    engine: disposedEngine(), watch, waits: [0, 1, 1],
+    makeEngine: async () => { tries += 1; throw new Error('QuotaExceededError'); },
+  });
+  await assert.rejects(() => reply(w), /QuotaExceededError/);
+  assert.equal(tries, 1);
+});
+
+test('think_prefill: LFM3 carries on from thinking written into its turn; the reply after it is plain text', async () => {
+  let prompt = '';
+  const engine = { async resetChat() {}, interruptGenerate() {}, async unload() {}, completions: { async create(o) {
+    prompt = o.prompt;
+    return (async function* () { for (const t of ['Here is one way.', ' What maths?']) yield { choices: [{ text: t }] }; })();
+  } } };
+  const w = await createShim('LFM3-1.7B-QAD-q4f16_1-MLC', 4096, () => {}, { format: 'lfm3', engine, pace: false, watch: fakeWatch() });
+  assert.equal(w.info.closesThinking, true);
+  const chunks = await w.createChatCompletion({ messages: [{ role: 'user', content: 'crazy maths?' }], chat_template_kwargs: { enable_thinking: true }, think_prefill: 'Options: 5!, 2^10.\n\nEnough.\n', stream: true });
+  let text = '', thinking = '';
+  for await (const c of chunks) { const d = c.choices[0].delta; text += d.content || ''; thinking += d.reasoning_content || ''; }
+  assert.ok(prompt.endsWith('<|im_start|>assistant\n<think>Options: 5!, 2^10.\n\nEnough.\n</think>'), prompt.slice(-120));
+  assert.equal(thinking, '');
+  assert.equal(text, 'Here is one way. What maths?');
+  const off = await w.createChatCompletion({ messages: [{ role: 'user', content: 'x' }], chat_template_kwargs: { enable_thinking: false }, think_prefill: 'ignored', stream: true });
+  for await (const c of off) void c;
+  assert.ok(prompt.endsWith('<think></think>'), 'thinking off: nothing written into it');
+});
+
+test('paceGpu: smaller prompt pieces, and each waits for the GPU before the next is queued (iOS 27 Safari)', async () => {
+  const order = [];
+  const pipe = {
+    prefillChunkSize: 256,
+    async embedAndForward(chunk) { order.push(`forward ${chunk.length}`); return 'logits'; },
+    async sync() { order.push('sync'); },
+  };
+  const engine = { loadedModelIdToPipeline: new Map([['m', pipe]]) };
+  assert.equal(paceGpu(engine), 1);
+  assert.equal(pipe.prefillChunkSize, 128);
+  assert.equal(await pipe.embedAndForward([1, 2, 3]), 'logits');
+  await pipe.embedAndForward([4]);
+  assert.deepEqual(order, ['forward 3', 'sync', 'forward 1', 'sync']);
+  assert.equal(paceGpu(engine), 0, 'never wrapped twice');
+  const small = { prefillChunkSize: 64, async embedAndForward() {}, async sync() {} };
+  paceGpu({ loadedModelIdToPipeline: new Map([['s', small]]) });
+  assert.equal(small.prefillChunkSize, 64, 'a smaller chunk stays');
+  assert.equal(paceGpu({}), 0, 'an engine without those internals is left alone');
+});
+
+test('paceGpu: a frame-long gap after each prompt piece (Android), none after a generated token', async () => {
+  const pipe = { prefillChunkSize: 256, async embedAndForward() { return 'logits'; }, async sync() {} };
+  paceGpu({ loadedModelIdToPipeline: new Map([['m', pipe]]) }, 128, 40);
+  let t = performance.now();
+  await pipe.embedAndForward([[1, 2, 3]], 3);
+  assert.ok(performance.now() - t >= 35, 'a prompt piece waits');
+  t = performance.now();
+  await pipe.embedAndForward([[7]], 1);
+  assert.ok(performance.now() - t < 30, 'a decoded token does not');
+});
+
+test('pacedGpu: phones (iPhone and Android), not computers other than Safari', () => {
+  assert.ok(pacedGpu('Mozilla/5.0 (Linux; Android 17; Pixel 10 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36'));
+  assert.ok(pacedGpu('Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Mobile/15E148 Safari/604.1'));
+  assert.ok(!pacedGpu('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'));
+});
+
+test('webkitGpu: every iPhone browser and Mac Safari, not Chrome or Firefox on a computer', () => {
+  assert.ok(webkitGpu('Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Mobile/15E148 Safari/604.1'));
+  assert.ok(webkitGpu('Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/140.0 Mobile/15E148 Safari/604.1'));
+  assert.ok(webkitGpu('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/27.2 Safari/605.1.15'));
+  assert.ok(!webkitGpu('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'));
+  assert.ok(!webkitGpu('Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:150.0) Gecko/20100101 Firefox/150.0'));
+});
+
+test('other errors are not mistaken for a lost GPU', async () => {
+  const broken = { chat: { completions: { async create() { throw new Error('Context window exceeded'); } } }, interruptGenerate() {}, async unload() {} };
+  let made = 0;
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, { engine: broken, makeEngine: async () => { made += 1; return broken; } });
+  const conv = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 64 } });
+  await assert.rejects(async () => { for await (const x of conv.sendMessageStreaming('hi')) void x; }, /Context window exceeded/);
+  assert.equal(made, 0);
+});
+
 // ── Gemma 4 (tiny Gemma 4 on WebLLM) ─────────────────────────────────────
 import { gemma4Prompt, parseGemmaCalls, splitGemma, registerModel } from '../app/src/engine-webllm.js';
 import { readFileSync } from 'node:fs';
@@ -155,4 +361,86 @@ test('NativeConversation over the WebLLM shim with Gemma 4: one rendered prompt,
   const f = got.calls[0].function || got.calls[0];
   assert.equal(f.name, 'web_search');
   assert.deepEqual(typeof f.arguments === 'string' ? JSON.parse(f.arguments) : f.arguments, { query: 'patrick stewart' });
+});
+
+test('a copy from a GPU buffer to itself goes through a scratch buffer; every other copy is left alone', () => {
+  const log = [];
+  class Encoder { copyBufferToBuffer(...a) { log.push(a.map(x => (x && x.name) || x)); } }
+  let made = 0;
+  const device = {
+    createCommandEncoder: () => new Encoder(),
+    createBuffer: (d) => { made += 1; return { name: 'scratch' + made, size: d.size, usage: d.usage }; },
+  };
+  assert.equal(routeSelfCopies(device, Encoder), true);
+  const a = { name: 'a' }, b = { name: 'b' };
+  const enc = device.createCommandEncoder();
+  enc.copyBufferToBuffer(a, 0, b, 16, 64);
+  assert.deepEqual(log, [['a', 0, 'b', 16, 64]], 'two buffers: as asked');
+  log.length = 0;
+  const before = selfCopies.routed;
+  enc.copyBufferToBuffer(a, 0, a, 4096, 300000);
+  assert.deepEqual(log, [['a', 0, 'scratch1', 0, 300000], ['scratch1', 0, 'a', 4096, 300000]], 'one buffer: out, then back in');
+  assert.equal(selfCopies.routed, before + 1);
+  enc.copyBufferToBuffer(a, 8, a, 64, 16);
+  assert.equal(made, 1, 'the scratch buffer is kept for the next one');
+  enc.copyBufferToBuffer(a, 0, a, 1 << 20, 400000);
+  assert.equal(made, 2, 'and replaced by a bigger one when needed');
+  // An encoder from a device that isn't watched, and the three-argument form, pass straight through.
+  log.length = 0;
+  new Encoder().copyBufferToBuffer(a, 0, a, 64, 16);
+  enc.copyBufferToBuffer(a, a, 16);
+  assert.deepEqual(log, [['a', 0, 'a', 64, 16], ['a', 'a', 16]]);
+  // A second device shares the patched prototype and gets its own scratch.
+  const other = { createCommandEncoder: () => new Encoder(), createBuffer: (d) => ({ name: 'other', size: d.size }) };
+  assert.equal(routeSelfCopies(other, Encoder), true);
+  log.length = 0;
+  other.createCommandEncoder().copyBufferToBuffer(b, 0, b, 64, 16);
+  assert.deepEqual(log, [['b', 0, 'other', 0, 16], ['other', 0, 'b', 64, 16]]);
+  assert.equal(routeSelfCopies({}, Encoder), false);
+});
+
+test('prompt reuse is on unless this browser turned it off (?reuse=0 is remembered, ?reuse=1 forgets)', () => {
+  const kept = new Map();
+  const store = { getItem: (k) => (kept.has(k) ? kept.get(k) : null), setItem: (k, v) => kept.set(k, v), removeItem: (k) => kept.delete(k) };
+  assert.equal(reuseWanted('', store), true);
+  assert.equal(reuseWanted('?x=1&reuse=0', store), false);
+  assert.equal(reuseWanted('', store), false, 'remembered: a Home Screen app has no address bar');
+  assert.equal(reuseWanted('?reuse=1', store), true);
+  assert.equal(reuseWanted('', store), true);
+  kept.set('squiggle-reuse', '1');
+  assert.equal(reuseWanted('', store), true, 'a browser that opted in during the trial stays on');
+  assert.equal(reuseWanted(undefined, undefined), false, 'no page (tests, workers): off');
+});
+
+test('a GPU lost with prompt reuse on: the reload runs without it', async () => {
+  const pipe = () => {
+    const st = () => ({});
+    return {
+      tokenizer: { encode: (t) => Int32Array.from(t === '</think>' ? [2] : [1, 3]) },
+      prefillChunkSize: 64, contextWindowSize: 4096, slidingWindowSize: -1, maxHistorySize: 1, filledKVCacheLength: 0,
+      kvCache: { dispose() {} }, rnnState: { dispose() {} },
+      tvm: { scalar: (v) => v, makeShapeTuple: ([x]) => x, beginScope() {}, endScope() {}, detachFromCurrentScope: (x) => x, getGlobalFunc: () => () => {} },
+      vm: { getFunction: () => () => st() },
+      getActiveKVStates() { return [this.kvCache, this.rnnState]; },
+      fKVCacheRemoveSequence() {}, fKVCacheAddSequence() {},
+      resetKVCache() {}, async getInputData() { return [[[1]], 1, 0]; }, async embedAndForward() {},
+    };
+  };
+  const dead = disposedEngine(), fresh = fakeEngine('Hi!');
+  dead.loadedModelIdToPipeline = new Map([['m', pipe()]]);
+  fresh.loadedModelIdToPipeline = new Map([['m', pipe()]]);
+  const w = await createShim('LFM3-test', 4096, () => {}, { format: 'lfm3', engine: dead, makeEngine: async () => fresh, reuse: true, pace: false });
+  assert.ok(w.reuse, 'installed on the first engine');
+  assert.equal(w.info.reuse, true);
+  // LFM3 is a raw format: the dead engine's completions throw like its chat does.
+  dead.completions = { async create() { throw new Error('Object has already been disposed'); } };
+  fresh.completions = { async create() { return (async function* () { yield { choices: [{ text: 'Hi!' }] }; })(); } };
+  fresh.resetChat = async () => {};
+  let text = '';
+  for await (const c of await w.createChatCompletion({ messages: [{ role: 'user', content: 'hi' }], chat_template_kwargs: { enable_thinking: false }, stream: true })) text += (c.choices[0].delta.content || '');
+  assert.equal(text, 'Hi!');
+  assert.equal(w.reloads, 1);
+  assert.equal(w.reuse, null);
+  assert.equal(w.info.reuse, false);
+  assert.ok(!fresh.loadedModelIdToPipeline.get('m').squiggleReuse, 'not installed on the new engine');
 });

@@ -11,7 +11,7 @@ GITHUB_CLIENT_ID = "Iv23liefG00Kw89snajP"
 GITHUB_APP_SLUG = "squiggle-github"
 # Where the app is served (scheme + host, no path; comma-separated). With a
 # custom domain on your GitHub Pages site, that domain is the origin.
-ALLOWED_ORIGINS = "https://kealjones.com,https://kealjones.github.io"
+ALLOWED_ORIGINS = "https://kealjones.com,https://kealjones.github.io,https://phone-relay.kealjones.workers.dev"
 # Lets the agent's fetch_url tool read pages that block browser requests.
 ENABLE_FETCH = "true"
 # GitHub logins allowed to use the cloud model (comma-separated; empty = off).

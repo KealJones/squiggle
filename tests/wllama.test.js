@@ -381,6 +381,28 @@ test('NativeConversation: thinking past its budget is retried with thinking off,
   assert.equal(seen[0].messages.at(-1).content, 'results: none');
 });
 
+test('NativeConversation: a runtime that can close thinking keeps it at the budget and closes it with a decision', async () => {
+  const { NativeConversation, ENOUGH_THINKING } = await import('../app/src/engine-wllama.js');
+  const seen = [];
+  let call = 0;
+  const w = { info: { closesThinking: true }, async createChatCompletion(p) {
+    seen.push({ kw: p.chat_template_kwargs, prefill: p.think_prefill });
+    const deltas = call++ === 0
+      ? Array.from({ length: 20 }, (_, i) => ({ reasoning_content: `r${i} ` }))
+      : [{ content: 'Here is one way. What maths do you want?' }];
+    return (async function* () { for (const d of deltas) { if (p.abortSignal.aborted) return; yield { choices: [{ delta: d }] }; } })();
+  } };
+  const conv = new NativeConversation(w, { preface: { messages: [{ role: 'system', content: 'S' }], tools: TOOLS, extra_context: { enable_thinking: true } }, sessionConfig: { maxOutputTokens: 256, thinkBudget: 8 } });
+  const got = [];
+  for await (const x of conv.sendMessageStreaming('crazy maths?')) got.push(x);
+  assert.deepEqual(seen.map(x => x.kw), [{ enable_thinking: true }, { enable_thinking: true }], 'thinking stays on: the reply carries on from it');
+  assert.equal(seen[0].prefill, undefined);
+  assert.match(seen[1].prefill, /^r0 r1 .*r8\n\n/s, 'its own thinking, kept');
+  assert.ok(seen[1].prefill.endsWith(`${ENOUGH_THINKING}\n`));
+  assert.ok(got.filter(x => x.thinking).map(x => x.thinking).join('').includes(ENOUGH_THINKING), 'the line is shown with the thinking');
+  assert.equal(got.filter(x => x.content).map(x => x.content).join(''), 'Here is one way. What maths do you want?');
+});
+
 test('NativeConversation: passes the tools to llama.cpp, streams text, returns the parsed calls and keeps them in history', async () => {
   const { NativeConversation } = await import('../app/src/engine-wllama.js');
   const seen = [];
