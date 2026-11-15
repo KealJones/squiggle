@@ -438,10 +438,10 @@ issue.reopen = async (env, o) => {
 // ── repo, run, workflow, release, search, api, auth ────────────────────────
 
 const repo = {};
-// Like gh (pkg/cmd/repo/list): newest push first, 30 unless -L, gh's own header ("Showing N of M repositories in
-// @owner", as at a terminal) and rows of name, description, info and push time. It used to list only the GitHub
-// App's first page in id order (oldest first) cut at 30, so recent repos were missing and LFM3 told Keal he had no
-// "bubbles" repo (failures.md case 20).
+// Like gh (pkg/cmd/repo/list): the user's own repos, newest push first, 30 unless -L. At a terminal (env.tty, set by
+// tools/tty.js when stdout isn't piped or redirected) it prints gh's header and table; otherwise gh's tab-separated
+// rows. It used to list only the GitHub App's first page in id order (oldest first) cut at 30, so recent repos
+// were missing and LFM3 told Keal he had no "bubbles" repo (failures.md case 20).
 const REPO_LIST_FLAGS = new Set(['_', 'paths', 'multi', 'L', 'limit', 'json', 'q', 'jq', 'visibility', 'fork', 'source', 'archived', 'no-archived', 'l', 'language', 'topic']);
 const repoInfo = (x) => [x.visibility, x.fork && 'fork', x.archived && 'archived'].filter(Boolean).join(', ');
 repo.list = async (env, o) => {
@@ -454,17 +454,43 @@ repo.list = async (env, o) => {
   rows = rows.filter(x => x.owner.login.toLowerCase() === owner.toLowerCase());
   const lang = o.l || o.language;
   const filters = [o.visibility && (x => x.visibility === o.visibility), o.fork && (x => x.fork), o.source && (x => !x.fork),
-    o.archived && (x => x.archived), o['no-archived'] && (x => !x.archived), lang && (x => String(x.language || '').toLowerCase() === String(lang).toLowerCase()),
-    o.topic && (x => (x.topics || []).includes(o.topic))].filter(Boolean);
+    lang && (x => String(x.language || '').toLowerCase() === String(lang).toLowerCase()), o.topic && (x => (x.topics || []).includes(o.topic))].filter(Boolean);
+  const hasFilters = filters.length > 0;   // gh doesn't count --archived/--no-archived as filters in the header
+  if (o.archived) filters.push(x => x.archived);
+  if (o['no-archived']) filters.push(x => !x.archived);
   for (const f of filters) rows = rows.filter(f);
   const total = rows.length;
   rows = rows.slice(0, limitOf(o));
   const j = await jsonOut(env, o, rows, REPO_FIELDS);
   if (j) return j;
-  const title = !total ? (filters.length ? 'No results match your search' : `There are no repositories in @${owner}`)
-    : `Showing ${rows.length} of ${total} repositories in @${owner}${filters.length ? ' that match your search' : ''}`;
-  return ok(`\n${title}\n\n` + rows.map(x => [x.full_name, String(x.description || '').replace(/\s+/g, ' ').trim(), repoInfo(x), x.pushed_at || x.created_at || ''].join('\t')).join('\n'));
+  const cells = rows.map(x => [x.full_name, String(x.description || '').replace(/\s+/g, ' ').trim(), repoInfo(x), x.pushed_at || x.created_at || '']);
+  if (!env.tty) return ok(cells.map(c => c.join('\t')).join('\n'));
+  const title = !total ? (hasFilters ? 'No results match your search' : `There are no repositories in @${owner}`)
+    : `Showing ${rows.length} of ${total} repositories in @${owner}${hasFilters ? ' that match your search' : ''}`;
+  return ok(`\n${title}\n\n` + (rows.length ? ttyTable(['NAME', 'DESCRIPTION', 'INFO', 'UPDATED'], cells.map(c => [...c.slice(0, 3), fuzzyAgo(env.now ? env.now() : new Date(), c[3])])) : ''));
 };
+
+// gh's terminal table (go-gh tableprinter): columns two spaces apart, each padded to its widest cell but the last.
+// gh also cuts long cells to the terminal's width; we don't (no tool cuts output).
+function ttyTable(header, rows) {
+  const all = [header, ...rows];
+  const w = header.map((_, i) => Math.max(...all.map(r => String(r[i]).length)));
+  return all.map(r => r.map((c, i) => i < r.length - 1 ? String(c).padEnd(w[i]) : String(c)).join('  ')).join('\n');
+}
+
+// gh's text.RelativeTimeAgo: "about 3 days ago", rounded down to the unit.
+function fuzzyAgo(now, iso) {
+  const s = (now - new Date(iso)) / 1000;
+  const fmt = (n, u) => `about ${n} ${u}${n === 1 ? '' : 's'} ago`;
+  if (!iso || Number.isNaN(s)) return '';
+  if (s < 60) return 'less than a minute ago';
+  if (s < 3600) return fmt(Math.floor(s / 60), 'minute');
+  if (s < 86400) return fmt(Math.floor(s / 3600), 'hour');
+  if (s < 30 * 86400) return fmt(Math.floor(s / 86400), 'day');
+  if (s < 365 * 86400) return fmt(Math.floor(s / 86400 / 30), 'month');
+  return fmt(Math.floor(s / 86400 / 365), 'year');
+}
+
 repo.view = async (env, o) => {
   const arg = o._[0] && !o._[0].includes('/') ? `${await env.login()}/${o._[0]}` : o._[0];   // like gh: a bare name is yours
   const r = repoOf(env, arg ? { ...o, R: arg } : o);
