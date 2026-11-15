@@ -766,8 +766,7 @@ cmds.log = async (c, env, argv) => {
     list = kept;
   }
   if (o.skip) list = list.slice(+o.skip);
-  const capped = !Number.isFinite(limit) && list.length > 50;
-  list = list.slice(0, Number.isFinite(limit) ? limit : 50);
+  if (Number.isFinite(limit)) list = list.slice(0, limit);   // like git: everything unless -n
   if (o.reverse) list.reverse();
   const fmt = fmtOf(o);
   const deco = fmt === 'oneline' && !o['no-decorate'] || o.decorate ? await decorations(c) : (fmt === 'medium' && !o['no-decorate'] ? await decorations(c) : null);
@@ -784,7 +783,7 @@ cmds.log = async (c, env, argv) => {
     out.push(text);
   }
   const sep = fmt === 'oneline' || fmt.startsWith('tformat:') || fmt.startsWith('format:') ? '\n' : '\n\n';
-  return { stdout: out.join(sep) + (out.length ? '\n' : ''), stderr: capped ? '(showing the newest 50 commits; use -n to see more)\n' : '', exitCode: 0 };
+  return { stdout: out.join(sep) + (out.length ? '\n' : ''), stderr: '', exitCode: 0 };
 };
 
 cmds.show = async (c, env, argv) => {

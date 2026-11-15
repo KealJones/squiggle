@@ -255,6 +255,11 @@ const sourceLabel = (s) => !s || /step|result/i.test(s) ? 'earlier step' : /tool
 // (2026-11-04, Qwen3 0.6B looking for a movie). With web_search enabled, find falls through to it
 // instead (agent.js), so this is only seen when it isn't.
 export const NOTHING = 'Nothing in your memory, recipes or past chats. For facts, use web_search; to ask the user, use need.';
+// The same for models that don't have web_search or need: they were sent to tools they didn't have (LFM3 on bash,
+// failures.md case 20). NOTHING itself stays: it's Squiggle Small's training text.
+export const nothingFor = ({ bash = false, ask = 'need' } = {}) => bash
+  ? `Nothing in your memory, recipes or past chats. For anything else, use bash (search WORDS, gh, git, curl); to ask the user, use ${ask}.`
+  : NOTHING.replace('use need', `use ${ask}`);
 
 export function renderFind(result) {
   const r = result || {};
