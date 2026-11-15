@@ -113,6 +113,10 @@ docs/                   harness.md (the agent loop contract), failures.md (caseb
   file, web, git and maths tools. Commands that reach the network, GitHub or the sandbox go through `runTool` with the
   agent's context, so a push still needs the approval card and curl fetches any URL (the allowed-URL check stays on fetch_url for the two fine-tunes); the whole output is
   wrapped as untrusted; `.git` stays unreachable (`guard.resolveAgentPath`).
+- No tool cuts its output (Keal, 2026-11-15): bash, curl, read_file, grep, git log, run_js, wiki and the rest return
+  everything asked for. The prompts say the window is small; keeping output short (grep, head, tail, a line range,
+  `> /tmp/file`) is the model's job. Commands that mirror real ones (git, gh) keep the real tool's defaults
+  (`gh repo list` shows 30 unless -L), nothing tighter.
 - Demo mode (`storage.isLocal()`): the git and GitHub tools are left out of the model's list (agent.js
   `modelTools`), the cloud model isn't offered, the system prompt says so. Signing in later carries the local
   files into the chosen repo (`useStorage` snapshot/restore, merging sessions and .jsonl the repo has).

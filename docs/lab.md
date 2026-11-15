@@ -208,8 +208,8 @@ window. A shell is one tool every model has seen millions of times. `bash` (verc
 same workspace the other tools use (/home syncs through storage.js, /repos and /web through LightningFS), with
 git, gh, curl, search, wiki, node and bc as custom commands that call the existing tools, so approvals and URL
 rules hold. `man` lists them, `<command> --help` explains one. The prompt tells the model its window is small
-and to pipe, grep or save to a file; output that still won't fit is saved whole to /tmp/out-N.txt and the model
-gets the start and the path. Settings → Lab → "One bash tool (experimental)".
+and to pipe, grep or save to a file; output that still wouldn't fit was saved whole to /tmp/out-N.txt and the model
+got the start and the path (removed 2026-11-15: no tool cuts output; the model limits it itself). Settings → Lab → "One bash tool (experimental)".
 
 **What happened.** Tool definitions shrink from ~1,250–1,600 tokens to ~720–810. On LFM2.5 1.2B (10 tasks,
 tests/eval/tasks-tools.json, compact, native llama.cpp, 2026-11-10) bash passed 2 of 10 against 3 of 9 for the

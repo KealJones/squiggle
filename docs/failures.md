@@ -324,10 +324,11 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   answer named tools from another surface. The model's own part: three memory searches for a repo name, and no
   direct `gh repo clone bubbles` attempt.
 - **Good answer:** `gh repo clone bubbles` (a bare name is the user's), then "Cloned to /repos/bubbles."
-- **Fix:** gh repo list (ghcli.js) reads every page (`env.repos` = github.js `accessibleRepos`), sorts by
-  `pushed_at` newest first, prints gh's "Showing N of M repositories" line with a hint when cut, and fails on
-  unknown flags like gh; `gh repo view NAME` takes a bare name as the user's. `github_list_repos` reads every page
-  newest first too (100 shown, the rest counted). LITE_SYSTEM_BASH gets one line: git and gh are signed in as the
-  user, "my repo X" is theirs, `gh repo clone X` (left out in demo mode). find's empty answer names bash and
+- **Fix:** gh repo list (ghcli.js) works like the real one: every page (`env.repos` = github.js `accessibleRepos`),
+  the user's own repos, newest push first, 30 unless -L, gh's header ("Showing 30 of N repositories in @owner")
+  and rows of name, description, info and push time; gh's filters (--visibility, --fork, --source, --archived,
+  --language, --topic) and an error for unknown flags. `gh repo view NAME` takes a bare name as the user's.
+  `github_list_repos` reads every page newest first too. LITE_SYSTEM_BASH gets one line: git and gh are signed in
+  as the user, "my repo X" is theirs, `gh repo clone X` (left out in demo mode). find's empty answer names bash and
   `ask_user` on the bash surface (`nothingFor`; Squiggle Small keeps `NOTHING`, its training text).
 - **Caught by:** tests/failures.test.js case 20.

@@ -75,9 +75,10 @@ test('case 20 ("you don\'t have a bubbles repo"): gh repo list shows every repo 
   const repos = [...Array.from({ length: 40 }, (_, i) => mk(`old${i}`, `2016-01-${String(i % 28 + 1).padStart(2, '0')}T00:00:00Z`)), mk('squiggle-state', '2026-11-15T19:00:00Z', true), mk('bubbles', '2026-11-10T00:00:00Z', true)];
   const env = { repos: async () => repos, login: async () => 'KealJones', isStorage: (o, n) => n === 'squiggle-state', gh: async (p) => { if (p === '/repos/KealJones/bubbles') return repos.at(-1); throw Object.assign(new Error('Not Found'), { status: 404 }); } };
   const list = await runGh(['repo', 'list'], env);
-  assert.match(list.stdout, /^Showing 30 of 41 repositories \(newest push first; -L 100 for more, or gh repo view NAME\)\n\nKealJones\/bubbles\tbubbles repo\tprivate\n/);
+  assert.match(list.stdout, /^\nShowing 30 of 41 repositories in @KealJones\n\nKealJones\/bubbles\tbubbles repo\tprivate\t2026-11-10T00:00:00Z\n/, 'gh\'s header, newest push first');
   assert.doesNotMatch(list.stdout, /squiggle-state/, 'the storage repo stays hidden');
   assert.equal((await runGh(['repo', 'list', '-L', '100'], env)).stdout.trim().split('\n').length, 2 + 41);
+  assert.match((await runGh(['repo', 'list', '--visibility', 'private'], env)).stdout, /^\nShowing 1 of 1 repositories in @KealJones that match your search\n/);
   const all = await runGh(['repo', 'list', '--all'], env);
   assert.equal(all.exitCode, 1, 'a made-up flag fails like gh instead of printing the same list');
   assert.match(all.stderr, /^unknown flag: --all/);

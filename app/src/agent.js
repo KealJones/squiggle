@@ -42,8 +42,8 @@ export const settings = {
 };
 
 const MAX_OUTPUT = 1536;
-// A tool call is refused only below this much free room (characters, after the reply's reserve): every tool sizes
-// its output to the room it's given, and bash saves what doesn't fit to /tmp/out-N.txt. It was 2,500, which
+// A tool call is refused only below this much free room (characters, after the reply's reserve). Tools never cut
+// their output (2026-11-15): keeping it small with grep, head or a file is the model's job. It was 2,500, which
 // refused LFM3 1.7B's `head -n 80 README.md` with ~1,600 tokens free (2026-11-10).
 const FULL_ROOM = 1200;
 const CHAT_PLAN_NUDGE = 6;  // tool calls without a plan before the model is reminded it can make one
