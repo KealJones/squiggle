@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseQwenCalls, toWebLLMMessages, toolSystem, splitRaw, createShim, paceGpu, webkitGpu, pacedGpu } from '../app/src/engine-webllm.js';
+import { parseQwenCalls, toWebLLMMessages, toolSystem, splitRaw, createShim, paceGpu, webkitGpu, pacedGpu, routeSelfCopies, selfCopies, reuseWanted } from '../app/src/engine-webllm.js';
 import { NativeConversation, Conversation } from '../app/src/engine-wllama.js';
 
 const TOOLS = [
@@ -405,4 +405,86 @@ test('NativeConversation over the WebLLM shim with Gemma 4: one rendered prompt,
   const f = got.calls[0].function || got.calls[0];
   assert.equal(f.name, 'web_search');
   assert.deepEqual(typeof f.arguments === 'string' ? JSON.parse(f.arguments) : f.arguments, { query: 'patrick stewart' });
+});
+
+test('a copy from a GPU buffer to itself goes through a scratch buffer; every other copy is left alone', () => {
+  const log = [];
+  class Encoder { copyBufferToBuffer(...a) { log.push(a.map(x => (x && x.name) || x)); } }
+  let made = 0;
+  const device = {
+    createCommandEncoder: () => new Encoder(),
+    createBuffer: (d) => { made += 1; return { name: 'scratch' + made, size: d.size, usage: d.usage }; },
+  };
+  assert.equal(routeSelfCopies(device, Encoder), true);
+  const a = { name: 'a' }, b = { name: 'b' };
+  const enc = device.createCommandEncoder();
+  enc.copyBufferToBuffer(a, 0, b, 16, 64);
+  assert.deepEqual(log, [['a', 0, 'b', 16, 64]], 'two buffers: as asked');
+  log.length = 0;
+  const before = selfCopies.routed;
+  enc.copyBufferToBuffer(a, 0, a, 4096, 300000);
+  assert.deepEqual(log, [['a', 0, 'scratch1', 0, 300000], ['scratch1', 0, 'a', 4096, 300000]], 'one buffer: out, then back in');
+  assert.equal(selfCopies.routed, before + 1);
+  enc.copyBufferToBuffer(a, 8, a, 64, 16);
+  assert.equal(made, 1, 'the scratch buffer is kept for the next one');
+  enc.copyBufferToBuffer(a, 0, a, 1 << 20, 400000);
+  assert.equal(made, 2, 'and replaced by a bigger one when needed');
+  // An encoder from a device that isn't watched, and the three-argument form, pass straight through.
+  log.length = 0;
+  new Encoder().copyBufferToBuffer(a, 0, a, 64, 16);
+  enc.copyBufferToBuffer(a, a, 16);
+  assert.deepEqual(log, [['a', 0, 'a', 64, 16], ['a', 'a', 16]]);
+  // A second device shares the patched prototype and gets its own scratch.
+  const other = { createCommandEncoder: () => new Encoder(), createBuffer: (d) => ({ name: 'other', size: d.size }) };
+  assert.equal(routeSelfCopies(other, Encoder), true);
+  log.length = 0;
+  other.createCommandEncoder().copyBufferToBuffer(b, 0, b, 64, 16);
+  assert.deepEqual(log, [['b', 0, 'other', 0, 16], ['other', 0, 'b', 64, 16]]);
+  assert.equal(routeSelfCopies({}, Encoder), false);
+});
+
+test('prompt reuse is on unless this browser turned it off (?reuse=0 is remembered, ?reuse=1 forgets)', () => {
+  const kept = new Map();
+  const store = { getItem: (k) => (kept.has(k) ? kept.get(k) : null), setItem: (k, v) => kept.set(k, v), removeItem: (k) => kept.delete(k) };
+  assert.equal(reuseWanted('', store), true);
+  assert.equal(reuseWanted('?x=1&reuse=0', store), false);
+  assert.equal(reuseWanted('', store), false, 'remembered: a Home Screen app has no address bar');
+  assert.equal(reuseWanted('?reuse=1', store), true);
+  assert.equal(reuseWanted('', store), true);
+  kept.set('squiggle-reuse', '1');
+  assert.equal(reuseWanted('', store), true, 'a browser that opted in during the trial stays on');
+  assert.equal(reuseWanted(undefined, undefined), false, 'no page (tests, workers): off');
+});
+
+test('a GPU lost with prompt reuse on: the reload runs without it', async () => {
+  const pipe = () => {
+    const st = () => ({});
+    return {
+      tokenizer: { encode: (t) => Int32Array.from(t === '</think>' ? [2] : [1, 3]) },
+      prefillChunkSize: 64, contextWindowSize: 4096, slidingWindowSize: -1, maxHistorySize: 1, filledKVCacheLength: 0,
+      kvCache: { dispose() {} }, rnnState: { dispose() {} },
+      tvm: { scalar: (v) => v, makeShapeTuple: ([x]) => x, beginScope() {}, endScope() {}, detachFromCurrentScope: (x) => x, getGlobalFunc: () => () => {} },
+      vm: { getFunction: () => () => st() },
+      getActiveKVStates() { return [this.kvCache, this.rnnState]; },
+      fKVCacheRemoveSequence() {}, fKVCacheAddSequence() {},
+      resetKVCache() {}, async getInputData() { return [[[1]], 1, 0]; }, async embedAndForward() {},
+    };
+  };
+  const dead = disposedEngine(), fresh = fakeEngine('Hi!');
+  dead.loadedModelIdToPipeline = new Map([['m', pipe()]]);
+  fresh.loadedModelIdToPipeline = new Map([['m', pipe()]]);
+  const w = await createShim('LFM3-test', 4096, () => {}, { format: 'lfm3', engine: dead, makeEngine: async () => fresh, reuse: true, pace: false });
+  assert.ok(w.reuse, 'installed on the first engine');
+  assert.equal(w.info.reuse, true);
+  // LFM3 is a raw format: the dead engine's completions throw like its chat does.
+  dead.completions = { async create() { throw new Error('Object has already been disposed'); } };
+  fresh.completions = { async create() { return (async function* () { yield { choices: [{ text: 'Hi!' }] }; })(); } };
+  fresh.resetChat = async () => {};
+  let text = '';
+  for await (const c of await w.createChatCompletion({ messages: [{ role: 'user', content: 'hi' }], chat_template_kwargs: { enable_thinking: false }, stream: true })) text += (c.choices[0].delta.content || '');
+  assert.equal(text, 'Hi!');
+  assert.equal(w.reloads, 1);
+  assert.equal(w.reuse, null);
+  assert.equal(w.info.reuse, false);
+  assert.ok(!fresh.loadedModelIdToPipeline.get('m').squiggleReuse, 'not installed on the new engine');
 });

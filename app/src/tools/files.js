@@ -5,7 +5,7 @@ import { rmrf } from '../git.js';
 import { wrapUntrusted } from '../untrusted.js';
 import { truncate } from '../util.js';
 import { defineTool, params, str, num, bool } from './registry.js';
-import { MAX_READ, realPath, isAttachmentPath, isWebPath, readAgentFile, writeAgentFile, listAgentDir, numberedLines } from './workspace.js';
+import { realPath, isAttachmentPath, isWebPath, readAgentFile, writeAgentFile, listAgentDir, numberedLines } from './workspace.js';
 
 export const listFiles = defineTool({
   name: 'list_files',
@@ -14,7 +14,7 @@ export const listFiles = defineTool({
   parameters: params({ path: str('Folder, e.g. /home or /repos/myrepo/src') }),
   async run({ path = '/' }) {
     const items = await listAgentDir(path);
-    return { model: { path: agentPath(resolveAgentPath(path)), entries: items.slice(0, 400), more: Math.max(0, items.length - 400) }, label: `listed ${path}` };
+    return { model: { path: agentPath(resolveAgentPath(path)), entries: items }, label: `listed ${path}` };
   },
 });
 
@@ -22,14 +22,14 @@ export const readFile = defineTool({
   name: 'read_file',
   group: 'files',
   description: 'Read lines of a text file from the workspace, with line numbers. Long files come in parts: use grep to find the lines you need, then read just that range.',
-  parameters: params({ path: str('File path, e.g. /home/notes.md or /repos/app/README.md'), start_line: num('First line to read (default 1)'), end_line: num('Last line to read (default start_line + 150)') }, ['path']),
+  parameters: params({ path: str('File path, e.g. /home/notes.md or /repos/app/README.md'), start_line: num('First line to read (default 1)'), end_line: num('Last line to read (default: the last line)') }, ['path']),
   async run({ path, start_line = 1, end_line }, ctx = {}) {
     const text = await readAgentFile(path);
     if (text == null) return { model: { error: `No such file: ${path}` }, label: `read ${path} (missing)` };
     const lines = text.split('\n');
     const start = Math.max(1, Math.floor(start_line) || 1);
-    // Never more than the room left in the model's context (ctx.room, in chars).
-    const { out, end } = numberedLines(lines, start, Math.min(lines.length, Math.floor(end_line) || start + 149), Math.min(MAX_READ, ctx.room || MAX_READ));
+    // The lines asked for, all of them (no tool cuts output, 2026-11-15): the model picks a range for big files.
+    const { out, end } = numberedLines(lines, start, Math.min(lines.length, Math.floor(end_line) || lines.length));
     const fromRepo = resolveAgentPath(path).area === 'repos';
     return {
       model: { path, total_lines: lines.length, start_line: start, end_line: end, content: fromRepo || isAttachmentPath(path) || isWebPath(path) ? wrapUntrusted('file ' + path, out) : out, ...(end < lines.length ? { more: `lines ${end + 1}-${lines.length} not shown; read them with start_line, or grep for what you need` } : {}) },
@@ -52,30 +52,26 @@ export const grep = defineTool({
     const base = agentPath(resolveAgentPath(path));
     const single = await readAgentFile(base);
     const files = single != null ? [''] : (await listAgentDir(base)).map(e => e.replace(/\s+\(\d+ B\)$/, '')).filter(f => !f.endsWith('/'));
-    const cap = Math.min(6000, ctx.room || 6000);
     const hits = [];
-    let size = 0, scanned = 0, more = false, seen = 0;
+    let scanned = 0, seen = 0;
     for (const f of files) {
       if (BINARY.test(f)) continue;
       const fp = f ? base.replace(/\/$/, '') + '/' + f : base;
       const text = f ? await readAgentFile(fp) : single;
-      if (text == null || text.length > 1e6) continue;
+      if (text == null) continue;
       scanned++;
       const lines = text.split('\n');
       for (let i = 0; i < lines.length; i++) {
         if (!re.test(lines[i])) continue;
         if (seen++ < skip) continue;
-        const hit = `${fp}:${i + 1}: ${lines[i].trim().slice(0, 160)}`;
-        if (size + hit.length > cap || hits.length >= 60) { more = true; break; }
-        hits.push(hit); size += hit.length + 1;
+        hits.push(`${fp}:${i + 1}: ${lines[i].trim()}`);
       }
-      if (more) break;
     }
     const fromRepo = resolveAgentPath(base).area === 'repos';
     const body = hits.join('\n') || '(no matches)';
     return {
-      model: { pattern, path: base, files_searched: scanned, matches: fromRepo || isWebPath(base) || hits.some(h => h.startsWith('/home/attachments/')) ? wrapUntrusted('grep ' + base, body) : body, ...(more ? { more: `more matches not shown; call again with skip: ${skip + hits.length}, or narrow the pattern or path` } : {}) },
-      label: `grep "${truncate(String(pattern), 40)}" in ${base} (${hits.length}${more ? '+' : ''})`,
+      model: { pattern, path: base, files_searched: scanned, matches: fromRepo || isWebPath(base) || hits.some(h => h.startsWith('/home/attachments/')) ? wrapUntrusted('grep ' + base, body) : body },
+      label: `grep "${truncate(String(pattern), 40)}" in ${base} (${hits.length})`,
     };
   },
 });
