@@ -6,7 +6,6 @@ import { pfs, exists, writeFile, walk } from '../git.js';
 import * as storage from '../storage.js';
 import { resolveAgentPath, agentPath } from '../guard.js';
 
-export const MAX_READ = 12000;
 export const REPOS = '/repos';
 
 // Where an agent path really lives.
@@ -63,24 +62,9 @@ export async function listAgentDir(p) {
 
 async function safeReaddir(dir) { try { return await pfs.readdir(dir); } catch { return []; } }
 
-// The ~600 characters of `text` around the best-matching query word.
-export function bestPart(text, query) {
-  const words = String(query).toLowerCase().split(/\W+/).filter(w => w.length > 2);
-  const low = text.toLowerCase();
-  let at = -1;
-  for (const w of words) { const i = low.indexOf(w); if (i >= 0 && (at < 0 || i < at)) at = i; }
-  const start = Math.max(0, at - 150);
-  return (start ? '…' : '') + text.slice(start, start + 600);
-}
-
-// Lines start..end of `text` with line numbers, never more than `cap` characters
-// (the room left in the model's context). Returns { out, end }.
-export function numberedLines(lines, start, end, cap) {
+// Lines start..end of `text` with line numbers, all of them. Returns { out, end }.
+export function numberedLines(lines, start, end) {
   let out = '';
-  for (let i = start; i <= end; i++) {
-    const line = `${i}: ${lines[i - 1]}\n`;
-    if (out.length + line.length > cap) { end = i - 1; break; }
-    out += line;
-  }
+  for (let i = start; i <= end; i++) out += `${i}: ${lines[i - 1]}\n`;
   return { out, end };
 }

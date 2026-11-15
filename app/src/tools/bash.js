@@ -20,10 +20,11 @@
 //   node -e CODE (the run_js sandbox)     job (long commands on GitHub Actions: tools/jobs.js)
 import { defineTool, params, str, runTool } from './registry.js';
 import { pfs, writeFile as gitWriteFile, rmrf, mkdirp, walk, git as isoGit, fs as gitFs, net as gitNet, author as gitAuthor, writtenIn, noteWritten, exists as gitExists } from '../git.js';
-import { gh as githubApi, getUser, jobLogs } from '../github.js';
+import { gh as githubApi, getUser, accessibleRepos, jobLogs } from '../github.js';
 import { runGit } from './gitcli.js';
 import { runGh } from './ghcli.js';
 import { runJob, JOB_HELP } from './jobs.js';
+import { ttyPlugin, TTY_VAR } from './tty.js';
 import * as storage from '../storage.js';
 import { resolveAgentPath, agentBranchName } from '../guard.js';
 import { REPOS, readAgentFile, listAgentDir } from './workspace.js';
@@ -339,7 +340,11 @@ export function commands(defineCommand, toolCtx, seen) {
     }
     const cfg = storage.storageConfig();
     return {
-      gh: githubApi, repo, branch, login: async () => (await getUser()).login, logs: jobLogs, sleep: (ms) => new Promise(r => setTimeout(r, ms)),
+      // tty.js: stdout reaches the terminal. Like gh (go-gh term.FromEnv): a number is the width, else 80.
+      tty: Boolean(ctx.env && ctx.env.get && ctx.env.get(TTY_VAR)),
+      ttyWidth: (n => (n > 0 ? n : 80))(parseInt(ctx.env && ctx.env.get ? ctx.env.get(TTY_VAR) : '', 10)),
+      gh: githubApi, repo, branch, login: async () => (await getUser()).login, repos: accessibleRepos,
+      logs: jobLogs, sleep: (ms) => new Promise(r => setTimeout(r, ms)),
       approve: toolCtx.approve, call: (n, a) => call(n, a), stdin: ctx.stdin || '', help: HELP.gh,
       exec: ctx.exec ? (cmd, opts = {}) => ctx.exec(cmd, { cwd: ctx.cwd, ...opts }) : null,
       git: genv.dir ? (args) => runGit(args, genv) : null,
@@ -361,7 +366,7 @@ export function commands(defineCommand, toolCtx, seen) {
     // own (404, no such host). The separate fetch_url tool keeps the check for Keal's two small models.
     const res = await call('fetch_url', { url }, { allowUrl: undefined });
     if (res.model && res.model.error) return asOutput(res);
-    const page = (res.observation && res.observation.text) || String(res.model.text || '').replace(STRIP, '');
+    const page = res.page != null ? res.page : String(res.model.text || '').replace(STRIP, '');
     return say(page.endsWith('\n') ? page : page + '\n');
   }));
 
@@ -523,30 +528,17 @@ export const bash = defineTool({
     const shell = new L.Bash({
       fs, cwd: ctx.bashCwd || '/home',
       customCommands: commands(L.defineCommand, ctx, seen),
-      executionLimits: { maxExecutionTimeMs: 60000, maxOutputSize: 200000 },
+      executionLimits: { maxExecutionTimeMs: 60000 },
     });
+    shell.registerTransformPlugin(ttyPlugin);
     let r;
     try { r = await shell.exec(script, { signal: ctx.signal }); } catch (e) { r = { stdout: '', stderr: String(e.message || e), exitCode: 1 }; }
-    const room = Math.max(1500, (ctx.room || 24000) - 400);
+    // The whole output, always (Keal, 2026-11-15): no tool cuts what the model asked for. The prompt tells it the
+    // window is small, so keeping output short (grep, head, tail, sed -n, > /tmp/file) is its job, not ours.
     const out = String(r.stdout || ''), errText = String(r.stderr || '');
-    const cut = (s, n) => (s.length > n ? s.slice(0, n) + `\n… (${s.length - n} more characters)` : s);
     const model = { exit_code: r.exitCode };
-    // Output too big for the window isn't thrown away: the whole of it goes to /tmp/out-N.txt (this chat's
-    // in-memory /tmp) and the model sees the start and where the rest is, to grep, tail or sed -n. The prompt
-    // asks it to pipe or save big output itself; this is the backstop, so one curl can't overflow a 4K window.
-    const limit = Math.floor(room * 0.85);
-    if (out.length > limit) {
-      const n = (ctx.session ? (ctx.session.__bashOut = (ctx.session.__bashOut || 0) + 1) : Date.now() % 100000);
-      const file = `/tmp/out-${n}.txt`;
-      let saved = true;
-      try { await tmp.writeFile(file, out); } catch { saved = false; }
-      const lines = out.replace(/\n$/, '').split('\n').length;
-      const head = out.slice(0, Math.floor(limit * 0.6));
-      model.stdout = wrapUntrusted('bash output', head + `\n… (${lines} lines, ${out.length} characters in all, too much for your window` +
-        (saved ? `; the whole output is in ${file}: grep it, or read it in pieces with sed -n or tail)` : '; run it again piped through grep, head or tail)'));
-      if (saved) model.saved_to = file;
-    } else if (out) model.stdout = wrapUntrusted('bash output', out);
-    if (errText) model.stderr = cut(errText, Math.floor(room * 0.15));
+    if (out) model.stdout = wrapUntrusted('bash output', out);
+    if (errText) model.stderr = errText;
     if (!out && !errText) model.stdout = '(no output)';
     return {
       model, ok: r.exitCode === 0,

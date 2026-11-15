@@ -304,3 +304,31 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 - **Caught by:** tests/failures.test.js case 19; tests/tasks.test.js "prompt dialects"; e2e "step mode through the
   UI" (ASKTEST: a plain-text question pauses the task, a thinking-only step restarts, every step and final user
   turn is the request).
+
+### 20. "You don't have a bubbles repo"
+
+- **Asked:** "Clone my repo bubbles down", then "Use the gh bash command", then "You can use gh to identify me and
+  list my repos", then "Just clone GitHub.com/Kealjones/bubbles".
+- **Model:** LFM3 1.7B (WLF3QAD on WebLLM), Compress, bash surface, 2026-11-15 (chat `s0mwi8efe8000d9sz5` in
+  squiggle-state; traces in `prompts/s0mwi8efe8000d9sz5/`).
+- **What it did:** called `find("bubbles repo")` and asked Keal for the URL and what "down" meant. Told to use gh,
+  it called `find("bubbles")` again. Told to list his repos, it ran `gh repo list`, got 30 repos from 2013–2019
+  with no bubbles, called `find` a third time, ran `gh repo list --all` (not a gh flag; it printed the same list),
+  concluded the repo didn't exist or was private, and ran out of its 4K window on `gh search repos bubbles`. It
+  never tried `gh repo clone bubbles`. Each empty `find` told it to "use web_search; to ask the user, use need",
+  two tools it didn't have.
+- **Why it's bad:** half of it was the harness lying. (1) `gh repo list` read only the GitHub App's first page, in
+  id order (oldest first), and cut it at 30, so every repo made in the last years was missing; real gh shows
+  newest push first. (2) `--all` was silently accepted. (3) Nothing in the small bash prompt said git and gh are
+  signed in as the user, so "my repo bubbles" read as an unknown name to look up in memory. (4) find's empty
+  answer named tools from another surface. The model's own part: three memory searches for a repo name, and no
+  direct `gh repo clone bubbles` attempt.
+- **Good answer:** `gh repo clone bubbles` (a bare name is the user's), then "Cloned to /repos/bubbles."
+- **Fix:** gh repo list (ghcli.js) works like the real one: every page (`env.repos` = github.js `accessibleRepos`),
+  the user's own repos, newest push first, 30 unless -L; at a terminal gh's header ("Showing 30 of N repositories
+  in @owner") and table, piped gh's tab-separated rows (tools/tty.js works out which from the parsed script); gh's filters (--visibility, --fork, --source, --archived,
+  --language, --topic) and an error for unknown flags. `gh repo view NAME` takes a bare name as the user's.
+  `github_list_repos` reads every page newest first too. LITE_SYSTEM_BASH gets one line: git and gh are signed in
+  as the user, "my repo X" is theirs, `gh repo clone X` (left out in demo mode). find's empty answer names bash and
+  `ask_user` on the bash surface (`nothingFor`; Squiggle Small keeps `NOTHING`, its training text).
+- **Caught by:** tests/failures.test.js case 20.

@@ -70,7 +70,7 @@ test('parseFacts: every real fact, ranked by the question; bookkeeping, ids and 
   const plain = parseFacts(COKE);
   assert.deepEqual(plain.map(f => f.prop), ['P17', 'P31', 'P61', 'P127', 'P571', 'P1543'], 'no question: lower property numbers first');
   const short = plain.find(f => f.prop === 'P1543');
-  assert.equal(short.values.length, 3); assert.equal(short.more, 1);
+  assert.equal(short.values.length, 4, 'every value: no tool cuts output'); assert.equal(short.more, undefined);
 });
 
 test('parseLinks: newest first, one row per item, all its links; a hub (too many links) is flagged', () => {
