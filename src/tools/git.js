@@ -98,18 +98,15 @@ async function changedPaths(dir, commits) {
 export const githubListRepos = defineTool({
   name: 'github_list_repos',
   group: 'git and GitHub',
-  description: 'List the GitHub repos the user has given Squiggle access to.',
+  description: 'List the GitHub repos the user has given Squiggle access to, newest push first.',
   parameters: params({}),
   async run() {
-    const d = await gh('/user/installations?per_page=100');
-    const repos = [];
-    for (const inst of d.installations || []) {
-      const r = await gh(`/user/installations/${inst.id}/repositories?per_page=100`);
-      for (const x of r.repositories || []) repos.push({ repo: x.full_name, private: x.private, default_branch: x.default_branch, description: x.description || '' });
-    }
+    // Every page, newest push first: the first page alone, in id order, left out every recent repo (failures.md case 20).
     const cfg = storage.storageConfig();
-    const shown = repos.filter(r => !cfg || r.repo !== `${cfg.owner}/${cfg.name}`);
-    return { model: { repos: shown.map(r => ({ ...r, description: wrapUntrusted('github', r.description) })) }, label: 'listed GitHub repos' };
+    const all = (await accessibleRepos()).filter(r => !cfg || r.full_name !== `${cfg.owner}/${cfg.name}`)
+      .sort((a, b) => String(b.pushed_at || '').localeCompare(String(a.pushed_at || '')));
+    const shown = all.slice(0, 100).map(x => ({ repo: x.full_name, private: x.private, default_branch: x.default_branch, description: wrapUntrusted('github', x.description || '') }));
+    return { model: { repos: shown, ...(all.length > shown.length ? { more: `${all.length - shown.length} older repos not shown` } : {}) }, label: 'listed GitHub repos' };
   },
 });
 

@@ -20,7 +20,7 @@
 //   node -e CODE (the run_js sandbox)
 import { defineTool, params, str, runTool } from './registry.js';
 import { pfs, writeFile as gitWriteFile, rmrf, mkdirp, walk, git as isoGit, fs as gitFs, net as gitNet, author as gitAuthor, writtenIn, noteWritten, exists as gitExists } from '../git.js';
-import { gh as githubApi, getUser } from '../github.js';
+import { gh as githubApi, getUser, accessibleRepos } from '../github.js';
 import { runGit } from './gitcli.js';
 import { runGh } from './ghcli.js';
 import * as storage from '../storage.js';
@@ -337,7 +337,7 @@ export function commands(defineCommand, toolCtx, seen) {
     }
     const cfg = storage.storageConfig();
     return runGh(argv, {
-      gh: githubApi, repo, branch, login: async () => (await getUser()).login,
+      gh: githubApi, repo, branch, login: async () => (await getUser()).login, repos: accessibleRepos,
       approve: toolCtx.approve, call: (n, a) => call(n, a), stdin: ctx.stdin || '', help: HELP.gh,
       exec: ctx.exec ? (cmd, opts = {}) => ctx.exec(cmd, { cwd: ctx.cwd, ...opts }) : null,
       git: genv.dir ? (args) => runGit(args, genv) : null,

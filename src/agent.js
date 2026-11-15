@@ -9,7 +9,7 @@ import * as memory from './memory.js';
 import * as storage from './storage.js';
 import * as recipes from './recipes.js';
 import * as tasks from './tasks.js';
-import { find as findAll, renderFind, PAST_CHAT, PUSHBACK, checkQuery, rerankWeb, urlLedger, rankTools } from './find.js';
+import { find as findAll, renderFind, nothingFor, NOTHING, PAST_CHAT, PUSHBACK, checkQuery, rerankWeb, urlLedger, rankTools } from './find.js';
 import * as prefetchLib from './prefetch.js';
 import { buildEntities, resolve as resolveRefs, renderRefs } from './refs.js';
 import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes, chunk, resultGist } from './context.js';
@@ -76,11 +76,15 @@ export const LITE_SYSTEM_NATIVE = [
   "Don't go round in circles: after three options or attempts, stop and use the best one; if you're still unsure, say so and ask the user.",
 ].join('\n');
 
-// The same for the bash surface (tools/bash.js): the lookups are commands in the shell.
+// The same for the bash surface (tools/bash.js): the lookups are commands in the shell. The GitHub line is there
+// because LFM3, told "clone my repo bubbles", searched memory three times and asked Keal for the URL: nothing said
+// git and gh are already signed in as him (failures.md case 20). Left out in demo mode (no account).
+const GITHUB_LINE = "git and gh are signed in as the user: \"my repo X\" is theirs, so gh repo clone X (it lands in /repos/X).";
 export const LITE_SYSTEM_BASH = [
   ...LITE_SYSTEM.split('\n').slice(0, 3),
   'Use bash for files, the web, GitHub and maths: search WORDS, curl URL | grep -i WORD, git, gh, bc; `man` lists',
   'the custom commands. find(query) searches recipes, memory and past chats; ask_user(question) asks the user something only they know and waits.',
+  GITHUB_LINE,
   'Your context window is small: never cat a whole file or curl a whole page. Pipe into grep, head, tail, sed -n or wc,',
   'or save it to a file (> /tmp/page.txt) and work on the file in small pieces.',
   'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
@@ -156,7 +160,7 @@ function toolNamesLine(phase, known = []) {
 function systemPrompt(threadId, session, phase = 'chat', known = []) {
   if (plain() || noPrompt()) return '';
   const names = toolNamesLine(phase, known);
-  if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : bashSurface() ? LITE_SYSTEM_BASH : LITE_SYSTEM_NATIVE}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
+  if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : bashSurface() ? (storage.isLocal() ? LITE_SYSTEM_BASH.replace(GITHUB_LINE + '\n', '') : LITE_SYSTEM_BASH) : LITE_SYSTEM_NATIVE}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
   const thread = threadId && session.threads[threadId];
   // Kept short on purpose: with every tool schema this prompt was 99% of a 4K window (2026-11-04), and
   // a phone CPU reads it at ~13 tokens/s before the first reply token.
@@ -1129,9 +1133,10 @@ class Turn {
     const answers = r.facts.length > 0 || r.recipes.length > 0
       || r.chats.some(c => c.session !== this.session.id && (c.hits || 0) >= Math.min(2, words));
     let text = renderFind(inside);
+    if (text === NOTHING) text = nothingFor({ bash: bashSurface(), ask: askName() });
     if (outside.length) {
       const block = wrapUntrusted('earlier tool output', outside.map(t => t.text.replace(STRIP_UNTRUSTED, '')).join('\n\n'));
-      text = (text === renderFind({}) ? '' : text + '\n\n') + 'Earlier tool output in this task:\n' + block;
+      text = (text.startsWith('Nothing in your memory') ? '' : text + '\n\n') + 'Earlier tool output in this task:\n' + block;
     }
     // Nothing of theirs: search the web with the same words, unless a tool clearly matched (named, or an intent
     // phrase; above the description-only cap). A word like "recent" alone matched git_log ("Recent commits…")
