@@ -438,20 +438,84 @@ issue.reopen = async (env, o) => {
 // ── repo, run, workflow, release, search, api, auth ────────────────────────
 
 const repo = {};
+// Like gh (pkg/cmd/repo/list): the user's own repos, newest push first, 30 unless -L. At a terminal (env.tty, set by
+// tools/tty.js when stdout isn't piped or redirected) it prints gh's header and table, cut to the terminal's width
+// (env.ttyWidth: GH_FORCE_TTY's number, else gh's default 80) like the real one; otherwise gh's full tab-separated rows. It used to list only the GitHub App's first page in id order (oldest first) cut at 30, so recent repos
+// were missing and LFM3 told Keal he had no "bubbles" repo (failures.md case 20).
+const REPO_LIST_FLAGS = new Set(['_', 'paths', 'multi', 'L', 'limit', 'json', 'q', 'jq', 'visibility', 'fork', 'source', 'archived', 'no-archived', 'l', 'language', 'topic']);
+const repoInfo = (x) => [x.visibility, x.fork && 'fork', x.archived && 'archived'].filter(Boolean).join(', ');
 repo.list = async (env, o) => {
-  const res = await env.call('github_list_repos', {});
-  if (res.model && res.model.error) return fail(res.model.error);
-  let rows = (res.model.repos || []).map(x => ({ full_name: x.repo, name: x.repo.split('/')[1], owner: { login: x.repo.split('/')[0] }, description: String(x.description || '').replace(/<\/?untrusted[^>]*>\n?/g, '').trim(), private: x.private, visibility: x.private ? 'private' : 'public', default_branch: x.default_branch, html_url: `https://github.com/${x.repo}` }));
-  const owner = o._[0];
-  if (owner) rows = rows.filter(x => x.owner.login.toLowerCase() === owner.toLowerCase());
-  if (o.visibility) rows = rows.filter(x => x.visibility === o.visibility);
+  const bad = Object.keys(o).find(k => !REPO_LIST_FLAGS.has(k));
+  if (bad) return fail(`unknown flag: ${bad.length === 1 ? '-' : '--'}${bad}\n\nUsage:  gh repo list [<owner>] [flags]`);
+  let rows = (await env.repos()).filter(x => !(env.isStorage && env.isStorage(x.owner.login, x.name)))
+    .map(x => ({ ...x, visibility: String(x.visibility || (x.private ? 'private' : 'public')).toLowerCase() }))
+    .sort((a, b) => String(b.pushed_at || b.created_at || '').localeCompare(String(a.pushed_at || a.created_at || '')));
+  const owner = o._[0] || await env.login();
+  rows = rows.filter(x => x.owner.login.toLowerCase() === owner.toLowerCase());
+  const lang = o.l || o.language;
+  const filters = [o.visibility && (x => x.visibility === o.visibility), o.fork && (x => x.fork), o.source && (x => !x.fork),
+    lang && (x => String(x.language || '').toLowerCase() === String(lang).toLowerCase()), o.topic && (x => (x.topics || []).includes(o.topic))].filter(Boolean);
+  const hasFilters = filters.length > 0;   // gh doesn't count --archived/--no-archived as filters in the header
+  if (o.archived) filters.push(x => x.archived);
+  if (o['no-archived']) filters.push(x => !x.archived);
+  for (const f of filters) rows = rows.filter(f);
+  const total = rows.length;
   rows = rows.slice(0, limitOf(o));
   const j = await jsonOut(env, o, rows, REPO_FIELDS);
   if (j) return j;
-  return ok(rows.map(x => [x.full_name, x.description, x.private ? 'private' : 'public'].join('\t')).join('\n'));
+  const cells = rows.map(x => [x.full_name, String(x.description || '').replace(/\s+/g, ' ').trim(), repoInfo(x), x.pushed_at || x.created_at || '']);
+  if (!env.tty) return ok(cells.map(c => c.join('\t')).join('\n'));
+  const title = !total ? (hasFilters ? 'No results match your search' : `There are no repositories in @${owner}`)
+    : `Showing ${rows.length} of ${total} repositories in @${owner}${hasFilters ? ' that match your search' : ''}`;
+  return ok(`\n${title}\n\n` + (rows.length ? ttyTable(['NAME', 'DESCRIPTION', 'INFO', 'UPDATED'], cells.map(c => [...c.slice(0, 3), fuzzyAgo(env.now ? env.now() : new Date(), c[3])]), env.ttyWidth) : ''));
 };
+
+// gh's terminal table, ported from go-gh pkg/tableprinter (ttyTablePrinter) and pkg/text: columns two spaces
+// apart, every cell (the header too) cut to fit `maxWidth` with "..." (none below 5 columns), each padded to its
+// column's width but the last. gh's colours are left out (NO_COLOR). The full text is one command away
+// (gh repo view NAME, --json description), the same as with the real one.
+const ELLIPSIS = '...';
+function truncateCell(w, s) {
+  if (s.length <= w) return s;
+  const tail = w >= ELLIPSIS.length + 2 ? ELLIPSIS : '';
+  return s.slice(0, Math.max(0, w - tail.length)) + tail;
+}
+export function ttyTable(header, rows, maxWidth = 80) {
+  const all = [header, ...rows].map(r => r.map(String));
+  const n = header.length, delim = '  ';
+  const maxW = Array(n).fill(0), w = Array(n).fill(0);
+  for (const r of all) r.forEach((c, i) => { maxW[i] = Math.max(maxW[i], c.length); });
+  const avail = () => maxWidth - delim.length * (n - 1) - w.reduce((a, b) => a + b, 0);
+  const flex = () => w.filter(x => x === 0).length;
+  // short columns get their whole width
+  if (avail() > 0 && flex() > 0) { const per = Math.floor(avail() / flex()); for (let i = 0; i < n; i++) if (maxW[i] < per) w[i] = maxW[i]; }
+  // the rest share what's left
+  if (flex() > 0) {
+    const per = Math.floor(avail() / flex());
+    for (let i = 0; i < n; i++) if (w[i] === 0) { if (maxW[i] < per) w[i] = maxW[i]; else if (per > 0) w[i] = per; }
+  }
+  // any remainder goes to the cut columns, left to right
+  let left = avail();
+  for (let i = 0; i < n && left > 0; i++) { const add = Math.min(left, maxW[i] - w[i]); w[i] += add; left -= add; }
+  return all.map(r => r.map((c, i) => { const t = truncateCell(w[i], c); return i < n - 1 ? t.padEnd(w[i]) : t; }).join(delim)).join('\n');
+}
+
+// gh's text.RelativeTimeAgo: "about 3 days ago", rounded down to the unit.
+function fuzzyAgo(now, iso) {
+  const s = (now - new Date(iso)) / 1000;
+  const fmt = (n, u) => `about ${n} ${u}${n === 1 ? '' : 's'} ago`;
+  if (!iso || Number.isNaN(s)) return '';
+  if (s < 60) return 'less than a minute ago';
+  if (s < 3600) return fmt(Math.floor(s / 60), 'minute');
+  if (s < 86400) return fmt(Math.floor(s / 3600), 'hour');
+  if (s < 30 * 86400) return fmt(Math.floor(s / 86400), 'day');
+  if (s < 365 * 86400) return fmt(Math.floor(s / 86400 / 30), 'month');
+  return fmt(Math.floor(s / 86400 / 365), 'year');
+}
+
 repo.view = async (env, o) => {
-  const r = repoOf(env, o._[0] ? { ...o, R: o._[0] } : o);
+  const arg = o._[0] && !o._[0].includes('/') ? `${await env.login()}/${o._[0]}` : o._[0];   // like gh: a bare name is yours
+  const r = repoOf(env, arg ? { ...o, R: arg } : o);
   const info = await env.gh(r.path);
   const j = await jsonOut(env, o, info, REPO_FIELDS, true);
   if (j) return j;
