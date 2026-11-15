@@ -107,7 +107,7 @@ export function pickPages(json, query = '') {
   const usable = pages.filter(p => !p.disambiguation && !isList(p.title));
   const main = (query && usable.find(p => titleInQuery(p.title, query))) || usable[0] || null;
   const lists = pages.filter(p => isList(p.title));
-  const others = usable.filter(p => p !== main).slice(0, 3);
+  const others = usable.filter(p => p !== main);
   return { main, lists, others, matched: Boolean(main && query && titleInQuery(main.title, query)) };
 }
 
@@ -132,8 +132,8 @@ const stem = (w) => w.toLowerCase().replace(/(ers|er|ors|or|ed|ing|ion|es|s)$/, 
 
 /** SPARQL facts → [{ prop, label, values[], more, score }]. Ranked by how many of the question's words the
  *  property's name and aliases share, then by property number (lower ones are the basic ones: instance of,
- *  country, born…). Values per property capped. */
-export function parseFacts(json, { query = '', perProp = 3 } = {}) {
+ *  country, born…). Every value (no tool cuts output, 2026-11-15). */
+export function parseFacts(json, { query = '' } = {}) {
   const byProp = new Map();
   for (const b of (json && json.results && json.results.bindings) || []) {
     const pid = String(b.p && b.p.value || '').split('/').pop();
@@ -152,12 +152,12 @@ export function parseFacts(json, { query = '', perProp = 3 } = {}) {
   };
   return [...byProp.values()].map(e => ({ ...e, score: Math.round(scoreOf(e) * 100) / 100 }))
     .sort((a, b) => b.score - a.score || Number(a.prop.slice(1)) - Number(b.prop.slice(1)))
-    .map(({ aliases, ...e }) => ({ ...e, more: Math.max(0, e.values.length - perProp), values: e.values.slice(0, perProp) }));
+    .map(({ aliases, ...e }) => e);
 }
 
 /** SPARQL links → newest first, one row per item: [{ title, date, type, via, upcoming }]. `hub` when the item has
  *  so many links that the sample says nothing (a country). Undated ones last. */
-export function parseLinks(json, { now = new Date(), k = 8 } = {}) {
+export function parseLinks(json, { now = new Date() } = {}) {
   const rows = (json && json.results && json.results.bindings) || [];
   const today = now.toISOString().slice(0, 10);
   const byItem = new Map();
@@ -174,7 +174,7 @@ export function parseLinks(json, { now = new Date(), k = 8 } = {}) {
     if (via) it.via.add(via);
     byItem.set(id, it);
   }
-  const list = [...byItem.values()].sort((a, b) => (b.date || '0000').localeCompare(a.date || '0000')).slice(0, k)
+  const list = [...byItem.values()].sort((a, b) => (b.date || '0000').localeCompare(a.date || '0000'))
     .map(x => ({ title: x.title, date: x.date, type: x.type, via: [...x.via].join(', '), upcoming: Boolean(x.date && x.date > today) }));
   return { links: list, hub: rows.length >= LINKS_LIMIT };
 }
@@ -184,20 +184,18 @@ export function parseLinks(json, { now = new Date(), k = 8 } = {}) {
 export function render({ main, lists = [], others = [], facts = [], links = [], qid = '' }, { now = new Date(), small = false, wrap = (s, t) => t } = {}) {
   if (!main) return '';
   const lines = [`Wikipedia: ${main.title}${main.description ? ` (${main.description})` : ''}`];
-  if (main.extract) lines.push(truncate(main.extract.replace(/\s+/g, ' '), small ? 300 : 600));
+  if (main.extract) lines.push(main.extract.replace(/\s+/g, ' '));
   if (main.url) lines.push(main.url);
   if (facts.length) {
     lines.push('', `Wikidata ${qid} (most relevant to the question first):`);
-    for (const f of facts.slice(0, small ? 14 : 40)) lines.push(`- ${f.label}: ${f.values.join('; ')}${f.more ? ` (+${f.more} more)` : ''}`);
-    const rest = facts.length - (small ? 14 : 40);
-    if (rest > 0) lines.push(`(${rest} more facts not shown)`);
+    for (const f of facts) lines.push(`- ${f.label}: ${f.values.join('; ')}`);
   }
   if (links.length) {
     lines.push('', `Newest things that link to it on Wikidata (today is ${now.toISOString().slice(0, 10)}):`);
-    for (const x of links.slice(0, small ? 6 : 8)) lines.push(`- ${x.title}${x.type ? ` (${x.type})` : ''}${x.date ? `, ${x.date}` : ', no date'}${x.upcoming ? ' (not out yet)' : ''}${x.via ? `: its ${x.via}` : ''}`);
+    for (const x of links) lines.push(`- ${x.title}${x.type ? ` (${x.type})` : ''}${x.date ? `, ${x.date}` : ', no date'}${x.upcoming ? ' (not out yet)' : ''}${x.via ? `: its ${x.via}` : ''}`);
   }
   if (lists.length) lines.push('', 'Lists on Wikipedia (fetch_url one for the whole list):', ...lists.map(l => `- ${l.title}: ${l.url}`));
-  if (others.length) lines.push('', 'Other matches (if this is the wrong one, wiki_lookup one of these):', ...others.slice(0, small ? 2 : 3).map(o => `- ${o.title}${o.description ? ` (${o.description})` : ''}`));
+  if (others.length) lines.push('', 'Other matches (if this is the wrong one, wiki_lookup one of these):', ...others.map(o => `- ${o.title}${o.description ? ` (${o.description})` : ''}`));
   return wrap('wikipedia and wikidata', lines.join('\n'));
 }
 
@@ -266,16 +264,15 @@ export const wikiTool = defineTool({
 
 // ── The model's own SPARQL (big models) ─────────────────────────────────────
 
-const MAX_ROWS = 50;
 /** SPARQL JSON → a compact table: one line per row, "var: value" pairs, entity URLs shortened to ids. */
-export function renderRows(json, { max = MAX_ROWS } = {}) {
+export function renderRows(json) {
   const vars = (json && json.head && json.head.vars) || [];
   const rows = (json && json.results && json.results.bindings) || [];
   if (json && typeof json.boolean === 'boolean') return `ASK: ${json.boolean}`;
   if (!rows.length) return 'No rows.';
   const short = (v) => String(v).replace(/^http:\/\/www\.wikidata\.org\/entity\//, '').replace(/^(\d{4}-\d{2}-\d{2})T00:00:00Z$/, '$1');
-  const lines = rows.slice(0, max).map(b => vars.filter(v => b[v]).map(v => `${v}: ${short(b[v].value)}`).join(' | '));
-  return `${rows.length} row${rows.length === 1 ? '' : 's'}${rows.length > max ? ` (first ${max})` : ''}:\n${lines.join('\n')}`;
+  const lines = rows.map(b => vars.filter(v => b[v]).map(v => `${v}: ${short(b[v].value)}`).join(' | '));
+  return `${rows.length} row${rows.length === 1 ? '' : 's'}:\n${lines.join('\n')}`;
 }
 
 export const wikidataQuery = defineTool({
@@ -293,7 +290,7 @@ export const wikidataQuery = defineTool({
       const body = await r.text().catch(() => '');
       // The service's own message (a parse error says where), without its Java stack trace.
       const msg = body.split('\n').find(l => /Exception|Error|Encountered|Lexical|timeout/i.test(l)) || body.slice(0, 300);
-      return { model: { error: `HTTP ${r.status}: ${truncate(msg.trim(), 600)}` }, label: `Wikidata query failed (HTTP ${r.status})` };
+      return { model: { error: `HTTP ${r.status}: ${msg.trim()}` }, label: `Wikidata query failed (HTTP ${r.status})` };
     }
     const json = await r.json();
     const text = renderRows(json);

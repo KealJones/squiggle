@@ -59,6 +59,6 @@ export const runJs = defineTool({
   parameters: params({ code: str('JavaScript code') }, ['code']),
   async run({ code }) {
     const r = await getSandbox().run(String(code || ''));
-    return { model: { stdout: truncate((r.logs || []).join('\n'), 6000), result: r.result != null ? truncate(r.result, 4000) : undefined, error: r.error || undefined }, label: 'ran JavaScript' };
+    return { model: { stdout: (r.logs || []).join('\n'), result: r.result != null ? r.result : undefined, error: r.error || undefined }, label: 'ran JavaScript' };
   },
 });
