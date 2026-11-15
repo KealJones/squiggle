@@ -23,6 +23,7 @@ import { pfs, writeFile as gitWriteFile, rmrf, mkdirp, walk, git as isoGit, fs a
 import { gh as githubApi, getUser, accessibleRepos } from '../github.js';
 import { runGit } from './gitcli.js';
 import { runGh } from './ghcli.js';
+import { ttyPlugin, TTY_VAR } from './tty.js';
 import * as storage from '../storage.js';
 import { resolveAgentPath, agentBranchName } from '../guard.js';
 import { REPOS, readAgentFile, listAgentDir } from './workspace.js';
@@ -337,6 +338,7 @@ export function commands(defineCommand, toolCtx, seen) {
     }
     const cfg = storage.storageConfig();
     return runGh(argv, {
+      tty: Boolean(ctx.env && ctx.env.get && ctx.env.get(TTY_VAR)),   // tty.js: stdout reaches the terminal
       gh: githubApi, repo, branch, login: async () => (await getUser()).login, repos: accessibleRepos,
       approve: toolCtx.approve, call: (n, a) => call(n, a), stdin: ctx.stdin || '', help: HELP.gh,
       exec: ctx.exec ? (cmd, opts = {}) => ctx.exec(cmd, { cwd: ctx.cwd, ...opts }) : null,
@@ -488,6 +490,7 @@ export const bash = defineTool({
       customCommands: commands(L.defineCommand, ctx, seen),
       executionLimits: { maxExecutionTimeMs: 60000 },
     });
+    shell.registerTransformPlugin(ttyPlugin);
     let r;
     try { r = await shell.exec(script, { signal: ctx.signal }); } catch (e) { r = { stdout: '', stderr: String(e.message || e), exitCode: 1 }; }
     // The whole output, always (Keal, 2026-11-15): no tool cuts what the model asked for. The prompt tells it the
