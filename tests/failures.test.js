@@ -84,6 +84,13 @@ test('case 20 ("you don\'t have a bubbles repo"): gh repo list shows every repo 
   assert.doesNotMatch(list.stdout, /squiggle-state/, 'the storage repo stays hidden');
   assert.equal((await runGh(['repo', 'list', '-L', '100'], { ...env, tty: true })).stdout.trim().split('\n').length, 2 + 1 + 41);
   assert.match((await runGh(['repo', 'list', '--visibility', 'private'], { ...env, tty: true })).stdout, /^\nShowing 1 of 1 repositories in @KealJones that match your search\n/);
+  // Like gh at a terminal it can't measure: 80 columns, long cells cut with "..." (the full text is one command away).
+  const { ttyTable } = await import('../app/src/tools/ghcli.js');
+  const long = 'Bubbles: a bubbly little playground for physics-y soap bubble simulations in the browser';
+  const t = ttyTable(['NAME', 'DESCRIPTION', 'INFO', 'UPDATED'], [['KealJones/bubbles', long, 'private', 'about 5 days ago'], ['KealJones/squiggle', 'Short one', 'public', 'about 1 hour ago']]).split('\n');
+  assert.ok(t.every(l => l.length <= 80), t.join('\n'));
+  assert.match(t[1], /^KealJones\/bubbles +Bubbles: a bubbly little \S*\.\.\. +private +about 5 days ago$/); assert.equal(t[1].length, 80);
+  assert.equal(ttyTable(['A', 'B'], [['x', long]], 200).split('\n')[1], 'x  ' + long, 'GH_FORCE_TTY=200 is a 200-column terminal');
   // Piped or redirected: gh's plain rows, no header.
   assert.match((await runGh(['repo', 'list'], env)).stdout, /^KealJones\/bubbles\tbubbles repo\tprivate\t2026-11-10T00:00:00Z\n/);
   const all = await runGh(['repo', 'list', '--all'], env);
