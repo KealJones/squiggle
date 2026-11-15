@@ -66,3 +66,57 @@ test('case 19 (plan mode couldn\'t ask the user): a question asks, ask_user exis
   assert.match(t.stepPrompt('B', task, [], { dialect: t.DIALECT.v3, now: t.stepNow(task, { dialect: t.DIALECT.v3 }) }).text,
     /## Goal \(your own one-line summary of what the user asked\)\nCreate a new repository for the user\n[^]*## Now\nWork on step 1 now: Ask for the name$/m);
 });
+
+test('case 20 ("you don\'t have a bubbles repo"): gh repo list shows every repo newest first, the prompt says gh is signed in, find names real tools', async () => {
+  const { runGh } = await import('../app/src/tools/ghcli.js');
+  const { nothingFor, NOTHING } = await import('../app/src/find.js');
+  // 40 old repos (lowest ids, listed first by the App's endpoint) and the new one last, as GitHub returns them.
+  const mk = (name, pushed, priv = false) => ({ name, full_name: `KealJones/${name}`, owner: { login: 'KealJones' }, private: priv, description: `${name} repo`, pushed_at: pushed, default_branch: 'main', html_url: `https://github.com/KealJones/${name}` });
+  const repos = [...Array.from({ length: 40 }, (_, i) => mk(`old${i}`, `2016-01-${String(i % 28 + 1).padStart(2, '0')}T00:00:00Z`)), mk('squiggle-state', '2026-11-15T19:00:00Z', true), mk('bubbles', '2026-11-10T00:00:00Z', true)];
+  const env = { repos: async () => repos, login: async () => 'KealJones', isStorage: (o, n) => n === 'squiggle-state', now: () => new Date('2026-11-15T19:00:00Z'), gh: async (p) => { if (p === '/repos/KealJones/bubbles') return repos.at(-1); throw Object.assign(new Error('Not Found'), { status: 404 }); } };
+  // At a terminal: gh's header and table (tools/tty.js sets env.tty when stdout isn't piped).
+  const list = await runGh(['repo', 'list'], { ...env, tty: true });
+  const lines = list.stdout.split('\n');
+  assert.deepEqual(lines.slice(0, 3), ['', 'Showing 30 of 41 repositories in @KealJones', '']);
+  assert.match(lines[3], /^NAME +DESCRIPTION +INFO +UPDATED$/);
+  assert.match(lines[4], /^KealJones\/bubbles +bubbles repo +private +about 5 days ago$/, 'newest push first');
+  assert.equal(lines[4].indexOf('bubbles repo'), lines[3].indexOf('DESCRIPTION'), 'columns line up');
+  assert.doesNotMatch(list.stdout, /squiggle-state/, 'the storage repo stays hidden');
+  assert.equal((await runGh(['repo', 'list', '-L', '100'], { ...env, tty: true })).stdout.trim().split('\n').length, 2 + 1 + 41);
+  assert.match((await runGh(['repo', 'list', '--visibility', 'private'], { ...env, tty: true })).stdout, /^\nShowing 1 of 1 repositories in @KealJones that match your search\n/);
+  // Like gh at a terminal it can't measure: 80 columns, long cells cut with "..." (the full text is one command away).
+  const { ttyTable } = await import('../app/src/tools/ghcli.js');
+  const long = 'Bubbles: a bubbly little playground for physics-y soap bubble simulations in the browser';
+  const t = ttyTable(['NAME', 'DESCRIPTION', 'INFO', 'UPDATED'], [['KealJones/bubbles', long, 'private', 'about 5 days ago'], ['KealJones/squiggle', 'Short one', 'public', 'about 1 hour ago']]).split('\n');
+  assert.ok(t.every(l => l.length <= 80), t.join('\n'));
+  assert.match(t[1], /^KealJones\/bubbles +Bubbles: a bubbly little \S*\.\.\. +private +about 5 days ago$/); assert.equal(t[1].length, 80);
+  assert.equal(ttyTable(['A', 'B'], [['x', long]], 200).split('\n')[1], 'x  ' + long, 'GH_FORCE_TTY=200 is a 200-column terminal');
+  // Piped or redirected: gh's plain rows, no header.
+  assert.match((await runGh(['repo', 'list'], env)).stdout, /^KealJones\/bubbles\tbubbles repo\tprivate\t2026-11-10T00:00:00Z\n/);
+  const all = await runGh(['repo', 'list', '--all'], env);
+  assert.equal(all.exitCode, 1, 'a made-up flag fails like gh instead of printing the same list');
+  assert.match(all.stderr, /^unknown flag: --all/);
+  assert.match((await runGh(['repo', 'view', 'bubbles'], env)).stdout, /^name:\tKealJones\/bubbles\n/, 'a bare name is the user\'s, like gh');
+  // The small bash prompt says git and gh act as the user; demo mode drops that line.
+  const src = readFileSync(new URL('../app/src/agent.js', import.meta.url), 'utf8');
+  assert.match(src, /const GITHUB_LINE = "git and gh are signed in as the user: \\"my repo X\\" is theirs, so gh repo clone X/);
+  assert.match(src, /LITE_SYSTEM_BASH = \[[^\]]*GITHUB_LINE,/);
+  assert.match(src, /storage\.isLocal\(\) \? LITE_SYSTEM_BASH\.replace\(GITHUB_LINE/);
+  // find's empty answer names tools the model has: bash and ask_user for LFM3; Squiggle Small's text is unchanged.
+  assert.doesNotMatch(nothingFor({ bash: true, ask: 'ask_user' }), /web_search|need/);
+  assert.match(nothingFor({ bash: true, ask: 'ask_user' }), /use bash .*gh.*ask_user/);
+  assert.equal(nothingFor({ ask: 'need' }), NOTHING);
+  assert.match(src, /if \(text === NOTHING\) text = nothingFor\(\{ bash: bashSurface\(\), ask: askName\(\) \}\);/);
+});
+
+test('case 20: tools/tty.js marks gh as at a terminal only when its stdout reaches the model, like a real shell', async () => {
+  const { Bash, defineCommand } = await import('just-bash');
+  const { ttyPlugin } = await import('../app/src/tools/tty.js');
+  const gh = defineCommand('gh', async (args, ctx) => ({ stdout: (ctx.env.get('GH_FORCE_TTY') ? 'tty' : 'pipe') + '\n', stderr: '', exitCode: 0 }));
+  const shell = new Bash({ customCommands: [gh] }); shell.registerTransformPlugin(ttyPlugin);
+  const cases = { 'gh': 'tty\n', 'gh | cat': 'pipe\n', 'x=$(gh); echo $x': 'pipe\n', 'gh > /tmp/a; cat /tmp/a': 'pipe\n',
+    'for i in 1; do gh; done': 'tty\n', 'for i in 1; do gh; done | cat': 'pipe\n', '{ gh; } > /tmp/b; cat /tmp/b': 'pipe\n',
+    'gh && gh | cat': 'tty\npipe\n', 'cat <(gh)': 'pipe\n', 'f() { gh; }; f': 'tty\n', 'GH_FORCE_TTY= gh': 'pipe\n', 'if gh; then :; fi': 'tty\n' };
+  for (const [script, want] of Object.entries(cases)) assert.equal((await shell.exec(script)).stdout, want, script);
+  assert.equal((await shell.exec('gh >&2')).stderr, 'tty\n', 'stderr is the terminal too');
+});

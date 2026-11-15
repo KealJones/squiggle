@@ -225,8 +225,8 @@ await check('agent git tools: agent/ pushes freely; other branches need approval
   assert.deepEqual(r.notes, ['tools.js: runTool at line 512']);
   assert.equal(r.noteDel.ok, true);
   assert.match(r.noteBad.error, /No note with id nope/);
-  assert.equal(r.read1.total_lines, 400); assert.equal(r.read1.end_line, 150);
-  assert.match(r.read1.more, /lines 151-400 not shown/);
+  assert.equal(r.read1.total_lines, 400); assert.equal(r.read1.end_line, 400, 'the whole file: no tool cuts output');
+  assert.equal(r.read1.more, undefined);
   assert.match(r.read2.content, /151: line 151[\s\S]*160: line 160/);
   assert.equal(r.read2.end_line, 160);
   assert.match(r.grep1.matches, /\/repos\/app\/big\.txt:1: line 1 NEEDLE[\s\S]*big\.txt:351: line 351 NEEDLE/);
@@ -1438,14 +1438,12 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
   assert.notEqual(r.code, 0);
   r = await run('echo scratch > /tmp/a && cat /tmp/a');
   assert.equal(r.out.trim(), 'scratch');
-  // Output too big for the window is kept whole in /tmp/out-N.txt; the model sees the start and where the rest is.
+  // No tool cuts output (2026-11-15): big output comes back whole, however small the room.
   r = await run('seq 1 20000', 2000);
-  assert.ok(r.saved && /^\/tmp\/out-\d+\.txt$/.test(r.saved), JSON.stringify(r).slice(0, 300));
-  assert.match(r.out, /^1\n2\n/);
-  assert.match(r.out, /20000 lines[\s\S]*the whole output is in \/tmp\/out-\d+\.txt/);
-  assert.ok(r.out.length < 2000, 'the preview fits the room');
-  r = await run(`wc -l < ${r.saved} && tail -1 ${r.saved}`);
-  assert.match(r.out, /20000\n20000/, 'nothing was thrown away: ' + JSON.stringify(r));
+  assert.ok(!r.saved, JSON.stringify(r).slice(0, 300));
+  const nums = r.out.trim().split('\n');
+  assert.equal(nums.length, 20000, 'nothing was thrown away: ' + JSON.stringify(r.out.slice(-200)));
+  assert.equal(nums[0], '1'); assert.equal(nums.at(-1), '20000');
   r = await run('');
   assert.match(r.error || '', /e\.g\. gh repo list/, 'an empty command gets an example back');
   assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
