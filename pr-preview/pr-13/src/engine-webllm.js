@@ -235,8 +235,8 @@ export const REVIVE_WAITS = [0, 500, 1500, 3000, 6000];
 // token: those are short, and each already ends with a sync).
 // 128 tokens is sized for an iPhone 16 (~1.25 s a piece). A slower GPU, or the same one hot and throttled, takes
 // longer for the same piece and walks into the 3-second limit again, so each prompt piece is timed: one that took
-// more than PACED_SLOW_MS halves the size for the pieces after it (WebLLM cuts a prompt into pieces when a reply
-// starts, so it applies from the next reply), down to PACED_MIN. It never grows back until the model is loaded
+// more than PACED_SLOW_MS halves the size for the next reply (WebLLM cuts a prompt into pieces when a reply starts
+// and refuses a piece bigger than the current size, so nextPieces applies it before the next reply), down to PACED_MIN. It never grows back until the model is loaded
 // again: a smaller piece only costs a few more waits. A piece timed while the page was hidden isn't counted
 // (Safari pauses the GPU there, and the time says nothing about its speed).
 export const PACED_CHUNK = 128;
@@ -261,10 +261,13 @@ export function paceGpu(engine, chunk = PACED_CHUNK, gap = PACED_GAP_MS, { slowM
       if (typeof this.sync === 'function') await this.sync();   // this piece is done before the next is queued
       const ms = performance.now() - t0;
       if (piece && slowMs && ms > slowMs && !hidden && !pageHidden() && typeof this.prefillChunkSize === 'number') {
+        // Halved from the size this piece was cut at, so two slow pieces in one reply halve it once, not twice.
         const next = Math.max(min, Math.floor(Math.min(args[1], this.prefillChunkSize) / 2));
-        if (next < this.prefillChunkSize) {
+        if (next < Math.min(this.prefillChunkSize, this.squiggleNextChunk || Infinity)) {
           console.info(`Squiggle: a ${args[1]}-token prompt piece took ${Math.round(ms)} ms on the GPU; pieces are ${next} tokens from the next reply.`);
-          this.prefillChunkSize = next;
+          // Not now: this reply's prompt is already cut at the old size, and WebLLM refuses a piece larger than
+          // prefillChunkSize ("expect inputDataLen <= this.prefillChunkSize", Keal's iPhone 2026-11-15). nextPieces applies it.
+          this.squiggleNextChunk = next;
         }
       }
       if (gap && piece) await sleep(gap);                        // a prompt piece: let the screen draw a frame
@@ -277,10 +280,20 @@ export function paceGpu(engine, chunk = PACED_CHUNK, gap = PACED_GAP_MS, { slowM
   return paced;
 }
 
+// The piece size from paceGpu's last slow piece, applied before a reply starts (never in the middle of one).
+export function nextPieces(engine) {
+  const pipes = engine && engine.loadedModelIdToPipeline;
+  if (!pipes || typeof pipes.values !== 'function') return;
+  for (const p of pipes.values()) {
+    if (p && p.squiggleNextChunk && p.squiggleNextChunk < p.prefillChunkSize) p.prefillChunkSize = p.squiggleNextChunk;
+    if (p) delete p.squiggleNextChunk;
+  }
+}
+
 const chunkOf = (engine) => {
   const pipes = engine && engine.loadedModelIdToPipeline;
   if (!pipes || typeof pipes.values !== 'function') return null;
-  for (const p of pipes.values()) if (p && typeof p.prefillChunkSize === 'number') return p.prefillChunkSize;
+  for (const p of pipes.values()) if (p && typeof p.prefillChunkSize === 'number') return Math.min(p.prefillChunkSize, p.squiggleNextChunk || Infinity);
   return null;
 };
 
@@ -399,6 +412,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
   }
 
   async function* streamOnce(opts, signal) {
+    nextPieces(engine);
     // A chat format with no tools and no thinking switch (a background job) is plain text, as before.
     const f = fmt.mode === 'raw' || (fmt !== PLAIN && (opts.tools || opts.chat_template_kwargs)) ? fmt : PLAIN;
     const thinking = opts.chat_template_kwargs ? Boolean(opts.chat_template_kwargs.enable_thinking) : undefined;
