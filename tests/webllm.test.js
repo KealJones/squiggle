@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseQwenCalls, toWebLLMMessages, toolSystem, splitRaw, createShim, paceGpu, webkitGpu, pacedGpu, routeSelfCopies, selfCopies, reuseWanted } from '../app/src/engine-webllm.js';
+import { parseQwenCalls, toWebLLMMessages, toolSystem, splitRaw, createShim, paceGpu, nextPieces, webkitGpu, pacedGpu, routeSelfCopies, selfCopies, reuseWanted } from '../app/src/engine-webllm.js';
 import { NativeConversation, Conversation } from '../app/src/engine-wllama.js';
 
 const TOOLS = [
@@ -278,18 +278,26 @@ test('paceGpu: a prompt piece that takes too long makes the next ones smaller (a
   let syncMs = 0;
   const pipe = { prefillChunkSize: 256, async embedAndForward() { return 'logits'; }, async sync() { await new Promise(r => setTimeout(r, syncMs)); } };
   const slow = { slowMs: 40, min: 16 };
-  paceGpu({ loadedModelIdToPipeline: new Map([['m', pipe]]) }, 128, 0, slow);
-  await pipe.embedAndForward([[1]], 128);
+  const engine = { loadedModelIdToPipeline: new Map([['m', pipe]]) };
+  paceGpu(engine, 128, 0, slow);
+  const reply = async (...pieces) => { nextPieces(engine); for (const n of pieces) await pipe.embedAndForward([[1]], n); };
+  await reply(128);
+  nextPieces(engine);
   assert.equal(pipe.prefillChunkSize, 128, 'a fast piece changes nothing');
   syncMs = 60;
+  await reply(128);
+  assert.equal(pipe.prefillChunkSize, 128, 'not in the middle of a reply: its prompt is already cut at 128 (WebLLM refuses bigger pieces)');
   await pipe.embedAndForward([[1]], 128);
-  assert.equal(pipe.prefillChunkSize, 64, 'a slow one halves it');
+  nextPieces(engine);
+  assert.equal(pipe.prefillChunkSize, 64, 'a slow one halves it, from the next reply (two slow pieces in one reply halve it once)');
   await pipe.embedAndForward([[7]], 1);
+  nextPieces(engine);
   assert.equal(pipe.prefillChunkSize, 64, 'a generated token is never counted, however slow');
-  await pipe.embedAndForward([[1]], 40);
+  await reply(40);
+  nextPieces(engine);
   assert.equal(pipe.prefillChunkSize, 20, 'a short last piece that was still slow: half of that');
-  await pipe.embedAndForward([[1]], 20);
-  await pipe.embedAndForward([[1]], 16);
+  await reply(20); await reply(16);
+  nextPieces(engine);
   assert.equal(pipe.prefillChunkSize, 16, 'never below the minimum');
   // Timed while the page was hidden (Safari pauses the GPU): says nothing about the GPU's speed.
   const doc = globalThis.document;
