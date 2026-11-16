@@ -20,19 +20,19 @@ export const MODELS = {
   // (toolformats/lfm3.js). Liquid's quantization-aware-trained 4-bit weights copied in exactly (job lfm3-mlc-8,
   // qad_to_mlc.py: Q4_0 (k-8)*d = MLC (q-7)*s with q = 15-k, s = -d) and a one-sequence model library (~17 MB of
   // scratch instead of ~163). On an iPhone 16 in Squiggle: first word in 15 s, 13.7 tok/s (2026-11-10).
-  WLF3QAD: { label: 'LFM3 1.7B', size: '~990 MB', group: 'LFM3', note: 'Liquid\'s LFM3 1.7B on WebGPU with tools in its own format, thinking first: the first small model trained for agent harnesses, about 14 words a second on an iPhone. Liquid\'s own 4-bit weights. 4K context at most', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
+  WLF3QAD: { label: 'LFM3 1.7B', size: '~990 MB', group: 'LFM3', note: 'Liquid\'s LFM3 1.7B on WebGPU with tools in its own format, thinking first: the first small model trained for agent harnesses, about 14 words a second on an iPhone. Liquid\'s own 4-bit weights. 6K context at most', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 6144,   // 6K: on Keal's iPhone 16 it loaded at 1065 MB (4K: 1021) and read a ~3K-token prompt; 8K killed the tab while loading (2026-11-15)
     mlc: 'LFM3-1.7B-QAD-q4f16_1-MLC', bytes: 990000000,
     mlcRecord: {
       model: HF + 'kealjones/LFM3-1.7B-QAD-q4f16_1-MLC/resolve/main/',
       model_lib: HF + 'kealjones/LFM3-1.7B-QAD-q4f16_1-MLC/resolve/main/LFM3-1.7B-q4f16_1-b1-webgpu.wasm',
-      overrides: { context_window_size: 4096 },
+      overrides: { context_window_size: 6144 },
     },
     // GPUs without 16-bit floats (shader-f16): the same QAD weights in q4f32_1 (job lfm3-mlc-9: the 4-bit integers
     // exact, scales widened to fp32 and stored as bf16 like every MLC q4f32 build). More GPU memory than q4f16.
     mlcRecordF32: {
       model: HF + 'kealjones/LFM3-1.7B-QAD-q4f32_1-MLC/resolve/main/',
       model_lib: HF + 'kealjones/LFM3-1.7B-QAD-q4f32_1-MLC/resolve/main/LFM3-1.7B-q4f32_1-b1-webgpu.wasm',
-      overrides: { context_window_size: 4096 },
+      overrides: { context_window_size: 6144 },
     } },
   // The CPU build, for devices without WebGPU: Liquid's QAD GGUF on wllama (llama.cpp WASM, ≥ 3.13), tools through
   // the GGUF's own template. Slow on a phone CPU (1 GB, thinks first).
