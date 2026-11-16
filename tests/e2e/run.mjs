@@ -1426,6 +1426,44 @@ await check('a crash while loading the model is caught on the next open; phones 
   }
 });
 
+await check('a page killed mid-sync keeps its unpushed files: the copy the sync held is put back on the next open, then pushed', async () => {
+  const D = await device('crash');
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  // A chat saved here and not pushed yet.
+  const id = await D.page.evaluate(async () => {
+    const s = T.sessions.newSession(); s.title = 'Unpushed chat';
+    T.sessions.addMessage(s, { role: 'user', content: 'keep me' }); T.sessions.addMessage(s, { role: 'assistant', content: 'ok' });
+    await T.sessions.flush({ sync: false });
+    return s.id;
+  });
+  // What a page killed between the sync's reset to the remote and its write-back leaves behind: the file gone from
+  // the tree, still pending, and the sync's copy in IndexedDB (storage.js syncOnce). Before the copy, this chat
+  // was gone after the reload and the next sync pushed it as deleted (CI, 2026-11-16).
+  await D.page.evaluate(async (id) => {
+    const { kv } = await import('/src/util.js');
+    const p = `sessions/${id}.json`;
+    await kv.set('storage-rebase', { [p]: await T.storage.read(p) });
+    await T.gitm.fs.promises.unlink('/state/' + p);
+    await T.gitm.persist();
+  }, id);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  const after = await D.page.evaluate(async (id) => {
+    const S = await import('/src/sessions.js');
+    const st = await import('/src/storage.js');
+    const { kv } = await import('/src/util.js');
+    const s = S.get(id);
+    await st.sync();
+    return { loaded: !!s, title: s && s.title, left: await kv.get('storage-rebase'), status: st.syncStatus() };
+  }, id);
+  assert.ok(after.loaded && after.title === 'Unpushed chat', JSON.stringify(after));
+  assert.equal(after.left, undefined, 'the copy is used up');
+  assert.match(git(stateRepo, 'ls-tree', '-r', '--name-only', 'main'), new RegExp(`sessions/${id}.json`), JSON.stringify(after.status));
+  // A sync that finishes leaves no copy behind.
+  assert.equal(await D.page.evaluate(async () => (await (await import('/src/util.js')).kv.get('storage-rebase')) ?? null), null);
+  await D.ctx.close();
+});
+
 await check('bash tool (lab): just-bash on the workspace; /home writes sync; git, curl, bc, help; .git out of reach', async () => {
   const D = await device('bash');
   await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
