@@ -1003,7 +1003,7 @@ await check('chat links: #chat=<id> opens that chat (archived too); picking chat
   assert.equal(await hash(), `#chat=${ids.a}`);
   await open(`#chat=${ids.old}`);
   // Flaky on CI only (twice by 2026-11-16, never in 15 local runs): the usual chat showed instead. Say why next time.
-  const why = (id) => D.page.evaluate((id) => { const s = T.sessions.get(id); return JSON.stringify({ hash: location.hash, loaded: !!s, archived: s && s.archived, deleted: s && s.deleted, messages: s && s.messages.length, chats: T.sessions.list().length }); }, id);
+  const why = (id) => D.page.evaluate(async (id) => { const S = await import('/src/sessions.js'); const s = S.get(id); return JSON.stringify({ hash: location.hash, loaded: !!s, archived: s && s.archived, deleted: s && s.deleted, messages: s && s.messages.length, chats: S.list().length }); }, id);   // T is gone after a reload; the app's own module instance
   if (await titled('Link chat archived') !== 'Link chat archived') assert.fail(`archived chats open from a link: showed "${await title()}", ${await why(ids.old)}`);
 
   // Picking another chat puts it in the URL; back returns to the one before.
