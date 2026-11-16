@@ -223,7 +223,11 @@ only); a chat phase that ran tools goes on through `carryOn` (a fresh context fr
 counts tries (`tries`, `MAX_TRIES` 2): a third start finds it spent, saves what was written plus a note, and stops, so
 a tab killed for memory every time can't loop. A checkpoint whose user message is gone or already answered is dropped.
 The crash banner (a real crash, no `squiggle-page-left` note) still comes first; the resume runs when the model loads
-after the person taps Try again.
+after the person taps Try again. A GPU lost mid-reply is reloaded only once the page shows again (iOS gives a hidden tab
+no GPU: on Keal's iPhone, 2026-11-15, the ~11 s of retries ran out while he was in another app and the reply ended in
+"the browser hasn't given it back yet"); if it still won't come back, or drops again right after, the error carries
+`reloadToResume` and the turn reloads the page instead of failing (chat.js `onReload`), so the checkpoint picks the
+reply up like a killed tab, within the same 2 tries.
 
 ## Voice (voice.js)
 

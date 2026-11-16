@@ -97,9 +97,15 @@ test('LFM3: half a tool call is thrown away and the model writes it again; the c
   assert.equal(JSON.parse(r.calls[0].function.arguments).command, 'ls');
 });
 
-test('LFM3: a second loss right after the reload is still an error (one carry-on per reply)', async () => {
+test('LFM3: a second loss right after the reload is still an error (one carry-on per reply), flagged for a page reload', async () => {
   const w = await lfm3(rawEngine(['</think>A'], { dieAfter: true }), async () => rawEngine(['b'], { dieAfter: true }));
-  await assert.rejects(collect(w, {}), /dropped the model again/);
+  await assert.rejects(collect(w, {}), (e) => /dropped the model again/.test(e.message) && e.reloadToResume === true);
+});
+
+test('the GPU never comes back (iOS: no GPU for a hidden tab): the error asks for a page reload, which resumes from the checkpoint', async () => {
+  const noGpu = async () => { throw new Error('Unable to find a compatible GPU.'); };
+  const w = await lfm3(rawEngine(['</think>Half a story'], { dieAfter: true }), noGpu);
+  await assert.rejects(collect(w, {}), (e) => /hasn't given it back/.test(e.message) && e.reloadToResume === true);
 });
 
 test('LFM3: a reply the page lost (resume_raw) goes on from the checkpoint, showing the old words first and reporting the raw text as it grows', async () => {

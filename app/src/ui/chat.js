@@ -459,6 +459,7 @@ export async function send(text, threadId, files = [], resumed = null) {
           scrollDown(scroller);
           card.querySelector('button').focus({ preventScroll: true });
         },
+        onReload: () => { toast('Getting the GPU back: reloading, then the reply carries on.'); setTimeout(() => location.reload(), 300); },
         onDone: (m) => { smooth.stop(); if (vc) vc.finish(agent.scrubFakeToolNotes(m.content)); live.replaceWith(messageEl(m, { inThread: Boolean(threadId), session })); if (!threadId) $('#chat-title').textContent = session.title; state.liveTurn = null; renderSide(); },
       },
     });

@@ -21,7 +21,7 @@ import { bm25, tokenize } from './search.js';
 import { estTokens, truncate, uid } from './util.js';
 import { createTrace, openConv, addRound, takeRendered } from './trace.js';
 import { report } from './incidents.js';
-import { Checkpoint } from './resume.js';
+import { Checkpoint, decide as resumeDecide } from './resume.js';
 import { parseJsonl } from './merge.js';
 import { attachmentPrompt, saveAttachments, toRecord } from './attachments.js';
 
@@ -317,6 +317,9 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
         if (task) await turn.steps(task);
       }
     } catch (e) {
+      // The GPU went and didn't come back: the page reloads and the checkpoint picks the reply up (chat.js onReload),
+      // unless this turn was already picked up MAX_TRIES times.
+      if (e && e.reloadToResume && ui.onReload && resumeDecide(turn.cp.cp) === 'resume') { turn.cp.write(); ui.onReload(); return null; }   // the checkpoint stays for the reload
       const msg = e && e.overhead ? e.message : /too many tokens|context|kv.?cache|exceed/i.test(String(e && e.message || e))
         ? 'The conversation got too long for the model\'s context window. Start a new chat to keep going.'
         : (e.message || e);
