@@ -1685,7 +1685,7 @@ await check('the prompt follows the model, with no switches: a big model gets th
   assert.doesNotMatch(small.system || '', /^You are Squiggle, a personal AI agent/, 'Squiggle Small never gets the full prompt');
 });
 
-await check('a chat can have its own system prompt: edited in the chat details, used for its next reply, reset to Squiggle\'s', async () => {
+await check('a chat can have its own system prompt and tools: edited in the chat details, used for its next reply, reset to Squiggle\'s', async () => {
   const D = await device('ownprompt');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
   await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
@@ -1694,6 +1694,7 @@ await check('a chat can have its own system prompt: edited in the chat details, 
   await D.page.reload();
   await D.page.waitForSelector('#app:not([hidden])');
   const convs = () => D.page.evaluate(() => (window.__engineLog || []).filter(e => e.type === 'conversation'));
+  const chat = () => D.page.evaluate(async () => { const s = (await import('/src/sessions.js')).list()[0]; return { systemPrompt: s.systemPrompt, chatTools: s.chatTools }; });
   const send = async (text) => {
     const before = (await convs()).length;
     await D.page.fill('#input', text);
@@ -1705,29 +1706,39 @@ await check('a chat can have its own system prompt: edited in the chat details, 
   await D.page.click('#new-chat');
   const first = await send('hi');
   assert.match(first.system, /^You are Squiggle, a personal AI agent/);
-  assert.match(await D.page.textContent('#ctx-side'), /System prompt\s*Squiggle's/);
+  assert.ok(first.tools.includes('remember') && first.tools.includes('find'), first.tools.join());
+  assert.match(await D.page.textContent('#ctx-side'), /System prompt and tools\s*Squiggle's prompt/);
   await D.page.click('#ctx-side button:has-text("View or edit")');
   const start = await D.page.inputValue('#drawer .prompt-editor');
   assert.match(start, /^You are Squiggle, a personal AI agent/, 'starts from the prompt Squiggle builds');
   assert.match(start, /\{\{date\}\}/, 'the date is a placeholder');
   assert.ok(!start.includes(new Date().toDateString()), start);
   await D.page.fill('#drawer .prompt-editor', 'Be brief.\nToday is {{date}}.');
+  // Tools: remember off, find's description edited.
+  await D.page.uncheck('#drawer input[aria-label="Offer remember in this chat"]');
+  await D.page.click('#drawer .tool-row:has(code:text-is("find")) summary');
+  assert.equal(await D.page.inputValue('#drawer textarea[aria-label="Description of find"]'), first.toolDesc.find);
+  await D.page.fill('#drawer textarea[aria-label="Description of find"]', 'Search saved things.');
   await D.page.click('#drawer button:has-text("Save")');
   await D.page.click('#close-drawer');
-  const saved = await D.page.evaluate(async () => (await import('/src/sessions.js')).list()[0].systemPrompt);
-  assert.equal(saved, 'Be brief.\nToday is {{date}}.');
-  assert.match(await D.page.textContent('#ctx-side'), /System prompt\s*Edited for this chat/);
+  assert.deepEqual(await chat(), { systemPrompt: 'Be brief.\nToday is {{date}}.', chatTools: { off: ['remember'], desc: { find: 'Search saved things.' } } });
+  assert.match(await D.page.textContent('#ctx-side'), /Prompt edited for this chat; 1 tool off, 1 description edited/);
   const own = await send('and again');
   assert.ok(own.system.startsWith(`Be brief.\nToday is ${new Date().toDateString()}.`), own.system);
   assert.doesNotMatch(own.system, /personal AI agent|\{\{/);
-  // Reset: back on Squiggle's prompt (null, so the sync merge can't bring an old edit back).
+  assert.ok(!own.tools.includes('remember'), 'remember is not offered');
+  assert.equal(own.toolDesc.find, 'Search saved things.');
+  // Reset both: back on Squiggle's (null, so the sync merge can't bring an old edit back).
   await D.page.click('#ctx-side button:has-text("Edit")');
-  await D.page.click('#drawer button:has-text("Reset to Squiggle")');
+  await D.page.click('#drawer button:has-text("Reset prompt to Squiggle")');
+  await D.page.click('#drawer button:has-text("All on, Squiggle")');
   await D.page.click('#drawer button:has-text("Save")');
   await D.page.click('#close-drawer');
-  assert.equal(await D.page.evaluate(async () => (await import('/src/sessions.js')).list()[0].systemPrompt), null);
+  assert.deepEqual(await chat(), { systemPrompt: null, chatTools: null });
   const back = await send('one more');
   assert.match(back.system, /^You are Squiggle, a personal AI agent/);
+  assert.ok(back.tools.includes('remember'));
+  assert.equal(back.toolDesc.find, first.toolDesc.find);
   // The stubbed GitHub API answers 404 for anything it doesn't fake; nothing else may go wrong.
   assert.deepEqual(D.page.errors.filter(e => !/Failed to load resource/.test(e)), []);
 });

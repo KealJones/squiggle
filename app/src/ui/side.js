@@ -15,7 +15,7 @@ import { openPanel } from './panels.js';
 import { smallHow, sessionModel, switchModel } from './model-ui.js';
 import { openSession, renderSessions } from './chat.js';
 import { chatLink } from './links.js';
-import { ownPrompt } from '../prompt.js';
+import { ownPrompt, ownTools } from '../prompt.js';
 
 const SIDE_KEY = 'squiggle-side';
 export const sideOverlay = () => matchMedia('(max-width: 1199px)').matches;
@@ -110,11 +110,15 @@ function sideModel(lastReply) {
     if (!sp || !kv.isConnected) return;
     kv.append(h('dt', {}, 'Last reply'), h('dd', {}, `first token ${(sp.waitMs / 1000).toFixed(1)} s${sp.perSec ? `, ${sp.perSec} tok/s` : ''}`));
   }).catch(() => {});
-  // This chat's system prompt: Squiggle's, or its own (prompt.js), edited in a drawer panel.
+  // This chat's system prompt and tools: Squiggle's, or its own (prompt.js), edited in a drawer panel.
   const own = ownPrompt(session);
-  const promptField = h('div', { class: 'side-field' }, h('label', {}, 'System prompt'),
-    h('span', { class: 'value' }, own == null ? 'Squiggle\'s' : own.trim() ? 'Edited for this chat' : 'None (empty)'),
-    h('button', { class: 'side-link', onclick: () => openPanel('prompt') }, icon('i-note'), own == null ? 'View or edit' : 'Edit'));
+  const tp = ownTools(session);
+  const offN = tp && Array.isArray(tp.off) ? tp.off.length : 0;
+  const descN = tp && tp.desc ? Object.keys(tp.desc).length : 0;
+  const toolNote = [offN ? `${offN} tool${offN === 1 ? '' : 's'} off` : '', descN ? `${descN} description${descN === 1 ? '' : 's'} edited` : ''].filter(Boolean).join(', ');
+  const promptField = h('div', { class: 'side-field' }, h('label', {}, 'System prompt and tools'),
+    h('span', { class: 'value' }, own == null ? 'Squiggle\'s prompt' : own.trim() ? 'Prompt edited for this chat' : 'No prompt (empty)', toolNote ? `; ${toolNote}` : ''),
+    h('button', { class: 'side-link', onclick: () => openPanel('prompt') }, icon('i-note'), own == null && !tp ? 'View or edit' : 'Edit'));
   return sideSection('model', 'Model', '', kv, chooser, modeChooser, promptField);
 }
 
