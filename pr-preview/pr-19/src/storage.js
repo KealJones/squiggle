@@ -259,6 +259,7 @@ async function blobOid(text) {
 
 // ── Sync ───────────────────────────────────────────────────────────────────
 
+const TRIES = 6;
 export function sync() {
   return lock(async () => {
     if (!cfg) return;
@@ -266,7 +267,8 @@ export function sync() {
     try {
       let changedPaths = [];
       let res;
-      for (let attempt = 0; attempt < 4; attempt++) {
+      // One push wins each round, so devices syncing at once can need a round each (6 at once lost 2 of them at 4).
+      for (let attempt = 0; attempt < TRIES; attempt++) {
         // Someone else pushed first: wait a little, at random, so devices that collided don't retry in step and
         // collide again (CI, 2026-11-16: ~10 devices on one repo lost all 4 tries back to back).
         if (attempt) await new Promise(r => setTimeout(r, 150 * 2 ** attempt + Math.random() * 300));
@@ -275,7 +277,7 @@ export function sync() {
         if (res.pushed !== false) break;
       }
       // Still unpushed (the changes stay pending for the next sync): a failure, not a quiet success.
-      if (res && res.pushed === false) throw new Error('Could not push: the storage repo kept changing (4 tries).');
+      if (res && res.pushed === false) throw new Error(`Could not push: the storage repo kept changing (${TRIES} tries).`);
       lastSync = Date.now(); lastError = null;
       await persist();
       events.emit('synced', { changed: changedPaths });
