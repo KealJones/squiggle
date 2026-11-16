@@ -209,7 +209,7 @@ prompt sent, saved as `debug/incidents/<id>.txt`) and `load-failed`, and `sync-f
 tab's memory, and the GPU shares the iPhone tab's ~1.9 GB, so that's the level to compare against. Lines reach
 GitHub with the next sync.
 
-## Resuming a reply (resume.js, 2026-11-15, untested on a device)
+## Resuming a reply (resume.js, 2026-11-15; on Keal's iPhone: a GPU loss and a killed tab, mid-step and in the final reply)
 
 iOS may kill a backgrounded tab outright (Safari reloads it on return). `agent.Turn` keeps one checkpoint in
 localStorage (`squiggle-resume`, synchronous so it survives the kill): written at the turn's start, about once a second
