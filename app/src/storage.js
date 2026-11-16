@@ -178,12 +178,13 @@ export async function open() {
   if (!cfg) throw new Error('No storage repo chosen.');
   if (cfg.local) {
     if (!await exists(DIR + '/.git')) await git.init({ fs, dir: DIR, defaultBranch: cfg.branch });
+    await restoreRebase();
     return;
   }
   const url = remoteUrl(cfg.owner, cfg.name);
   if (await exists(DIR + '/.git')) {
     const remotes = await git.listRemotes({ fs, dir: DIR }).catch(() => []);
-    if (remotes.some(r => r.remote === 'origin' && r.url === url)) return;
+    if (remotes.some(r => r.remote === 'origin' && r.url === url)) { await restoreRebase(); return; }
     await rmrf(DIR);
   }
   try {
@@ -264,11 +265,14 @@ export function sync() {
     syncing = true; events.emit('status', syncStatus());
     try {
       let changedPaths = [];
+      let res;
       for (let attempt = 0; attempt < 4; attempt++) {
-        const res = cfg.local ? await commitLocal() : await syncOnce();
+        res = cfg.local ? await commitLocal() : await syncOnce();
         changedPaths = changedPaths.concat(res.changed);
         if (res.pushed !== false) break;
       }
+      // Still unpushed (the changes stay pending for the next sync): a failure, not a quiet success.
+      if (res && res.pushed === false) throw new Error('Could not push: the storage repo kept changing (4 tries).');
       lastSync = Date.now(); lastError = null;
       await persist();
       events.emit('synced', { changed: changedPaths });
@@ -302,6 +306,10 @@ async function syncOnce() {
   const pending = { ...dirty };
   const local = {};
   for (const p of Object.keys(pending)) local[p] = await readOrNull(`${dir}/${p}`);
+  // Step 2 wipes them from the working tree until step 3 writes them back. The file tree reaches IndexedDB on
+  // its own schedule, so a page killed in between (iOS, a reload) could come back without them, and the next
+  // sync would push them as deleted (CI, 2026-11-16: a chat gone after a reload). Keep a copy until they're back.
+  if (Object.keys(local).length) await kv.set(REBASE, local);
 
   // 2. Fetch and reset to the remote.
   let remoteOid = null;
@@ -336,6 +344,8 @@ async function syncOnce() {
     await writeFile(`${dir}/${p}`, final);
   }
 
+  if (Object.keys(local).length) { await persist(); await kv.del(REBASE); }
+
   // 4. Commit and push.
   const changed = await stageAll(dir);
   if (changed) {
@@ -368,6 +378,21 @@ async function syncOnce() {
     changedPaths = ['*'];
   }
   return { pushed, changed: changedPaths.map(p => p.startsWith(cfg.root) ? p.slice(cfg.root.length) : p) };
+}
+
+// A sync's copy of pending files left by a page that died mid-sync (syncOnce): put them back before anything
+// reads the files. They're still pending (dirty is cleared only after a push), so the next sync sends them.
+const REBASE = 'storage-rebase';
+async function restoreRebase() {
+  const saved = await kv.get(REBASE);
+  if (!saved) return;
+  for (const [p, content] of Object.entries(saved)) {
+    if (content == null) await rmrf(`${DIR}/${p}`);
+    else await writeFile(`${DIR}/${p}`, content);
+  }
+  await persist();
+  await kv.del(REBASE);
+  console.warn(`Storage: put back ${Object.keys(saved).length} file(s) a sync was holding when the page closed.`);
 }
 
 // isomorphic-git reports an empty remote as a missing branch ref.
