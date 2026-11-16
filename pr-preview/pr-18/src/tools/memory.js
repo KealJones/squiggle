@@ -9,11 +9,13 @@ import { defineTool, params, str, oneOf } from './registry.js';
 export const remember = defineTool({
   name: 'remember',
   group: 'memory',
-  description: 'Save something to remember, in one sentence: a fact about the user or their projects (preferences, decisions, names, how things work). "everywhere" (the default) keeps it for every chat; "this chat" keeps it only here.',
+  description: 'Save something to remember, in one sentence about the user ("The user likes short answers", not "I like…"): a fact about them or their projects (preferences, decisions, names, how things work). "everywhere" (the default) keeps it for every chat; "this chat" keeps it only here.',
   parameters: params({ fact: str('What to remember, e.g. "Keal prefers short answers"'), scope: oneOf(['everywhere', 'this chat'], 'everywhere (default) or this chat') }),   // fact isn't required so the fine-tunes' triple call gets through
   // The two fine-tunes learned the old subject/relation/object call; it still works.
   async run({ fact, scope, subject, relation, object, note }, ctx = {}) {
-    const text = String(fact || [subject, relation, object].filter(Boolean).join(' ')).trim();
+    let text = String(fact || [subject, relation, object].filter(Boolean).join(' ')).trim();
+    // Models copy the user's "I like…" (Keal's iPhone, 2026-11-16); read in another chat, "I" would be the assistant.
+    if (fact && /^(i|i'm|i've|i'd|my|me)\b/i.test(text)) text = `The user says: ${text}`;
     if (!text) return { model: { error: 'Give the fact to remember, in one sentence.' } };
     if (scope === 'this chat') {
       if (!ctx.session) return { model: { error: 'No chat to remember it in.' } };
