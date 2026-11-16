@@ -222,6 +222,12 @@ a { color: var(--action); }
 .drawer-body { flex: 1; overflow-y: auto; padding: 16px; }
 .drawer .messages { padding: 16px 14px 8px; }
 .drawer .composer { padding: 8px 12px calc(12px + env(safe-area-inset-bottom)); }
+/* System prompt panel (panels.js renderPromptPanel) */
+.prompt-panel { display: flex; flex-direction: column; gap: 10px; }
+.prompt-editor { width: 100%; min-height: 55vh; resize: vertical; font-family: var(--mono); font-size: 0.85rem; line-height: 1.45; border: 1px solid var(--rule); border-radius: var(--radius-s); background: var(--paper); padding: 10px; box-sizing: border-box; }
+.prompt-bar { justify-content: space-between; }
+@media (max-width: 700px) { .prompt-editor { font-size: 16px; } } /* under 16px, iOS Safari zooms in on focus */
+
 .thread-parent { border-bottom: 1px solid var(--rule); padding-bottom: 12px; margin-bottom: 16px; }
 
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 18px; }

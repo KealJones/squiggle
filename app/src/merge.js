@@ -4,7 +4,7 @@
 //
 // Session file (sessions/<id>.json):
 // {
-//   v: 1, id, title, created, updated, deleted?, archived?, model?,
+//   v: 1, id, title, created, updated, deleted?, archived?, model?, contextMode?, systemPrompt? (string | null: prompt.js),
 //   messages:     [{ id, role, content, ts, mts?, thread: null|threadId, tools?, context?, pinned?, deleted? }],
 //   threads:      { [threadId]: { id, parent: messageId, title, created, updated, summary?, summaryUpTo? } },
 //   observations: [{ id, ts, thread, source, title, text }],   // tool output kept for retrieval

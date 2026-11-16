@@ -4,6 +4,8 @@ import * as storage from '../storage.js';
 import * as sessions from '../sessions.js';
 import * as memory from '../memory.js';
 import * as recipes from '../recipes.js';
+import * as agent from '../agent.js';
+import { ownPrompt, TOOLS, DATE } from '../prompt.js';
 import { resolveAgentPath } from '../guard.js';
 import { pfs, walk } from '../git.js';
 import { contextMode } from '../context.js';
@@ -13,6 +15,7 @@ import { estTokens } from '../util.js';
 import { state } from './state.js';
 import { messageEl, setupComposer, send } from './chat.js';
 import { renderSettingsPanel } from './settings-panel.js';
+import { renderSide } from './side.js';
 
 export function openDrawer(title, panel) {
   state.drawerPanel = panel;
@@ -35,6 +38,43 @@ export function openPanel(name, arg) {
   else if (name === 'files') renderFilesPanel('/home');
   else if (name === 'settings') renderSettingsPanel();
   else if (name === 'context') renderContextPanel(arg);
+  else if (name === 'prompt') renderPromptPanel();
+}
+
+// ── System prompt ────────────────────────────────────────────────────────────
+// This chat's own system prompt (prompt.js). Starts from the one Squiggle builds for this chat's model and context
+// type; saving the unchanged text keeps the chat on Squiggle's (so it follows later changes to it).
+export function renderPromptPanel() {
+  const session = state.current;
+  if (!session) return;
+  const c = openDrawer('System prompt', 'prompt');
+  const built = agent.promptTemplate(session);
+  const own = ownPrompt(session);
+  const input = h('textarea', { class: 'prompt-editor', spellcheck: 'false', 'aria-label': 'System prompt for this chat' });
+  input.value = own ?? built;
+  const count = h('span', { class: 'hint' });
+  const status = h('span', { class: 'hint' });
+  const update = () => {
+    count.textContent = `about ${estTokens(input.value)} tokens`;
+    status.textContent = input.value === built ? 'Squiggle\'s prompt' : input.value.trim() ? 'Edited' : 'Empty: no prompt from Squiggle';
+  };
+  input.addEventListener('input', update);
+  update();
+  const save = h('button', { class: 'btn primary', onclick: () => {
+    session.systemPrompt = input.value === built ? null : input.value;
+    sessions.touch(session);
+    toast(session.systemPrompt == null ? 'This chat uses Squiggle\'s prompt.' : 'Saved. The next reply in this chat uses it.');
+    renderSide();
+  } }, 'Save');
+  const reset = h('button', { class: 'btn', onclick: () => { input.value = built; update(); } }, 'Reset to Squiggle\'s');
+  const clear = h('button', { class: 'btn', onclick: () => { input.value = ''; update(); input.focus(); } }, 'Clear');
+  c.append(h('div', { class: 'drawer-body prompt-panel' },
+    h('p', { class: 'hint', style: 'margin-top:0' }, 'The system prompt for this chat only, used for every reply, plan step and final answer. ',
+      h('code', {}, TOOLS), ' becomes the list of tool names (a line with only it is dropped when there are none), ',
+      h('code', {}, DATE), ' today\'s date. Tool definitions, memory and notes are still added as usual. Empty means no prompt from Squiggle. Check the result under "What the model saw".'),
+    input,
+    h('div', { class: 'row prompt-bar' }, status, count),
+    h('div', { class: 'row side-actions' }, save, reset, clear)));
 }
 
 // ── Threads ────────────────────────────────────────────────────────────────

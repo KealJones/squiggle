@@ -24,6 +24,7 @@ import { report } from './incidents.js';
 import { Checkpoint, decide as resumeDecide, repeatKey } from './resume.js';
 import { parseJsonl } from './merge.js';
 import { attachmentPrompt, saveAttachments, toRecord } from './attachments.js';
+import { fillPrompt, toTemplate, ownPrompt } from './prompt.js';
 
 export const settings = {
   model: 'E2B',
@@ -158,8 +159,24 @@ function toolNamesLine(phase, known = []) {
     groups.size ? `Other tools, by area: ${[...groups].map(([g, names]) => `${g}: ${names.join(', ')}`).join('; ')}. To use one, first call tool_info(names) with every one you expect to need.` : ''].filter(Boolean).join('\n');
 }
 
+// A chat with its own system prompt (prompt.js, edited in the chat details) gets that text in every phase instead
+// of the one built below; an empty one means no prompt from Squiggle. Chat-only models still get none.
 function systemPrompt(threadId, session, phase = 'chat', known = []) {
-  if (plain() || noPrompt()) return '';
+  if (plain()) return '';
+  const own = ownPrompt(session);
+  if (own != null) return fillPrompt(own, { names: toolNamesLine(phase, known) });
+  return builtPrompt(threadId, session, phase, known);
+}
+
+// The editor's starting text: the prompt this chat would get from Squiggle right now (its model and context type),
+// with the tool-names line and the date as placeholders.
+export function promptTemplate(session) {
+  if (plain()) return '';
+  return toTemplate(builtPrompt(null, session, 'chat', []), { names: toolNamesLine('chat', []) });
+}
+
+function builtPrompt(threadId, session, phase = 'chat', known = []) {
+  if (noPrompt()) return '';
   const names = toolNamesLine(phase, known);
   if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : bashSurface() ? (storage.isLocal() ? LITE_SYSTEM_BASH.replace(GITHUB_LINE + '\n', '') : LITE_SYSTEM_BASH) : LITE_SYSTEM_NATIVE}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
   const thread = threadId && session.threads[threadId];
@@ -341,7 +358,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
     turn.cp.clear();   // finished, stopped or failed: nothing left to pick up
     reply.content = scrubFakeToolNotes(turn.prefix).trim();
     // Which model wrote it (and how it ran), so a saved chat can be read against the right model.
-    reply.model = replyModel();
+    reply.model = replyModel(session);
     if (turn.thinking) reply.thinking = turn.thinking.slice(-20000); // shown in the UI only; never replayed to the model
     if (turn.task) reply.task = turn.task.id;
     if (signal?.aborted && !reply.content) reply.content = '_(stopped)_';
@@ -365,12 +382,12 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
 
 // The model behind a reply, saved on the message: its id, label and how it ran (on this device, on the GPU or
 // CPU, or on the relay). Labels are kept because MODELS entries come and go.
-function replyModel() {
+function replyModel(session) {
   const id = settings.model;
   const m = engine.MODELS[id] || {};
   const info = engine.smallInfo && engine.smallInfo();
   const how = m.runtime === 'cloud' ? 'relay' : m.runtime === 'litert' ? 'webgpu' : info ? (info.webllm ? 'webllm' : info.gpu ? 'wllama-gpu' : `wllama-cpu${info.threads > 1 ? `-${info.threads}` : ''}`) : m.runtime || '';
-  return { id, label: m.label || id, how, ...(smallModeSwitchable(id) ? { smallMode: smallMode(id) } : {}), ...(noPrompt(id) ? { noPrompt: true } : {}), contextSize: settings.contextSize, contextMode: settings.contextMode };
+  return { id, label: m.label || id, how, ...(smallModeSwitchable(id) ? { smallMode: smallMode(id) } : {}), ...(noPrompt(id) ? { noPrompt: true } : {}), ...(ownPrompt(session) != null ? { ownPrompt: true } : {}), contextSize: settings.contextSize, contextMode: settings.contextMode };
 }
 
 // One turn's state: the reply being written, counters, and the phases.

@@ -1685,6 +1685,53 @@ await check('the prompt follows the model, with no switches: a big model gets th
   assert.doesNotMatch(small.system || '', /^You are Squiggle, a personal AI agent/, 'Squiggle Small never gets the full prompt');
 });
 
+await check('a chat can have its own system prompt: edited in the chat details, used for its next reply, reset to Squiggle\'s', async () => {
+  const D = await device('ownprompt');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.evaluate(() => { const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'E2B'; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  const convs = () => D.page.evaluate(() => (window.__engineLog || []).filter(e => e.type === 'conversation'));
+  const send = async (text) => {
+    const before = (await convs()).length;
+    await D.page.fill('#input', text);
+    await D.page.press('#input', 'Enter');
+    await D.page.waitForFunction(n => (window.__engineLog || []).filter(e => e.type === 'conversation').length > n, before);
+    await D.page.waitForFunction(() => !document.querySelector('#composer .icon-btn use[href="#i-stop"]'));
+    return (await convs()).at(-1);
+  };
+  await D.page.click('#new-chat');
+  const first = await send('hi');
+  assert.match(first.system, /^You are Squiggle, a personal AI agent/);
+  assert.match(await D.page.textContent('#ctx-side'), /System prompt\s*Squiggle's/);
+  await D.page.click('#ctx-side button:has-text("View or edit")');
+  const start = await D.page.inputValue('#drawer .prompt-editor');
+  assert.match(start, /^You are Squiggle, a personal AI agent/, 'starts from the prompt Squiggle builds');
+  assert.match(start, /\{\{date\}\}/, 'the date is a placeholder');
+  assert.ok(!start.includes(new Date().toDateString()), start);
+  await D.page.fill('#drawer .prompt-editor', 'Be brief.\nToday is {{date}}.');
+  await D.page.click('#drawer button:has-text("Save")');
+  await D.page.click('#close-drawer');
+  const saved = await D.page.evaluate(async () => (await import('/src/sessions.js')).list()[0].systemPrompt);
+  assert.equal(saved, 'Be brief.\nToday is {{date}}.');
+  assert.match(await D.page.textContent('#ctx-side'), /System prompt\s*Edited for this chat/);
+  const own = await send('and again');
+  assert.ok(own.system.startsWith(`Be brief.\nToday is ${new Date().toDateString()}.`), own.system);
+  assert.doesNotMatch(own.system, /personal AI agent|\{\{/);
+  // Reset: back on Squiggle's prompt (null, so the sync merge can't bring an old edit back).
+  await D.page.click('#ctx-side button:has-text("Edit")');
+  await D.page.click('#drawer button:has-text("Reset to Squiggle")');
+  await D.page.click('#drawer button:has-text("Save")');
+  await D.page.click('#close-drawer');
+  assert.equal(await D.page.evaluate(async () => (await import('/src/sessions.js')).list()[0].systemPrompt), null);
+  const back = await send('one more');
+  assert.match(back.system, /^You are Squiggle, a personal AI agent/);
+  // The stubbed GitHub API answers 404 for anything it doesn't fake; nothing else may go wrong.
+  assert.deepEqual(D.page.errors.filter(e => !/Failed to load resource/.test(e)), []);
+});
+
 await check('small models: a long page comes back as a card saved in /web, grep finds the answer, and used results shrink to what the model took', async () => {
   const D = await device('cards');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));

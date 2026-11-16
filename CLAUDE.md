@@ -33,6 +33,7 @@ app/                    static app, plain ES modules, no build step
       model-ui.js       model download/load with progress, crash-loop guard, banners, composer note
       voice-ui.js       read aloud, voice calls (call bar)
       links.js          chat links: the open chat's id in the URL hash (#chat=<id>); a link opens that chat if this account has it (else the usual one, after the first sync), back/forward between chats, Copy link in the sidebar
+    prompt.js           a chat's own system prompt (session.systemPrompt): fillPrompt ({{tools}}, {{date}}), toTemplate (the built prompt as the editor's starting text); edited in panels.js renderPromptPanel, from the chat details
     agent.js            turn loop (docs/harness.md): chat phase → plan → one fresh prompt per step → final reply; ask_user (need for Squiggle Small)/find; recipes learned after
     tasks.js            step-mode task state, step/final prompts (budgeted), resume rules, DIALECT (v2 frozen fenced text / v3 harness text kept out of user turns in steps)
     recipes.js          memory/recipes.jsonl: how finished tasks were solved; saved pending, matched only once the user approves; forgotten after 90 days unused
@@ -142,6 +143,10 @@ panel is open at ≤1500 px. Replies saved before this show just the total.
 Session file `sessions/<id>.json`: `{ v, id, title, created, updated, deleted?, archived?, model?,
 messages[{id, role, content, ts, mts?, thread, tools?, context?, model?, pinned?, deleted?, attachments?[{name, path, type, size, chars, lines?, error?}]}],
 threads{id: {parent, title, summary?}}, observations[], summaries{main|threadId} }`.
+`systemPrompt` on the session is the chat's own system prompt: a string (an empty one means none from Squiggle)
+replaces the one agent.js builds in every phase (chat, plan steps, final reply), with `{{tools}}` and `{{date}}`
+filled in per call (prompt.js); `null` goes back to Squiggle's (never delete the key: the sync merge keeps the
+older copy's fields when the newer one lacks them). Replies written with it carry `model.ownPrompt`.
 `deleted`/`archived` on the session and `deleted` on a message are tombstones (content emptied) so the change
 syncs; `sessions.list()` leaves archived chats out (`listArchived`), `lineMessages` leaves deleted messages out.
 `model` on the session is the chat's own model: `ui/model-ui.js sessionModel()` picks it over `settings.defaultModel` (the
