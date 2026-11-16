@@ -73,3 +73,9 @@ test('free-text facts (remember, 2026-11-16) read and rank like triples, and nev
   assert.equal(r[0].fact.id, 't1', JSON.stringify(r));
   assert.ok(!r.some(x => x.fact.id === 't2'), 'no shared entity to hop through');
 });
+
+test('a general question about the user gets the newest facts; a specific one still needs shared words', () => {
+  const live = [{ id: 'old', text: 'The user lives in Phoenix', mts: 1 }, { id: 'new', text: 'The user likes short answers', mts: 2 }];
+  for (const q of ['What do you remember about me?', 'who am I', 'me', 'user']) assert.deepEqual(rankFacts(live, q).map(r => r.fact.id), ['new', 'old'], q);
+  assert.deepEqual(rankFacts(live, 'remember that my cat is Mo').map(r => r.fact.id), [], 'saving is not asking');
+});

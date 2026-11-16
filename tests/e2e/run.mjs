@@ -1458,12 +1458,14 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
     const a = await call({ fact: 'Keal likes short answers' });
     const b = await call({ fact: 'the deploy is on Fridays', scope: 'this chat' });
     const c = await call({});
+    await call({ fact: 'I like tea' });   // the user's words, saved as theirs
     return { a: a.label, b: b.label, c: c.model.error, facts: T.memory.all().map(T.memory.factText), notes: Object.values(session.notes || {}).map(n => n.text) };
   });
   assert.ok(mem.facts.includes('Keal likes short answers') && !mem.facts.includes('the deploy is on Fridays'), JSON.stringify(mem));
   assert.deepEqual(mem.notes, ['the deploy is on Fridays'], JSON.stringify(mem));
   assert.match(mem.b, /^remembered for this chat/);
   assert.match(mem.c, /Give the fact/);
+  assert.ok(mem.facts.includes('The user says: I like tea'), JSON.stringify(mem.facts));
   r = await run('git clone tester/app && cd /repos/app && ls && grep -rn console src | head -3 && git status');
   assert.equal(r.code, 0, JSON.stringify(r));
   assert.match(r.out, /README\.md[\s\S]*src[\s\S]*src\/index\.js:1:console\.log/);

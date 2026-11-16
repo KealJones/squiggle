@@ -6,8 +6,14 @@ import { overlap, blend, tokenize } from './search.js';
 export const factText = (f) => `${f.text || `${f.s} ${f.p} ${f.o}`}${f.note ? ` (${f.note})` : ''}`;
 const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
+// "What do you remember about me?" shares no words with what was saved ("Keal likes short answers"), so the
+// absolute bar finds nothing (Keal's iPhone, 2026-11-16): a general question about the user gets the newest facts.
+// A bare find("me") or find("user") is the same question (LFM3 asked find("me") there).
+export const asksAboutMe = (q) => /\b(about me|about myself|who am i|what do you (know|remember)|what have you (saved|remembered))\b|^\s*(me|my|myself|user|the user|about the user)\s*$/i.test(String(q || ''));
+
 // The ranking behind recall, pure (tests): facts, the query, optional semantic scores by id.
 export function rankFacts(live, query, { sem = null, k = 8 } = {}) {
+  if (asksAboutMe(query)) return [...live].sort((a, b) => (b.mts || b.ts || 0) - (a.mts || a.ts || 0)).slice(0, k).map(fact => ({ fact, score: 1 }));
   const docs = live.map(f => ({ id: f.id, text: factText(f) }));
   const cov = overlap(docs);
   const kw = cov.score(query);
