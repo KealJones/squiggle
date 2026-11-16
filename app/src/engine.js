@@ -515,7 +515,15 @@ export async function conversation({ system, messages = [], tools = [], thinking
 // Streams one model response. Returns { text, thinking, toolCalls }.
 export async function respond(conv, input, opts = {}) {
   try {
-    return await respondOnce(conv, input, opts);
+    try {
+      return await respondOnce(conv, input, opts);
+    } catch (e) {
+      // The GPU went away after some of the reply was shown and the format can't carry on from it (webllm shim): the
+      // call starts over from the same input, once, with what the failed try added to the conversation undone.
+      if (!(e && e.gpuLost) || typeof conv.rewind !== 'function' || (opts.signal && opts.signal.aborted)) throw e;
+      conv.rewind();
+      return await respondOnce(conv, input, { ...opts, resume: '' });
+    }
   } catch (e) {
     // Gemma 4 wrote a tool call LiteRT couldn't parse (e.g. "plain quotes" instead
     // of <|"|>). Read it leniently and carry on; if it can't be read, ask once more.
@@ -528,7 +536,7 @@ export async function respond(conv, input, opts = {}) {
   }
 }
 
-async function respondOnce(conv, input, { onText, onThinking, signal } = {}) {
+async function respondOnce(conv, input, { onText, onThinking, signal, resume, track } = {}) {
   activeConv = conv;
   const local = MODELS[loadedModel] && MODELS[loadedModel].runtime !== 'cloud';
   if (local) progress('writing the reply');
@@ -536,7 +544,7 @@ async function respondOnce(conv, input, { onText, onThinking, signal } = {}) {
   const abort = () => { try { conv.cancel(); } catch {} };
   if (signal) signal.addEventListener('abort', abort, { once: true });
   try {
-    for await (const chunk of conv.sendMessageStreaming(input)) {
+    for await (const chunk of conv.sendMessageStreaming(input, { resume, track })) {
       const th = thinkingOf(chunk);
       if (th) { out.thinking += th; onThinking && onThinking(out.thinking); }
       if (Array.isArray(chunk.tool_calls)) out.toolCalls.push(...chunk.tool_calls);

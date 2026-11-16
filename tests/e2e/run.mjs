@@ -858,6 +858,42 @@ await check('AI-managed context: budget line, steps attach earlier results, chec
   await D.page.evaluate(async () => { (await import('/src/ui/settings.js')).setDefaultContextMode('smart'); });
 });
 
+await check('a reply the page lost mid-step is picked up on the next open: "Resuming…", step 1 (its tool call) not run again, the answer arrives, the checkpoint is gone', async () => {
+  const D = await device('resume');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  await D.page.evaluate(() => localStorage.setItem('hang-step-2', '1'));
+  await D.page.fill('#input', 'PLANTEST RESUMETEST kill whatever is on port 8080');
+  await D.page.press('#input', 'Enter');
+  // Step 1 ran its tool call; step 2 is waiting on the model, like a tab killed mid-reply.
+  await D.page.waitForFunction(() => (window.__engineLog || []).some(e => e.type === 'respond' && /Work on step 2 now/.test((e.system || '') + e.input)), null, { timeout: 20000 });
+  const cp = await D.page.evaluate(() => JSON.parse(localStorage.getItem('squiggle-resume')));
+  assert.equal(cp.phase, 'step');
+  assert.ok(cp.tools.some(t => t.name === 'find'), 'the tool call that ran is in the checkpoint');
+  await D.page.evaluate(() => localStorage.removeItem('hang-step-2'));
+  // What leaving the tab does (app.js settle on "hidden"), before iOS drops the page; then nobody taps anything.
+  await D.page.evaluate(async () => { await (await import('/src/sessions.js')).flush({ sync: false }); await (await import('/src/storage.js')).persistNow(); });
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.waitForFunction(() => /it is free now/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 20000 });
+  const r = await D.page.evaluate(() => ({
+    log: (window.__engineLog || []).filter(e => e.type === 'respond').map(e => (e.system || '').match(/Work on step \d now/) + ''),
+    sys: (window.__engineLog || []).filter(e => e.type === 'conversation' && /Work on step 2|step 2/.test(JSON.stringify(e.messages) + e.system)).map(e => e.system).join('\n'),
+    cp: localStorage.getItem('squiggle-resume'),
+    users: document.querySelectorAll('.msg.user').length,
+    resuming: document.body.textContent.includes('Resuming'),
+  }));
+  assert.ok(!r.log.some(x => /Work on step 1 now/.test(x)), 'step 1 is not run again: ' + JSON.stringify(r.log));
+  assert.match(r.sys, /It was interrupted before it finished/, 'step 2 is told it was interrupted');
+  assert.equal(r.cp, null, 'finished: the checkpoint is gone');
+  assert.equal(r.users, 1, 'the question is not asked twice');
+  assert.equal(r.resuming, false, 'the note goes away with the finished reply');
+});
+
 await check('chat details sidebar: model, context window breakdown (live and saved), progress, tools used; collapsible and remembered', async () => {
   const D = await device('side');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));

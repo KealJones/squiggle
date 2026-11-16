@@ -350,21 +350,27 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
   // One reply. Chat formats go through WebLLM's chat API, raw ones send the rendered prompt as a text
   // completion. Either way the reply streams back as thinking (reasoning_content) and text, with the
   // format's call block held back and handed over as delta.tool_calls at the end.
-  // One reply; if the GPU went away before any of it was shown, the model is loaded again and the reply starts over
-  // (every request carries the whole conversation, so nothing is lost). Once text is out, a retry would repeat it:
-  // the engine is still brought back for the next message, and the error says what happened.
+  // If the GPU goes away mid-reply the model is loaded again and the reply goes on: before anything was shown it starts
+  // over (every request carries the whole conversation); raw formats carry on from what was written (the prompt plus
+  // the partial reply, so nothing is repeated and the consumer just sees the next words). A chat format can't
+  // continue an assistant turn: the error is flagged `gpuLost` so engine.respond can restart the call (resume.js).
+  // `opts.resume_raw` starts from a partial reply the same way (the page was reloaded mid-reply); `opts.on_raw(raw)`
+  // reports the raw text as it grows, for the checkpoint.
   async function* stream(opts, signal) {
     await ready();
-    let shown = false;
+    const st = { raw: opts.resume_raw || '', thinkShown: 0, textShown: 0 };
     try {
-      for await (const c of streamOnce(opts, signal)) { shown = true; yield c; }
+      yield* streamOnce(opts, signal, st);
     } catch (e) {
       if (!gpuGone(e) || (signal && signal.aborted)) throw e;
       const first = gpuLossDetail(lostNotes || device);
       await revive();
-      if (shown) throw new Error(`The GPU dropped the model partway through this reply${first}. It has been loaded again: send the message again.`);
+      const shown = st.thinkShown || st.textShown;
+      if (shown && fmt.mode !== 'raw') throw Object.assign(new Error(`The GPU dropped the model partway through this reply${first}. It has been loaded again: send the message again.`), { gpuLost: true });
+      if (!shown) { st.raw = opts.resume_raw || ''; }
+      else { const at = fmt.callStart ? st.raw.indexOf(fmt.callStart) : -1; if (at >= 0) st.raw = st.raw.slice(0, at); }   // half a tool call is thrown away; the model writes it again
       try {
-        yield* streamOnce(opts, signal);
+        yield* streamOnce(opts, signal, st);
       } catch (e2) {
         if (!gpuGone(e2)) throw e2;
         stale = true;
@@ -373,7 +379,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
     }
   }
 
-  async function* streamOnce(opts, signal) {
+  async function* streamOnce(opts, signal, st = { raw: '', thinkShown: 0, textShown: 0 }) {
     // A chat format with no tools and no thinking switch (a background job) is plain text, as before.
     const f = fmt.mode === 'raw' || (fmt !== PLAIN && (opts.tools || opts.chat_template_kwargs)) ? fmt : PLAIN;
     const thinking = opts.chat_template_kwargs ? Boolean(opts.chat_template_kwargs.enable_thinking) : undefined;
@@ -382,7 +388,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
     const onAbort = () => { try { engine.interruptGenerate(); } catch {} };
     signal && signal.addEventListener('abort', onAbort, { once: true });
     try {
-      let chunks, prompt = '';
+      let chunks, prompt = '', base = '';
       if (f.mode === 'raw') {
         // WebLLM puts the conversation's prefix tokens (BOS) in front of a raw completion only on its manifest
         // path; a build without a manifest gets the prompt as is (web-llm 0.2.86/0.2.87 getInputData).
@@ -390,6 +396,8 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
         // think_prefill: thinking written into the model's own turn and closed here, so it carries on from it as
         // if it had thought that (the thinking budget, engine-wllama.js). The reply then starts after the close.
         if (opts.think_prefill && f.thinkClose && thinking && prompt.endsWith(f.thinkOpen)) prompt += opts.think_prefill + f.thinkClose;
+        base = prompt;   // what the model's own words are split against (ctx.prompt)
+        prompt += st.raw;      // a reply carried on after a lost GPU or a reload: the model goes on from what it wrote
         noteRendered('raw prompt', prompt);   // the exact text the model reads ("What the model saw", trace.js)
         try { await engine.resetChat(); } catch {}         // raw completions need an empty KV cache (a kept prefix snapshot survives: prefix-cache.js)
         chunks = await engine.completions.create({ prompt, stream: true, max_tokens: opts.max_tokens, ...sampling(opts), stop: f.stop });
@@ -406,35 +414,41 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
           ...(thinking === undefined ? {} : { extra_body: { enable_thinking: thinking } }),
         });
       }
-      const ctx = { thinking, prompt };
+      const ctx = { thinking, prompt: f.mode === 'raw' ? base : prompt };
       const visible = (text) => {
         if (!f.callStart) return text;
         const at = text.indexOf(f.callStart);
         // Whitespace before a call isn't shown; it's sent once more text follows.
         return (at >= 0 ? text.slice(0, at) : text.slice(0, text.length - heldBack(text, f.callStart))).replace(/\s+$/, '');
       };
-      let raw = '', shownThink = 0, shownText = 0;
+      let raw = f.mode === 'raw' ? st.raw : '';
+      // What `raw` adds to what the consumer has seen (st keeps the counts across a reload of the engine).
+      const news = function* () {
+        const s = f.split(raw, ctx);
+        if (s.thinking.length > st.thinkShown) { yield { choices: [{ delta: { reasoning_content: s.thinking.slice(st.thinkShown) } }] }; st.thinkShown = s.thinking.length; }
+        if (s.pending) return;
+        const text = visible(s.text);
+        if (text.length > st.textShown) { yield { choices: [{ delta: { content: text.slice(st.textShown) } }] }; st.textShown = text.length; }
+      };
+      if (raw) yield* news();
       for await (const c of chunks) {
         if (signal && signal.aborted) break;
         const ch = c.choices && c.choices[0];
         const piece = (ch && (ch.text ?? (ch.delta && ch.delta.content))) || '';
         if (!piece) continue;
         raw += piece;
-        const s = f.split(raw, ctx);
-        if (s.thinking.length > shownThink) { yield { choices: [{ delta: { reasoning_content: s.thinking.slice(shownThink) } }] }; shownThink = s.thinking.length; }
-        if (s.pending) continue;
-        const text = visible(s.text);
-        if (text.length > shownText) { yield { choices: [{ delta: { content: text.slice(shownText) } }] }; shownText = text.length; }
+        if (f.mode === 'raw') { st.raw = raw; opts.on_raw && opts.on_raw(raw); }
+        yield* news();
       }
       // Thinking that never closed (cut off by max_tokens): it was all thinking, no reply.
       const s = f.split(raw, ctx);
       if (!f.callStart) {
-        if (s.text.length > shownText) yield { choices: [{ delta: { content: s.text.slice(shownText) } }] };
+        if (s.text.length > st.textShown) yield { choices: [{ delta: { content: s.text.slice(st.textShown) } }] };
         return;
       }
       const at = s.text.indexOf(f.callStart);
       const before = (at >= 0 ? s.text.slice(0, at) : s.text).replace(/\s+$/, '');
-      if (before.length > shownText) yield { choices: [{ delta: { content: before.slice(shownText) } }] };
+      if (before.length > st.textShown) yield { choices: [{ delta: { content: before.slice(st.textShown) } }] };
       const calls = at >= 0 ? f.parseCalls(s.text.slice(at)) : [];
       if (calls.length) yield callChunk(calls);
     } finally {

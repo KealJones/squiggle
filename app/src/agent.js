@@ -21,6 +21,7 @@ import { bm25, tokenize } from './search.js';
 import { estTokens, truncate, uid } from './util.js';
 import { createTrace, openConv, addRound, takeRendered } from './trace.js';
 import { report } from './incidents.js';
+import { Checkpoint } from './resume.js';
 import { parseJsonl } from './merge.js';
 import { attachmentPrompt, saveAttachments, toRecord } from './attachments.js';
 
@@ -282,10 +283,11 @@ const STRIP_UNTRUSTED = /<\/?untrusted[^>]*>/g;
  * onCheckIn(task, decide(boolean)), onApproval(req, decide), onDone(msg),
  * onError(err). Returns the assistant message.
  */
-export function runTurn({ session, threadId = null, text, attachments = [], ui = {}, signal }) {
+export function runTurn({ session, threadId = null, text, attachments = [], ui = {}, signal, resume = null }) {
   const shown = text || (attachments.length ? 'Attached ' + attachments.map(a => a.name).join(', ') : '');
-  const userMsg = sessions.addMessage(session, { role: 'user', content: shown, thread: threadId, ...(attachments.length ? { attachments: attachments.map(toRecord) } : {}) });
-  ui.onUser && ui.onUser(userMsg);
+  // `resume`: a checkpoint (resume.js) of a turn the page lost; its user message is already in the chat.
+  const userMsg = resume ? session.messages.find(m => m.id === resume.user) : sessions.addMessage(session, { role: 'user', content: shown, thread: threadId, ...(attachments.length ? { attachments: attachments.map(toRecord) } : {}) });
+  if (!resume) ui.onUser && ui.onUser(userMsg);
   return engine.foreground(async () => {
     // Saved before the model runs, so read_file and grep can open them.
     if (attachments.length) {
@@ -294,18 +296,19 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
         observe: (o) => sessions.addObservation(session, { ...o, thread: threadId }),
       }).catch(e => console.warn('attachments', e));
     }
-    const turn = new Turn({ session, threadId, shown, attachments, ui, signal, userMsg });
+    const turn = new Turn({ session, threadId, shown, attachments, ui, signal, userMsg, resume });
     ui.onStart && ui.onStart(turn.reply);
     tasks.compactOld(session);
     try {
       const lastReply = [...sessions.lineMessages(session, threadId)].reverse().find(m => m.role === 'assistant');
-      const resume = tasks.resumable(session, threadId, shown, lastReply && lastReply.task);
-      if (resume) {
-        const task = resume.task;
+      const goOn = resume ? null : tasks.resumable(session, threadId, shown, lastReply && lastReply.task);
+      if (resume) await turn.resumeFrom(resume);
+      else if (goOn) {
+        const task = goOn.task;
         // Files sent with the answer: the model sees their paths (it reads them with read_file).
         const note = attachments.length ? attachmentPrompt(attachments, 0).note : '';
         if (note) task.attachNote = [task.attachNote, note].filter(Boolean).join('\n');
-        if (resume.how === 'answer') tasks.answerNeed(task, shown);
+        if (goOn.how === 'answer') tasks.answerNeed(task, shown);
         else { task.status = 'active'; tasks.touch(task); }
         sessions.saveTask(session, task);
         await turn.steps(task);
@@ -332,6 +335,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
       }
     }
     const reply = turn.reply;
+    turn.cp.clear();   // finished, stopped or failed: nothing left to pick up
     reply.content = scrubFakeToolNotes(turn.prefix).trim();
     // Which model wrote it (and how it ran), so a saved chat can be read against the right model.
     reply.model = replyModel();
@@ -368,8 +372,11 @@ function replyModel() {
 
 // One turn's state: the reply being written, counters, and the phases.
 class Turn {
-  constructor({ session, threadId, shown, attachments, ui, signal, userMsg }) {
+  constructor({ session, threadId, shown, attachments, ui, signal, userMsg, resume = null }) {
     Object.assign(this, { session, threadId, shown, attachments, ui, signal, userMsg });
+    // The checkpoint of this turn (resume.js): written now, so a page lost before the first word is still picked up.
+    this.cp = new Checkpoint({ session: session.id, thread: threadId, user: userMsg.id, text: shown, phase: 'chat', tries: resume ? (resume.tries || 0) + 1 : 0, model: settings.model });
+    this.carry = '';         // raw text of a half-written reply to carry on from (the next model call only)
     this.reply = { role: 'assistant', content: '', thread: threadId, tools: [], context: null };
     this.trace = createTrace();   // the whole context, exactly as sent (trace.js); saved with the reply
     this.pendingAdded = [];
@@ -465,9 +472,11 @@ class Turn {
     const base = this.thinking;
     const added = this.pendingAdded; this.pendingAdded = [];
     let r;
+    const resume = this.carry; this.carry = '';
+    this.cp.partial('');
     try {
       r = await engine.respond(this.conv, input, {
-        signal: this.signal,
+        signal: this.signal, resume, track: (raw) => this.cp.partial(raw),
         onText: (t) => { if (show) this.ui.onText && this.ui.onText(this.prefix + t); },
         onThinking: (t) => this.ui.onThinking && this.ui.onThinking((base ? base + '\n\n' : '') + t),
       });
@@ -719,6 +728,43 @@ class Turn {
   }
 
   // ── Step mode ───────────────────────────────────────────────────────────
+  // Writes the turn's checkpoint: the reply so far and the tool calls that ran (their results come back from here
+  // after a reload, never from running them again); the task goes to the session with it.
+  save(patch = {}) {
+    if (this.task) sessions.saveTask(this.session, this.task);
+    this.cp.set({ prefix: this.prefix, thinking: this.thinking.slice(-4000), tools: this.reply.tools, task: this.task ? this.task.id : null, raw: '', ...patch });
+  }
+
+  // Picks the turn up where the page lost it (resume.js): the finished steps and tool calls stay as they are.
+  async resumeFrom(cp) {
+    const { session } = this;
+    this.reply.tools = cp.tools || [];
+    this.prefix = cp.prefix || '';
+    this.thinking = cp.thinking || '';
+    if (this.thinking) this.ui.onThinking && this.ui.onThinking(this.thinking);
+    if (this.prefix) this.ui.onText && this.ui.onText(this.prefix);
+    const task = cp.task && session.tasks && session.tasks[cp.task];
+    if (task && cp.phase === 'final' && task.status === 'done') {
+      this.task = task;
+      this.carry = cp.model === settings.model ? cp.raw || '' : '';   // the final reply's prompt is the same as before, so it carries on mid-sentence
+      return this.final(task);
+    }
+    if (task && task.status !== 'done') {
+      task.status = 'active'; delete task.waiting;
+      const step = task.steps.find(st => st.status === 'active');
+      // The step starts again; its prompt lists the calls it already made with their results ("don't repeat them").
+      if (step) { step.status = 'todo'; this.stepRetry = { id: step.id, n: 0, resumed: true }; }
+      tasks.touch(task); sessions.saveTask(session, task);
+      return this.steps(task);
+    }
+    // Still in the chat phase. With tools already run, it carries on in a fresh context from what they found
+    // (carryOn); with none, the first reply carries on from the words it had.
+    if (this.reply.tools.some(t => t.ok !== false && !['plan', 'done', 'tool_info', 'checkpoint'].includes(t.name))) return this.steps(this.carryOn());
+    this.carry = cp.model === settings.model ? cp.raw || '' : '';
+    const t = await this.chat();
+    if (t) await this.steps(t);
+  }
+
   async steps(task) {
     this.task = task;
     this.ui.onPlan && this.ui.onPlan(task);
@@ -726,7 +772,7 @@ class Turn {
     while (!this.aborted) {
       const step = tasks.startStep(task);
       if (!step) break;
-      sessions.saveTask(this.session, task);
+      this.save({ phase: 'step' });
       this.ui.onPlan && this.ui.onPlan(task);
       const outcome = await this.runStep(task, step);
       if (outcome !== 'again') this.stepRetry = null;
@@ -807,7 +853,7 @@ class Turn {
   retryText(task, step, retry) {
     const calls = (task.log || []).filter(l => l.step === step.id && !tasks.HARNESS.has(l.name))
       .map(l => `- ${l.label}${l.text ? `\n${wrapUntrusted('tool output', truncate(String(l.text).replace(STRIP_UNTRUSTED, ''), 600))}` : ''}`);
-    return [`It ended without calling a tool. ${retry.why}`,
+    return [retry.resumed ? 'It was interrupted before it finished (the page was left).' : `It ended without calling a tool. ${retry.why}`,
       calls.length ? `Tool calls it made (their results are below; don't repeat them):\n${calls.join('\n')}` : 'It made no tool calls.',
       retry.said ? `What it wrote: ${truncate(retry.said, 400)}` : ''].filter(Boolean).join('\n');
   }
@@ -1004,6 +1050,7 @@ class Turn {
     tasks.touch(task);
     sessions.saveTask(this.session, task);
     this.finishedNow = true;
+    this.save({ phase: 'final', raw: this.carry });
     this.ui.onPlan && this.ui.onPlan(task);
     const maxTokens = Math.max(600, settings.contextSize - Math.min(MAX_OUTPUT, 1024) - 300);
     await this.open('Final reply', { system: tasks.finalSystem(systemPrompt(this.threadId, this.session, 'final'), task, { maxTokens, dialect: dialect() }), messages: [], tools: [], maxOutputTokens: MAX_OUTPUT });
@@ -1033,6 +1080,7 @@ class Turn {
     if (settings.debugTools && result !== undefined) rec.result = debugText(result);
     this.reply.tools.push(rec);
     this.ui.onTool && this.ui.onTool({ ...t, running: false });
+    this.save();
   }
 
   // Runs one tool call (harness tools here, agent tools in tools.js).
