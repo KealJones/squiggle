@@ -31,3 +31,24 @@ export function toTemplate(built, { names = '', now = new Date() } = {}) {
 
 // What a session uses: its own text, or null for Squiggle's.
 export const ownPrompt = (session) => (session && typeof session.systemPrompt === 'string' ? session.systemPrompt : null);
+
+// A chat's own tool choices (session.chatTools): { off: [names], desc: { name: text } }, or null for Squiggle's.
+// Turned-off tools are left out of every phase and refused if the model calls one anyway; an edited description
+// replaces the tool's own (only the top-level one: parameters keep theirs). `done` and `checkpoint` belong to plan
+// and AI-managed context, so they can't be turned off on their own.
+export const LOCKED = new Set(['done', 'checkpoint']);
+export const ownTools = (session) => (session && session.chatTools && typeof session.chatTools === 'object' ? session.chatTools : null);
+export const toolOff = (prefs, name) => Boolean(prefs && !LOCKED.has(name) && Array.isArray(prefs.off) && prefs.off.includes(name));
+export function withPrefs(prefs, specs) {
+  if (!prefs) return specs;
+  return specs.filter(t => !toolOff(prefs, t.name)).map((t) => {
+    const d = prefs.desc && prefs.desc[t.name];
+    return typeof d === 'string' && d !== t.description ? { ...t, description: d } : t;
+  });
+}
+// What the editor saves: only what differs from Squiggle's (null when nothing does).
+export function toolPrefs(rows) {
+  const off = rows.filter(r => !r.on && !LOCKED.has(r.name)).map(r => r.name);
+  const desc = Object.fromEntries(rows.filter(r => typeof r.text === 'string' && r.text !== r.description).map(r => [r.name, r.text]));
+  return off.length || Object.keys(desc).length ? { off, desc } : null;
+}
