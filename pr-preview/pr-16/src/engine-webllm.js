@@ -364,7 +364,11 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
     } catch (e) {
       if (!gpuGone(e) || (signal && signal.aborted)) throw e;
       const first = gpuLossDetail(lostNotes || device);
-      await revive();
+      // iOS gives a hidden tab no GPU (Keal's iPhone, 2026-11-15: 11 s of "no GPU yet" while he was in another app), so
+      // the reload waits until the page shows again. If it still can't get one, reloadToResume: the page reloads and
+      // picks the reply up from its checkpoint (resume.js), the same path as a tab iOS killed.
+      await new Promise((r) => whenVisible(r, 0));
+      try { await revive(); } catch (er) { throw Object.assign(er, { reloadToResume: true }); }
       const shown = st.thinkShown || st.textShown;
       if (shown && fmt.mode !== 'raw') throw Object.assign(new Error(`The GPU dropped the model partway through this reply${first}. It has been loaded again: send the message again.`), { gpuLost: true });
       if (!shown) { st.raw = opts.resume_raw || ''; }
@@ -374,7 +378,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
       } catch (e2) {
         if (!gpuGone(e2)) throw e2;
         stale = true;
-        throw new Error(`The GPU dropped the model again right after it was reloaded${gpuLossDetail(device)}; the first time${first}. This device may not have enough GPU memory for this model right now.`);
+        throw Object.assign(new Error(`The GPU dropped the model again right after it was reloaded${gpuLossDetail(device)}; the first time${first}. This device may not have enough GPU memory for this model right now.`), { reloadToResume: true });
       }
     }
   }
