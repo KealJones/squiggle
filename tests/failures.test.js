@@ -128,8 +128,7 @@ test('case 21: "what do you remember about me" finds the facts; LFM3\'s prompt s
   assert.deepEqual(rankFacts(live, 'me').map(r => r.fact.id), ['f']);
   const src = readFileSync(new URL('../app/src/agent.js', import.meta.url), 'utf8');
   assert.match(src, /LITE_SYSTEM_BASH = \[[^\]]*MEMORY_LINE,/);
-  assert.match(src, /never "I"\); scope "this chat"/);
-  assert.match(src, /not find\("me"\)/);
+  assert.match(src, /const MEMORY_LINE = 'When the user tells you something lasting about themselves or their work, save it with the remember tool.';/);
   const mem = readFileSync(new URL('../app/src/tools/memory.js', import.meta.url), 'utf8');
   assert.match(mem, /The user says: \$\{text\}/);
 });

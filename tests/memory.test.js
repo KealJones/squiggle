@@ -76,6 +76,11 @@ test('free-text facts (remember, 2026-11-16) read and rank like triples, and nev
 
 test('a general question about the user gets the newest facts; a specific one still needs shared words', () => {
   const live = [{ id: 'old', text: 'The user lives in Phoenix', mts: 1 }, { id: 'new', text: 'The user likes short answers', mts: 2 }];
-  for (const q of ['What do you remember about me?', 'who am I', 'me', 'user']) assert.deepEqual(rankFacts(live, q).map(r => r.fact.id), ['new', 'old'], q);
+  for (const q of ['What do you remember about me?', 'who am I', 'me', 'user', 'what do you know about the user', 'tell me about myself', 'What have you saved on me?']) assert.deepEqual(rankFacts(live, q).map(r => r.fact.id), ['new', 'old'], q);
   assert.deepEqual(rankFacts(live, 'remember that my cat is Mo').map(r => r.fact.id), [], 'saving is not asking');
+});
+
+test('only questions about the user get the newest facts: small talk and specific questions do not', async () => {
+  const { asksAboutMe } = await import('../app/src/memory-rank.js');
+  for (const q of ['ok thanks', 'how are you?', 'hi', 'what is my favorite food', 'can you help me with my repo', 'remember that my cat is Mo', '']) assert.equal(asksAboutMe(q), false, q);
 });

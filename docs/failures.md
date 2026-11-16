@@ -347,8 +347,11 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   the user's words in the first person, which another chat reads as the assistant's, and it searched for "me".
   Its prompt (LITE_SYSTEM_BASH) said nothing about memory; only the big prompt did.
 - **Good answer:** "You like short answers." (and nothing about Fridays, which was for the other chat).
-- **Fix:** `memory-rank.js asksAboutMe`: a general question about the user (about me, who am I, what do you
-  know/remember, or a bare me/user query) gets the newest facts. `remember` saves a fact starting with I/my/me as
-  "The user says: …" and asks for "The user …". LITE_SYSTEM_BASH gets MEMORY_LINE: remember lasting things about
-  the user, written about them, "this chat" scope, and find("the user" + topic), not find("me").
+- **Fix:** `memory-rank.js asksAboutMe`: strip the words that only point at the user or at memory (me/my/I are
+  stopwords already; user, myself, remember, know, saved, memory…); a query with nothing else left ("What do you
+  remember about me?", find("me"), "who am I") gets the newest facts, anything more is matched as usual. Words,
+  not a phrase list. `remember` saves a fact starting with I/my/me as "The user says: …" and asks for "The
+  user …". LITE_SYSTEM_BASH gets one line (MEMORY_LINE): save lasting things about the user with the remember
+  tool. Always putting a short profile in the prompt was weighed and turned down: it costs every turn of a 6K
+  window for an occasional question (Keal, 2026-11-16).
 - **Caught by:** tests/failures.test.js case 21.
