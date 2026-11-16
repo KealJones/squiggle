@@ -1442,8 +1442,14 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
   r = await run('mkdir -p /home/notes && echo "buy milk" > /home/notes/todo.md && echo "call Dana" >> /home/notes/todo.md && cat /home/notes/todo.md | wc -l');
   assert.equal(r.out.trim(), '2', JSON.stringify(r));
   // Through storage.js, so it syncs.
-  await D.page.evaluate(() => T.storage.sync());
-  assert.equal(git(stateRepo, 'show', 'main:home/notes/todo.md'), 'buy milk\ncall Dana');
+  // sync() keeps its errors (the app just syncs again later); on CI one failed once (2026-11-16), so allow a retry and say why.
+  const onServer = () => { try { return git(stateRepo, 'show', 'main:home/notes/todo.md'); } catch { return null; } };
+  let status;
+  for (let i = 0; i < 3 && onServer() === null; i++) {
+    status = await D.page.evaluate(async () => { await T.storage.sync(); return T.storage.syncStatus(); });
+    if (onServer() === null) console.log('      bash sync: not on the server yet', JSON.stringify(status));
+  }
+  assert.equal(onServer(), 'buy milk\ncall Dana', `/home write never reached the repo: ${JSON.stringify(status)}`);
   r = await run('git clone tester/app && cd /repos/app && ls && grep -rn console src | head -3 && git status');
   assert.equal(r.code, 0, JSON.stringify(r));
   assert.match(r.out, /README\.md[\s\S]*src[\s\S]*src\/index\.js:1:console\.log/);
