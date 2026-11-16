@@ -2,7 +2,8 @@
 // request, and which extracted facts are about the user at all. memory.js re-exports them.
 import { overlap, blend, tokenize } from './search.js';
 
-export const factText = (f) => `${f.s} ${f.p} ${f.o}${f.note ? ` (${f.note})` : ''}`;
+// A fact is free text (`text`, from 2026-11-16) or an older subject → relation → object triple.
+export const factText = (f) => `${f.text || `${f.s} ${f.p} ${f.o}`}${f.note ? ` (${f.note})` : ''}`;
 const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
 // The ranking behind recall, pure (tests): facts, the query, optional semantic scores by id.

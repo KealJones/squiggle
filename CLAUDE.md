@@ -72,7 +72,7 @@ app/                    static app, plain ES modules, no build step
     storage.js          storage repo: setup, clone at /state, client-side rebase sync
     merge.js            conflict-free merges (sessions JSON, .jsonl)
     sessions.js         sessions + threads + observations on top of storage
-    memory.js           fact graph (memory/facts.jsonl), recall with 1-hop expansion (through specific entities only)
+    memory.js           facts (memory/facts.jsonl): one sentence each from `remember` (scope "this chat" saves a chat note instead), older ones subject → relation → object; recall with 1-hop expansion (through specific entities only)
     memory-rank.js      the pure parts of memory: rankFacts (absolute relevance, search.js overlap), aboutTheUser (extraction guard)
     github.js           device flow, token refresh, REST helpers (token never leaves here)
     git.js              LightningFS + isomorphic-git wiring

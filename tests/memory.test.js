@@ -65,3 +65,11 @@ test('aboutTheUser: facts about the assistant itself are kept only when the user
   assert.equal(aboutTheUser({ s: 'squiggle', p: 'stores sessions in', o: 'a private GitHub repo' }, 'remember that squiggle stores its sessions in a private github repo'), true);
   assert.equal(aboutTheUser({ s: 'the assistant', p: 'can', o: 'search the web' }, 'can you search the web?'), true);
 });
+
+test('free-text facts (remember, 2026-11-16) read and rank like triples, and never hop', () => {
+  const live = [...FACTS, { id: 't1', text: 'Keal wants short answers on his phone' }, { id: 't2', text: 'Dash likes trains', note: 'his son' }];
+  assert.equal(factText(live.at(-1)), 'Dash likes trains (his son)');
+  const r = rankFacts(live, 'should answers on the phone be short?');
+  assert.equal(r[0].fact.id, 't1', JSON.stringify(r));
+  assert.ok(!r.some(x => x.fact.id === 't2'), 'no shared entity to hop through');
+});

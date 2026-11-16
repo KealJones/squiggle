@@ -1450,6 +1450,20 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
     if (onServer() === null) console.log('      bash sync: not on the server yet', JSON.stringify(status));
   }
   assert.equal(onServer(), 'buy milk\ncall Dana', `/home write never reached the repo: ${JSON.stringify(status)}`);
+  // remember: one sentence, everywhere (memory) or this chat (the chat's notes, always in its prompt).
+  const mem = await D.page.evaluate(async () => {
+    const { runTool } = await import('/src/tools.js');
+    const session = window.__bashSession;
+    const call = (args) => runTool({ function: { name: 'remember', arguments: args } }, { session });
+    const a = await call({ fact: 'Keal likes short answers' });
+    const b = await call({ fact: 'the deploy is on Fridays', scope: 'this chat' });
+    const c = await call({});
+    return { a: a.label, b: b.label, c: c.model.error, facts: T.memory.all().map(T.memory.factText), notes: Object.values(session.notes || {}).map(n => n.text) };
+  });
+  assert.ok(mem.facts.includes('Keal likes short answers') && !mem.facts.includes('the deploy is on Fridays'), JSON.stringify(mem));
+  assert.deepEqual(mem.notes, ['the deploy is on Fridays'], JSON.stringify(mem));
+  assert.match(mem.b, /^remembered for this chat/);
+  assert.match(mem.c, /Give the fact/);
   r = await run('git clone tester/app && cd /repos/app && ls && grep -rn console src | head -3 && git status');
   assert.equal(r.code, 0, JSON.stringify(r));
   assert.match(r.out, /README\.md[\s\S]*src[\s\S]*src\/index\.js:1:console\.log/);

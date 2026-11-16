@@ -3,16 +3,26 @@ import * as memory from '../memory.js';
 import * as sessions from '../sessions.js';
 import { wrapUntrusted } from '../untrusted.js';
 import { bm25 } from '../search.js';
-import { defineTool, params, str } from './registry.js';
+import { truncate } from '../util.js';
+import { defineTool, params, str, oneOf } from './registry.js';
 
 export const remember = defineTool({
   name: 'remember',
   group: 'memory',
-  description: 'Save a lasting fact about the user or their projects (preferences, decisions, names, how things work). Saved as subject → relation → object.',
-  parameters: params({ subject: str('Who/what, e.g. "Keal" or "squiggle"'), relation: str('e.g. "prefers", "uses", "is deployed on"'), object: str('the value'), note: str('optional detail') }, ['subject', 'relation', 'object']),
-  async run({ subject, relation, object, note }, ctx) {
-    const f = memory.add({ s: subject, p: relation, o: object, note, source: { session: ctx.session.id } });
-    return { model: { ok: true, id: f.id }, label: `remembered: ${subject} ${relation} ${object}` };
+  description: 'Save something to remember, in one sentence: a fact about the user or their projects (preferences, decisions, names, how things work). "everywhere" (the default) keeps it for every chat; "this chat" keeps it only here.',
+  parameters: params({ fact: str('What to remember, e.g. "Keal prefers short answers"'), scope: oneOf(['everywhere', 'this chat'], 'everywhere (default) or this chat') }),   // fact isn't required so the fine-tunes' triple call gets through
+  // The two fine-tunes learned the old subject/relation/object call; it still works.
+  async run({ fact, scope, subject, relation, object, note }, ctx = {}) {
+    const text = String(fact || [subject, relation, object].filter(Boolean).join(' ')).trim();
+    if (!text) return { model: { error: 'Give the fact to remember, in one sentence.' } };
+    if (scope === 'this chat') {
+      if (!ctx.session) return { model: { error: 'No chat to remember it in.' } };
+      const n = sessions.setNote(ctx.session, null, text.slice(0, 1500));
+      return { model: { ok: true, id: n.id, scope }, label: `remembered for this chat: ${truncate(text, 60)}` };
+    }
+    const f = fact ? memory.add({ text, note, source: { session: ctx.session && ctx.session.id } })
+      : memory.add({ s: subject, p: relation, o: object, note, source: { session: ctx.session && ctx.session.id } });
+    return { model: { ok: true, id: f.id }, label: `remembered: ${truncate(text, 60)}` };
   },
 });
 
