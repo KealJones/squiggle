@@ -120,3 +120,16 @@ test('case 20: tools/tty.js marks gh as at a terminal only when its stdout reach
   for (const [script, want] of Object.entries(cases)) assert.equal((await shell.exec(script)).stdout, want, script);
   assert.equal((await shell.exec('gh >&2')).stderr, 'tty\n', 'stderr is the terminal too');
 });
+
+test('case 21: "what do you remember about me" finds the facts; LFM3\'s prompt says how to save and look them up', async () => {
+  const { rankFacts } = await import('../app/src/memory-rank.js');
+  const live = [{ id: 'f', text: 'The user says: I like short answers.', mts: 1 }];
+  assert.deepEqual(rankFacts(live, 'What do you remember about me?').map(r => r.fact.id), ['f']);
+  assert.deepEqual(rankFacts(live, 'me').map(r => r.fact.id), ['f']);
+  const src = readFileSync(new URL('../app/src/agent.js', import.meta.url), 'utf8');
+  assert.match(src, /LITE_SYSTEM_BASH = \[[^\]]*MEMORY_LINE,/);
+  assert.match(src, /never "I"\); scope "this chat"/);
+  assert.match(src, /not find\("me"\)/);
+  const mem = readFileSync(new URL('../app/src/tools/memory.js', import.meta.url), 'utf8');
+  assert.match(mem, /The user says: \$\{text\}/);
+});
