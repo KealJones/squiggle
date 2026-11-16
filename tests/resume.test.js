@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createShim } from '../app/src/engine-webllm.js';
 import { NativeConversation } from '../app/src/engine-wllama.js';
 import { respond } from '../app/src/engine.js';
-import { Checkpoint, load, clear, decide, leftOver, MAX_TRIES } from '../app/src/resume.js';
+import { Checkpoint, load, clear, decide, leftOver, MAX_TRIES, repeatKey } from '../app/src/resume.js';
 
 // A localStorage stand-in (optionally full).
 const memStore = ({ quota = Infinity } = {}) => {
@@ -131,4 +131,16 @@ test('a chat format (no continuing an assistant turn): the error is flagged, and
   assert.equal(requests.length, 1);
   assert.equal(requests[0].messages.filter(m => m.role === 'user').length, 1, 'the question is in the request once');
   assert.equal(conv.messages.filter(m => m.role === 'user').length, 1, 'and in the conversation once');
+});
+
+test('repeatKey: read-only calls can be answered from an earlier result; anything that could change something always runs', () => {
+  const same = (a, b) => repeatKey('bash', { command: a }) !== null && repeatKey('bash', { command: a }) === repeatKey('bash', { command: b });
+  assert.ok(same('curl -s https://en.wikipedia.org/api/rest_v1/page/summary/Tucson', 'curl -s https://en.wikipedia.org/api/rest_v1/page/summary/Tucson'));
+  assert.ok(repeatKey('bash', { command: 'curl -s https://x.org | grep -i population | head -20' }));
+  assert.ok(repeatKey('bash', { command: 'wiki Phoenix' }));
+  for (const cmd of ['curl -s https://x.org > /tmp/a', 'git push', 'gh pr merge 3', 'job run -- npm test', 'rm -rf /home', 'sed -i s/a/b/ f', 'echo $(cat f)', 'cat a; git commit -am x', 'tee f', ''])
+    assert.equal(repeatKey('bash', { command: cmd }), null, cmd);
+  assert.ok(repeatKey('web_search', { query: 'tucson population' }));
+  assert.equal(repeatKey('git_push', { repo: 'x' }), null);
+  assert.equal(repeatKey('write_file', { path: '/home/a', content: 'b' }), null);
 });

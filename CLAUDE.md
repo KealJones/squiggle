@@ -227,7 +227,11 @@ after the person taps Try again. A GPU lost mid-reply is reloaded only once the 
 no GPU: on Keal's iPhone, 2026-11-15, the ~11 s of retries ran out while he was in another app and the reply ended in
 "the browser hasn't given it back yet"); if it still won't come back, or drops again right after, the error carries
 `reloadToResume` and the turn reloads the page instead of failing (chat.js `onReload`), so the checkpoint picks the
-reply up like a killed tab, within the same 2 tries.
+reply up like a killed tab, within the same 2 tries. A read-only call repeated in the same turn (`resume.js repeatKey`:
+read-only tools, and bash made only of read-only programs with no redirect, substitution or in-place edit) gets its
+earlier result back, marked "already ran", instead of running again; the calls from before a resume count too (their
+saved results). On Keal's iPhone (2026-11-15) LFM3 re-ran the same two Wikipedia fetches after a resume despite the
+"don't repeat them" note and ran out of window with no answer.
 
 ## Voice (voice.js)
 

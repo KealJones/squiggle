@@ -47,3 +47,19 @@ export function leftOver(cp) {
   const text = [cp.prefix, rawText].filter(Boolean).join('\n\n').trim();
   return `${text ? text + '\n\n' : ''}_(This reply was interrupted ${MAX_TRIES} times and picked up again each time, so Squiggle stopped. Send the message again to retry.)_`;
 }
+
+// A call worth answering from an earlier result instead of running again (agent.js Turn.exec): read-only tools, and bash
+// commands made only of read-only programs with no redirect, substitution or in-place edit. Anything that could change
+// something (a write, a push, gh, job) returns null and always runs. Small models repeat calls, after a resume most of
+// all (Keal's iPhone, 2026-11-15: the same two Wikipedia fetches before and after the tab was killed).
+const READ_TOOLS = new Set(['web_search', 'fetch_url', 'wiki_lookup', 'read_file', 'grep', 'search_history', 'calculate']);
+const READ_CMDS = /^(curl|search|wiki|cat|grep|egrep|head|tail|wc|jq|ls|bc|sort|uniq|cut|tr|echo|sed|awk)$/;
+export function repeatKey(name, args = {}) {
+  if (name === 'bash') {
+    const cmd = String(args.command || '').trim();
+    if (!cmd || /[>`$]|\bsed\b[^|]*\s-i\b|\bawk\b[^|]*system/.test(cmd)) return null;
+    if (!cmd.split(/\|\||&&|[|;]/).every(part => READ_CMDS.test(part.trim().split(/\s+/)[0]))) return null;
+    return 'bash ' + cmd;
+  }
+  return READ_TOOLS.has(name) ? name + ' ' + JSON.stringify(args) : null;
+}
