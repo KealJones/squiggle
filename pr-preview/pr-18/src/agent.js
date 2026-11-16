@@ -82,7 +82,8 @@ export const LITE_SYSTEM_NATIVE = [
 // git and gh are already signed in as him (failures.md case 20). Left out in demo mode (no account).
 const GITHUB_LINE = "git and gh are signed in as the user: \"my repo X\" is theirs, so gh repo clone X (it lands in /repos/X).";
 // LFM3's prompt had nothing on memory (only the big prompt did): case 21.
-const MEMORY_LINE = 'When the user tells you something lasting about themselves or their work (a preference, a name, a decision), remember it, written about them ("The user prefers short answers", never "I"); scope "this chat" if it only matters here.\nFacts about the user are shown to you when they matter; to look for more, find("the user" and the topic), not find("me").';
+// Just "use the tool": its description says how to word it and the scopes, and the harness handles the rest.
+const MEMORY_LINE = 'When the user tells you something lasting about themselves or their work, save it with the remember tool.';
 export const LITE_SYSTEM_BASH = [
   ...LITE_SYSTEM.split('\n').slice(0, 3),
   'Use bash for files, the web, GitHub and maths: search WORDS, curl URL | grep -i WORD, wiki NAME, git, gh, bc; `man` lists',
@@ -524,7 +525,7 @@ class Turn {
       // on, other chats') and, for small models, memory facts into a labelled block
       // after the request (recall.js); only on a real question and above a bar.
       others: settings.recallChats === true ? sessions.list() : [],
-      small: lite(),
+      small: lite(), frozen: dialect().frozen,
       // No prompt means nothing from Squiggle in the system turn, memory notes included.
       recall: noPrompt() ? null : (q, k) => memory.recall(q, k), factText: memory.factText, factsTitle: dialect().memoryTitle,
       // "Tool calls you made" read to small models as things the user said; LFM3 is trained for harness text, and
