@@ -81,11 +81,14 @@ export const LITE_SYSTEM_NATIVE = [
 // because LFM3, told "clone my repo bubbles", searched memory three times and asked Keal for the URL: nothing said
 // git and gh are already signed in as him (failures.md case 20). Left out in demo mode (no account).
 const GITHUB_LINE = "git and gh are signed in as the user: \"my repo X\" is theirs, so gh repo clone X (it lands in /repos/X).";
+// LFM3's prompt had nothing on memory (only the big prompt did): case 21.
+const MEMORY_LINE = 'When the user tells you something lasting about themselves or their work (a preference, a name, a decision), remember it, written about them ("The user prefers short answers", never "I"); scope "this chat" if it only matters here.\nFacts about the user are shown to you when they matter; to look for more, find("the user" and the topic), not find("me").';
 export const LITE_SYSTEM_BASH = [
   ...LITE_SYSTEM.split('\n').slice(0, 3),
   'Use bash for files, the web, GitHub and maths: search WORDS, curl URL | grep -i WORD, wiki NAME, git, gh, bc; `man` lists',
   'the custom commands. find(query) searches recipes, memory and past chats; ask_user(question) asks the user something only they know and waits.',
   GITHUB_LINE,
+  MEMORY_LINE,
   'Your context window is small: never cat a whole file or curl a whole page. Pipe into grep, head, tail, sed -n or wc,',
   'or save it to a file (> /tmp/page.txt) and work on the file in small pieces.',
   'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
