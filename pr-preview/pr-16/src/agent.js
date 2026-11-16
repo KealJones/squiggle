@@ -21,7 +21,7 @@ import { bm25, tokenize } from './search.js';
 import { estTokens, truncate, uid } from './util.js';
 import { createTrace, openConv, addRound, takeRendered } from './trace.js';
 import { report } from './incidents.js';
-import { Checkpoint, decide as resumeDecide } from './resume.js';
+import { Checkpoint, decide as resumeDecide, repeatKey } from './resume.js';
 import { parseJsonl } from './merge.js';
 import { attachmentPrompt, saveAttachments, toRecord } from './attachments.js';
 
@@ -83,7 +83,7 @@ export const LITE_SYSTEM_NATIVE = [
 const GITHUB_LINE = "git and gh are signed in as the user: \"my repo X\" is theirs, so gh repo clone X (it lands in /repos/X).";
 export const LITE_SYSTEM_BASH = [
   ...LITE_SYSTEM.split('\n').slice(0, 3),
-  'Use bash for files, the web, GitHub and maths: search WORDS, curl URL | grep -i WORD, git, gh, bc; `man` lists',
+  'Use bash for files, the web, GitHub and maths: search WORDS, curl URL | grep -i WORD, wiki NAME, git, gh, bc; `man` lists',
   'the custom commands. find(query) searches recipes, memory and past chats; ask_user(question) asks the user something only they know and waits.',
   GITHUB_LINE,
   'Your context window is small: never cat a whole file or curl a whole page. Pipe into grep, head, tail, sed -n or wc,',
@@ -380,6 +380,7 @@ class Turn {
     // The checkpoint of this turn (resume.js): written now, so a page lost before the first word is still picked up.
     this.cp = new Checkpoint({ session: session.id, thread: threadId, user: userMsg.id, text: shown, phase: 'chat', tries: resume ? (resume.tries || 0) + 1 : 0, model: settings.model });
     this.carry = '';         // raw text of a half-written reply to carry on from (the next model call only)
+    this.seen = new Map();   // read-only calls already made this turn → their result (resume.js repeatKey)
     this.reply = { role: 'assistant', content: '', thread: threadId, tools: [], context: null };
     this.trace = createTrace();   // the whole context, exactly as sent (trace.js); saved with the reply
     this.pendingAdded = [];
@@ -742,6 +743,10 @@ class Turn {
   async resumeFrom(cp) {
     const { session } = this;
     this.reply.tools = cp.tools || [];
+    for (const t of this.reply.tools) {   // what ran before the page was lost answers the same call again
+      const key = t.ok !== false && t.result !== undefined && t.args ? repeatKey(t.name, t.args) : null;
+      if (key) this.seen.set(key, { label: t.label, response: { value: t.result } });
+    }
     this.prefix = cp.prefix || '';
     this.thinking = cp.thinking || '';
     if (this.thinking) this.ui.onThinking && this.ui.onThinking(this.thinking);
@@ -1129,12 +1134,18 @@ class Turn {
     }
     if (name === 'tool_info') return { response: this.toolInfo(args, task, step) };
     if (name === 'done') return { response: { error: 'There is no step to finish yet. Call plan first, or just answer.' } };
+    const key = repeatKey(name, args), earlier = key && this.seen.get(key);
+    if (earlier) {
+      this.toolEvent({ name, label: `${earlier.label} (already ran: same result)`, ok: true, args }, earlier.response);
+      return { response: { ...earlier.response, note: 'You already ran this exact call in this task; this is its result from then. Use it; don\'t run it again.' } };
+    }
     const res = await runTool(call, { session: this.session, threadId: this.threadId, room, pageCards: lite() && !plain(), approve: (req) => askApproval(req, this.ui, this.signal),
       ...(lite() ? { allowUrl: (u) => this.allowUrl(u) } : {}) });
     this.noteUrls(res);
     this.toolEvent({ name: res.name, label: res.label, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
     if (res.observation) sessions.addObservation(this.session, { ...res.observation, thread: this.threadId });
     let response = res.model && typeof res.model === 'object' ? res.model : { value: res.model };
+    if (key && res.ok) this.seen.set(key, { label: res.label, response });
     const json = JSON.stringify(response);
     if (json.length > room) response = { truncated: 'Result cut to fit your context; ask for less (e.g. grep, or a line range).', partial: json.slice(0, Math.max(0, room - 200)) };
     if (task) tasks.logCall(task, step, { name: res.name, args: res.args, ok: res.ok, label: res.label, text: json.replace(STRIP_UNTRUSTED, '') });
