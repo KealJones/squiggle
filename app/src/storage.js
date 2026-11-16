@@ -267,6 +267,9 @@ export function sync() {
       let changedPaths = [];
       let res;
       for (let attempt = 0; attempt < 4; attempt++) {
+        // Someone else pushed first: wait a little, at random, so devices that collided don't retry in step and
+        // collide again (CI, 2026-11-16: ~10 devices on one repo lost all 4 tries back to back).
+        if (attempt) await new Promise(r => setTimeout(r, 150 * 2 ** attempt + Math.random() * 300));
         res = cfg.local ? await commitLocal() : await syncOnce();
         changedPaths = changedPaths.concat(res.changed);
         if (res.pushed !== false) break;
@@ -358,8 +361,10 @@ async function syncOnce() {
       const r = await git.push({ fs, dir, remote: 'origin', ref: branch, ...net() });
       if (r && r.ok === false) pushed = false;
     } catch (e) {
-      // Someone pushed between our fetch and push: loop and rebase again.
-      if (/not a simple fast-forward|PushRejected|fast-forward/i.test(String(e && (e.message || e.code)))) pushed = false;
+      // Someone pushed between our fetch and push: loop and rebase again. Two pushes at the same moment also make
+      // the server refuse one while the other holds the branch's lock ("failed to update ref"; CI, 2026-11-16:
+      // that threw, so the sync failed with no retry at all).
+      if (/not a simple fast-forward|PushRejected|fast-forward|failed to update ref|cannot lock ref|not updated/i.test(String(e && (e.message || e.code)))) pushed = false;
       else throw e;
     }
   }
