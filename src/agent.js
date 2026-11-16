@@ -81,11 +81,15 @@ export const LITE_SYSTEM_NATIVE = [
 // because LFM3, told "clone my repo bubbles", searched memory three times and asked Keal for the URL: nothing said
 // git and gh are already signed in as him (failures.md case 20). Left out in demo mode (no account).
 const GITHUB_LINE = "git and gh are signed in as the user: \"my repo X\" is theirs, so gh repo clone X (it lands in /repos/X).";
+// LFM3's prompt had nothing on memory (only the big prompt did): case 21.
+// Just "use the tool": its description says how to word it and the scopes, and the harness handles the rest.
+const MEMORY_LINE = 'When the user tells you something lasting about themselves or their work, save it with the remember tool.';
 export const LITE_SYSTEM_BASH = [
   ...LITE_SYSTEM.split('\n').slice(0, 3),
   'Use bash for files, the web, GitHub and maths: search WORDS, curl URL | grep -i WORD, wiki NAME, git, gh, bc; `man` lists',
   'the custom commands. find(query) searches recipes, memory and past chats; ask_user(question) asks the user something only they know and waits.',
   GITHUB_LINE,
+  MEMORY_LINE,
   'Your context window is small: never cat a whole file or curl a whole page. Pipe into grep, head, tail, sed -n or wc,',
   'or save it to a file (> /tmp/page.txt) and work on the file in small pieces.',
   'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
@@ -176,8 +180,8 @@ function systemPrompt(threadId, session, phase = 'chat', known = []) {
       ? `Don't guess. For current information or anything you're unsure of: search WORDS, then curl the best links (pipe into grep for the part you need), and say which sites you used. Maths: echo "…" | bc -l. find(query) searches recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`
       : `Don't guess. For current information or anything you're unsure of: web_search, then fetch_url the best results, and say which sites you used. Maths goes through calculate. find(query) searches your tools, recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`,
     bashSurface()
-      ? `Save lasting facts about the user or their projects (preferences, decisions, names) with remember. Your context window is only ${settings.contextSize} tokens and every result says how much is left, so be careful with anything that could be long (files, web pages, command output): never cat a whole file or curl a whole page into your view. Pipe it through grep, head, tail, sed -n, wc or jq, or save it to a file (curl URL > /tmp/page.txt) and work on that file in small pieces.`
-      : `Save lasting facts about the user or their projects (preferences, decisions, names) with remember; search_history finds past conversations. Your context window is ${settings.contextSize} tokens and every tool result says how much is left: prefer grep and read_file line ranges, and keep notes with note on longer work without a plan.`,
+      ? `Save lasting facts about the user or their projects (preferences, decisions, names) with remember (scope "this chat" for what only matters here). Your context window is only ${settings.contextSize} tokens and every result says how much is left, so be careful with anything that could be long (files, web pages, command output): never cat a whole file or curl a whole page into your view. Pipe it through grep, head, tail, sed -n, wc or jq, or save it to a file (curl URL > /tmp/page.txt) and work on that file in small pieces.`
+      : `Save lasting facts about the user or their projects (preferences, decisions, names) with remember (scope "this chat" for what only matters here); search_history finds past conversations. Your context window is ${settings.contextSize} tokens and every tool result says how much is left: prefer grep and read_file line ranges, and keep notes with note on longer work without a plan.`,
     managed() ? UPFRONT : '',
     names,
     `Use tools when they help; answer directly when they don't. Be concise. Never invent file contents or tool results, and never say you saved, remembered, changed or pushed something unless you called the tool for it in this reply.`,
@@ -521,7 +525,7 @@ class Turn {
       // on, other chats') and, for small models, memory facts into a labelled block
       // after the request (recall.js); only on a real question and above a bar.
       others: settings.recallChats === true ? sessions.list() : [],
-      small: lite(),
+      small: lite(), frozen: dialect().frozen,
       // No prompt means nothing from Squiggle in the system turn, memory notes included.
       recall: noPrompt() ? null : (q, k) => memory.recall(q, k), factText: memory.factText, factsTitle: dialect().memoryTitle,
       // "Tool calls you made" read to small models as things the user said; LFM3 is trained for harness text, and
