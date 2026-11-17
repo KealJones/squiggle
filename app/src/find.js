@@ -6,6 +6,7 @@
 // Pure apart from the sources passed in, so it runs in node tests.
 import { bm25, tokenize } from './search.js';
 import { namesIn } from './prefetch.js';
+import { factText } from './memory-rank.js';
 
 // Relevance bars (see each ranking function for the scale).
 export const BARS = {
@@ -181,7 +182,7 @@ const dateOf = (ts) => {
   return Number.isFinite(d.getTime()) && ts ? d.toISOString().slice(0, 10) : '';
 };
 
-const factLine = (f) => `${f.s} ${f.p} ${f.o}${f.note ? ` (${f.note})` : ''}`;
+const factLine = factText;
 
 // ── find ─────────────────────────────────────────────────────────────────
 

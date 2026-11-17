@@ -89,16 +89,14 @@ export function renderMemoryPanel() {
   const search = h('input', { class: 'search', type: 'search', placeholder: 'Search memory', 'aria-label': 'Search memory' });
   const list = h('ul', { class: 'fact-list' });
   const add = h('form', { class: 'row', style: 'margin-bottom:14px' });
-  const s = h('input', { type: 'text', placeholder: 'Subject', class: 'search', style: 'flex:1;min-width:80px;margin:0', 'aria-label': 'Subject' });
-  const p = h('input', { type: 'text', placeholder: 'relation', class: 'search', style: 'flex:1;min-width:80px;margin:0', 'aria-label': 'Relation' });
-  const o = h('input', { type: 'text', placeholder: 'Object', class: 'search', style: 'flex:1;min-width:80px;margin:0', 'aria-label': 'Object' });
-  add.append(s, p, o, h('button', { class: 'btn', type: 'submit' }, 'Add'));
-  add.onsubmit = (e) => { e.preventDefault(); if (s.value && p.value && o.value) { memory.add({ s: s.value, p: p.value, o: o.value, source: 'user' }); s.value = p.value = o.value = ''; } };
+  const t = h('input', { type: 'text', placeholder: 'Something to remember', class: 'search', style: 'flex:1;min-width:120px;margin:0', 'aria-label': 'Something to remember' });
+  add.append(t, h('button', { class: 'btn', type: 'submit' }, 'Add'));
+  add.onsubmit = (e) => { e.preventDefault(); if (t.value.trim()) { memory.add({ text: t.value, source: 'user' }); t.value = ''; } };
   const draw = async () => {
     const q = search.value.trim();
     const facts = q ? (await memory.recall(q, 50)).map(r => r.fact) : memory.all().slice().reverse();
     list.replaceChildren(...facts.map(f => h('li', {},
-      h('div', { class: 'fact' }, h('span', { class: 's' }, f.s), ' ', h('span', { class: 'p' }, f.p), ' ', h('span', { class: 'o' }, f.o),
+      h('div', { class: 'fact' }, ...(f.text ? [f.text] : [h('span', { class: 's' }, f.s), ' ', h('span', { class: 'p' }, f.p), ' ', h('span', { class: 'o' }, f.o)]),
         f.note ? h('div', { class: 'muted' }, f.note) : '', f.auto ? h('span', { class: 'auto' }, 'Learned automatically') : ''),
       iconButton('i-close', 'Delete fact', () => memory.remove(f.id)))));
     if (!facts.length) list.append(h('li', { class: 'muted' }, q ? 'Nothing matches.' : 'Nothing yet. Squiggle saves facts as you chat, or add one above.'));

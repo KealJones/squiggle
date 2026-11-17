@@ -10,7 +10,7 @@ import { parseJsonl, toJsonl } from '../merge.js';
 import { uid } from '../util.js';
 import { $, h, squiggleWait } from './dom.js';
 import { state } from './state.js';
-import { openSession, renderChat, renderSessions, setSync, setupComposer, send, closeSidebar } from './chat.js';
+import { openSession, renderChat, renderSessions, setSync, setupComposer, send, closeSidebar, resumeUnfinished } from './chat.js';
 import { openPanel, closeDrawer, renderThreadPanel, renderNotesPanel, renderMemoryPanel } from './panels.js';
 import { setSideOpen, sideOpenPref, sideOverlay } from './side.js';
 import { startCall, endCall } from './voice-ui.js';
@@ -53,6 +53,7 @@ export async function startApp() {
   // (git.js persist), so a chat or fact from the last second isn't lost; the IndexedDB write usually completes
   // even as the page goes away. In demo mode this browser is the only copy.
   addEventListener('pagehide', settle);
+  state.onReady = resumeUnfinished;
   checkCloud().finally(() => initModel());
 }
 

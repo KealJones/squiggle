@@ -71,6 +71,35 @@ test('fetch relay is opt-in and needs a browser same-origin request', async () =
   assert.equal(badUrl.status, 400);
 });
 
+test('fetch relay: a page is never served as a document on the relay\'s origin', async () => {
+  const orig = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => { calls += 1; return new Response('<script>steal()</script>', { headers: { 'Content-Type': 'text/html' } }); };
+  try {
+    // A link in a reply to /api/fetch?url=… is a same-origin navigation: refused before anything is fetched.
+    const link = await worker.fetch(req('/api/fetch?url=https://evil.example/x.html', { headers: { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document' } }), env);
+    assert.equal(link.status, 403);
+    const frame = await worker.fetch(req('/api/fetch?url=https://evil.example/x.html', { headers: { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'iframe' } }), env);
+    assert.equal(frame.status, 403);
+    const script = await worker.fetch(req('/api/fetch?url=https://evil.example/x.js', { headers: { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Dest': 'script' } }), env);
+    assert.equal(script.status, 403);
+    assert.equal(calls, 0);
+    // The app's own fetch() (same origin, or the Pages origin with the relay elsewhere) still works, sandboxed.
+    for (const headers of [
+      { 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' },
+      { Origin: 'https://other.example', 'Sec-Fetch-Site': 'cross-site', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Dest': 'empty' },
+      { 'Sec-Fetch-Site': 'same-origin' },
+    ]) {
+      const ok = await worker.fetch(req('/api/fetch?url=https://example.com/', { headers }), env);
+      assert.equal(ok.status, 200);
+      assert.equal(await ok.text(), '<script>steal()</script>');
+      assert.match(ok.headers.get('Content-Security-Policy'), /^sandbox/);
+      assert.equal(ok.headers.get('X-Content-Type-Options'), 'nosniff');
+    }
+    assert.equal(calls, 3);
+  } finally { globalThis.fetch = orig; }
+});
+
 test('search: parses DuckDuckGo Lite, decodes links and entities, skips ads', async () => {
   const { readFileSync } = await import('node:fs');
   const html = readFileSync(new URL('./fixtures/ddg-lite.html', import.meta.url), 'utf8');

@@ -332,3 +332,26 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   as the user, "my repo X" is theirs, `gh repo clone X` (left out in demo mode). find's empty answer names bash and
   `ask_user` on the bash surface (`nothingFor`; Squiggle Small keeps `NOTHING`, its training text).
 - **Caught by:** tests/failures.test.js case 20.
+
+### 21. "What do you remember about me?": nothing, right after saving it
+
+- **Asked:** "Remember that I like short answers.", then "Just for this chat, remember that the deploy is on
+  Fridays.", then in a new chat "What do you remember about me?"
+- **Model:** LFM3 1.7B (WLF3QAD on WebLLM), Compress, bash surface, 2026-11-16, PR #18's preview on Keal's iPhone
+  (chats `s0mwjssbrv0002lds4` and the next one in squiggle-state).
+- **What it did:** the two saves were right: `remember(fact: "I like short answers.")` (everywhere) and
+  `remember(fact: "The deploy is on Fridays.", scope: "this chat")`. In the new chat the memory section was empty,
+  it called `find("me")`, got nothing, and said it had no saved notes about him.
+- **Why it's bad:** mostly the harness. Recall keeps only facts that share words with the question, and "what do you
+  remember about me" shares none with "I like short answers"; `find("me")` the same. The model's part: it saved
+  the user's words in the first person, which another chat reads as the assistant's, and it searched for "me".
+  Its prompt (LITE_SYSTEM_BASH) said nothing about memory; only the big prompt did.
+- **Good answer:** "You like short answers." (and nothing about Fridays, which was for the other chat).
+- **Fix:** `memory-rank.js asksAboutMe`: strip the words that only point at the user or at memory (me/my/I are
+  stopwords already; user, myself, remember, know, saved, memory…); a query with nothing else left ("What do you
+  remember about me?", find("me"), "who am I") gets the newest facts, anything more is matched as usual. Words,
+  not a phrase list. `remember` saves a fact starting with I/my/me as "The user says: …" and asks for "The
+  user …". LITE_SYSTEM_BASH gets one line (MEMORY_LINE): save lasting things about the user with the remember
+  tool. Always putting a short profile in the prompt was weighed and turned down: it costs every turn of a 6K
+  window for an occasional question (Keal, 2026-11-16).
+- **Caught by:** tests/failures.test.js case 21.
