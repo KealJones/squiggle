@@ -6,6 +6,7 @@ export const state = {
   drawerPanel: null,        // 'thread' | 'notes' | 'memory' | 'files' | 'settings' | 'context' | null
   busy: false,              // a reply is running
   controller: null,         // AbortController of the running turn
+  brainstorm: null,         // { session, steer[] } while a brainstorm runs (brainstorm.js); steer = what the person typed to jump in
   liveTurn: null,           // { ctx, tools, task } while a reply runs in the main chat (for the details sidebar)
   modelState: 'unknown',    // 'missing' | 'downloading' | 'loading' | 'ready' | 'unsupported' | 'error' | 'idle' | 'unknown'
   modelPromise: null,       // the in-flight ensureModel()

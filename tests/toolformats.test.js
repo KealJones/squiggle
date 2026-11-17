@@ -7,7 +7,7 @@ import { toolFormat, toolFormats, registerToolFormat, PLAIN } from '../app/src/t
 import { lfm2Prompt, parseLfmCalls, pyJson } from '../app/src/toolformats/lfm2.js';
 import { lfm3Prompt, lfm3 } from '../app/src/toolformats/lfm3.js';
 import { createShim, setVersion, versionFor, DEFAULT_VERSION } from '../app/src/engine-webllm.js';
-import { NativeConversation } from '../app/src/engine-wllama.js';
+import { NativeConversation, lastSpeed } from '../app/src/engine-wllama.js';
 
 const LFM = JSON.parse(readFileSync(new URL('./fixtures/lfm2-template.json', import.meta.url), 'utf8'));
 const LFM3 = JSON.parse(readFileSync(new URL('./fixtures/lfm3-template.json', import.meta.url), 'utf8'));
@@ -183,4 +183,23 @@ test('lfm3: gated tools go in the <tools> block by name; calls read back through
   assert.deepEqual(lfm3.split('I should just say hi.</think>Hello!', { prompt: on }), { thinking: 'I should just say hi.', text: 'Hello!' });
   const off = lfm3.prompt([{ role: 'user', content: 'hi' }], [], { thinking: false });
   assert.deepEqual(lfm3.split('Hello!', { prompt: off }), { thinking: '', text: 'Hello!' });
+});
+
+// Brainstorm turns (brainstorm.js cutOff) are continued when the runtime says it stopped for length, which on a 4K
+// model is usually the window filling before max_tokens (chat s0mwe2h0vm000lwbud).
+test('why WebLLM stopped reaches lastSpeed: length when it ran out, stop when it finished', async () => {
+  for (const reason of ['length', 'stop']) {
+    const fake = {
+      completions: { async create() {
+        return (async function* () { yield { choices: [{ text: 'Half a ta' }] }; yield { choices: [{ text: 'ble', finish_reason: reason }] }; })();
+      } },
+      async resetChat() {}, interruptGenerate() {}, async unload() {},
+    };
+    const w = await createShim('LFM2.5-1.2B-Instruct-q4f16_1-MLC', 4096, () => {}, { format: 'lfm2', engine: fake });
+    const conv = new NativeConversation(w, { preface: { messages: [{ role: 'system', content: 'Brainstorm.' }], extra_context: { enable_thinking: false } }, sessionConfig: { maxOutputTokens: 1024 } });
+    let text = '';
+    for await (const x of conv.sendMessageStreaming('go')) if (x.content) text += x.content;
+    assert.equal(text, 'Half a table');
+    assert.equal(lastSpeed().finish, reason);
+  }
 });

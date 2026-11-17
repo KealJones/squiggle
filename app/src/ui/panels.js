@@ -64,7 +64,7 @@ export function renderThreadPanel(focus = false) {
   const form = h('form', { class: 'composer' }, h('div', { class: 'composer-inner' }, input, h('button', { class: 'icon-btn', type: 'submit', 'aria-label': 'Send' }, icon(state.busy ? 'i-stop' : 'i-send'))));
   setupComposer(form, input, (text, files) => send(text, t.id, files));
   c.append(scroll, form);
-  scrollDown(scroll);
+  scrollDown(scroll, { force: true });
   if (focus) input.focus();
 }
 

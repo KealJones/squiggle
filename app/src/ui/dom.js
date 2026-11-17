@@ -43,7 +43,30 @@ export function iconButton(id, label, onclick, pressed) {
   return h('button', { class: 'icon-btn', 'aria-label': label, title: label, onclick, 'aria-pressed': pressed ? 'true' : null }, icon(id));
 }
 
-export const scrollDown = (el) => requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+// Follow the bottom only while the reader is there (Keal, 2026-11-13: "i cant scroll up when the text is being
+// streamed in"). Scrolling up with a wheel or a finger lets go at once; back at the bottom, it follows again. `force`
+// (opening a chat, sending a message) jumps to the bottom and follows from there.
+const NEAR = 40;
+const follow = new WeakMap();   // el → { on, touching }
+const atBottom = (el) => el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR;
+function watch(el) {
+  let f = follow.get(el);
+  if (f) return f;
+  f = { on: true, touching: false };
+  follow.set(el, f);
+  el.addEventListener('wheel', (e) => { if (e.deltaY < 0) f.on = false; }, { passive: true });
+  el.addEventListener('touchstart', () => { f.touching = true; }, { passive: true });
+  const lift = () => { f.touching = false; f.on = atBottom(el); };
+  el.addEventListener('touchend', lift, { passive: true });
+  el.addEventListener('touchcancel', lift, { passive: true });
+  el.addEventListener('scroll', () => { if (!f.touching) f.on = atBottom(el); }, { passive: true });
+  return f;
+}
+export const scrollDown = (el, { force = false } = {}) => {
+  const f = watch(el);
+  if (force) f.on = true;
+  requestAnimationFrame(() => { if (f.on && !f.touching) el.scrollTop = el.scrollHeight; });
+};
 
 // A short note at the bottom of the screen that goes away on its own.
 let toastTimer = null;

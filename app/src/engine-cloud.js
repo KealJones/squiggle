@@ -25,6 +25,9 @@ class Conversation {
     // A seeded tool call (Fresh context) is answered by the first input, like a call the model made.
     const seeded = [...this.messages].reverse().find(m => m.role === 'assistant');
     this.lastCalls = seeded && seeded.tool_calls ? seeded.tool_calls : [];
+    // Callers that say so (engine.conversation strictThinking) tell Gemma whether to think; others leave it to the model.
+    const ctx = preface.extra_context || {};
+    this.kwargs = ctx.strict ? { chat_template_kwargs: { enable_thinking: Boolean(ctx.enable_thinking) } } : {};
     this.cancelled = false;
   }
   cancel() { this.cancelled = true; }
@@ -41,7 +44,7 @@ class Conversation {
     }
     let d;
     try {
-      d = await relayAi({ messages: this.messages, tools: this.tools.length ? this.tools : undefined, max_tokens: this.max, ...this.sampling });
+      d = await relayAi({ messages: this.messages, tools: this.tools.length ? this.tools : undefined, max_tokens: this.max, ...this.sampling, ...this.kwargs });
     } catch (e) {
       if (e.code === 'limit') throw new Error(limitMessage(e.resetsAt));
       throw e;

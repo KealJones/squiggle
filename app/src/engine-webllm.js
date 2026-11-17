@@ -425,7 +425,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
         // Whitespace before a call isn't shown; it's sent once more text follows.
         return (at >= 0 ? text.slice(0, at) : text.slice(0, text.length - heldBack(text, f.callStart))).replace(/\s+$/, '');
       };
-      let raw = f.mode === 'raw' ? st.raw : '';
+      let raw = f.mode === 'raw' ? st.raw : '', finish = null;
       // What `raw` adds to what the consumer has seen (st keeps the counts across a reload of the engine).
       const news = function* () {
         const s = f.split(raw, ctx);
@@ -438,6 +438,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
       for await (const c of chunks) {
         if (signal && signal.aborted) break;
         const ch = c.choices && c.choices[0];
+        if (ch && ch.finish_reason) finish = ch.finish_reason;
         const piece = (ch && (ch.text ?? (ch.delta && ch.delta.content))) || '';
         if (!piece) continue;
         raw += piece;
@@ -446,8 +447,11 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
       }
       // Thinking that never closed (cut off by max_tokens): it was all thinking, no reply.
       const s = f.split(raw, ctx);
+      // Why WebLLM stopped ('length': max_tokens or the context window ran out), for engine-wllama's lastSpeed.
+      const done = () => (finish ? [{ choices: [{ delta: {}, finish_reason: finish }] }] : []);
       if (!f.callStart) {
         if (s.text.length > st.textShown) yield { choices: [{ delta: { content: s.text.slice(st.textShown) } }] };
+        yield* done();
         return;
       }
       const at = s.text.indexOf(f.callStart);
@@ -455,6 +459,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
       if (before.length > st.textShown) yield { choices: [{ delta: { content: before.slice(st.textShown) } }] };
       const calls = at >= 0 ? f.parseCalls(s.text.slice(at)) : [];
       if (calls.length) yield callChunk(calls);
+      yield* done();
     } finally {
       signal && signal.removeEventListener('abort', onAbort);
     }
