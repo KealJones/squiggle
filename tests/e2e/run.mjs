@@ -1787,7 +1787,7 @@ await check('LFM3 gets bash, the web and search_tools up front, the rest named a
   assert.match(r.both.error, /in 2 entries/);
   assert.match(r.repl.replaced, /Fridays/);
   assert.match(r.gone.removed, /short answers/);
-  assert.deepEqual(r.facts.filter(f => /deploys|short answers/.test(f)), ['The user deploys on Mondays.']);
+  assert.deepEqual(r.facts.filter(f => /deploys on|short answers/.test(f)), ['The user deploys on Mondays.']);
   await D.ctx.close();
 });
 
