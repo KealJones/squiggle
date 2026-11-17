@@ -36,7 +36,7 @@ app/                    static app, plain ES modules, no build step
     agent.js            turn loop (docs/harness.md): chat phase → plan → one fresh prompt per step → final reply; ask_user (need for Squiggle Small)/find; recipes learned after
     tasks.js            step-mode task state, step/final prompts (budgeted), resume rules, DIALECT (v2 frozen fenced text / v3 harness text kept out of user turns in steps)
     recipes.js          memory/recipes.jsonl: how finished tasks were solved; saved pending, matched only once the user approves; forgotten after 90 days unused
-    find.js             `find`: one search over tools, recipes, memory, past chats and this task; web reranking, URL ledger, pushback check (falls through to web_search, docs/harness.md)
+    find.js             `find`: one search over tools, recipes, memory, past chats and this task (several wordings split by `|` are each searched and merged, `findMany`; v3 is told so, Squiggle Small's text isn't); web reranking, URL ledger, pushback check (falls through to web_search, docs/harness.md)
     trace.js            the whole context a turn sent (each conversation's system prompt, tool schemas, messages, every round in and out, the exact prompt text where our code renders it), saved per reply as prompts/<session>/<id>.json and shown in "What the model saw"
     refs.js             reference resolution ("that", "the repo", links) → hints in the prompt
     engine.js           model registry (families, generationFor: sampling/thinking/thinkBudget per model), download (resumable, IndexedDB chunks), LiteRT engine, generation
