@@ -15,7 +15,7 @@ import { snapshotPoint } from './prefix-cache.js';
 import * as media from './media.js';
 
 // Pinned to a commit: Keptsam is plain ES modules, loaded straight from jsDelivr (no build step on either side).
-export const KEPTSAM_SHA = 'cb81ebdb5970617dee868ee49719a4cf0f9a3185';
+export const KEPTSAM_SHA = '1a41dba78ac653772f71d8040ec938a1f44cf1d1';
 const defaultUrl = () => `https://cdn.jsdelivr.net/gh/KealJones/Keptsam@${KEPTSAM_SHA}/src/index.js`;
 // Tests and local checks can point it elsewhere (globalThis.SQUIGGLE_KEPTSAM = '/keptsam/src/index.js').
 const libUrl = () => globalThis.SQUIGGLE_KEPTSAM || defaultUrl();
@@ -29,17 +29,22 @@ export function lib() {
 // Keptsam keeps each file in Cache Storage (keptsam-v1) in 16 MB pieces under the file's URL; sw.js leaves that
 // cache alone. A model is its GGUF plus, for Omni, the encoders' mmproj.
 const filesOf = (m) => [m.url, m.mmproj].filter(Boolean);
+// Each file's size as MODELS says it (fileBytes): a load caches pieces without Keptsam's size record, and with the size
+// they still count, and a download finishes them without asking the server first (Keal's iPhone, 2026-11-17: all 63
+// pieces of LFM3 1.7B were there and the download sat at 0% waiting on that request).
+const sizeOf = (m, i) => (m.fileBytes && m.fileBytes[i]) || 0;
+const info = (k, m, url, i) => k.cachedFileInfo(url, 'keptsam-v1', { size: sizeOf(m, i) });
 
 export async function isDownloaded(m) {
   const k = await lib();
-  for (const url of filesOf(m)) if (!(await k.cachedFileInfo(url)).complete) return false;
+  for (const [i, url] of filesOf(m).entries()) if (!(await info(k, m, url, i)).complete) return false;
   return true;
 }
 
 export async function downloadInfo(m) {
   const k = await lib();
   let stored = 0, complete = true;
-  for (const url of filesOf(m)) { const i = await k.cachedFileInfo(url); stored += i.stored; complete = complete && i.complete; }
+  for (const [i, url] of filesOf(m).entries()) { const x = await info(k, m, url, i); stored += x.stored; complete = complete && x.complete; }
   return { total: m.bytes, stored: complete ? m.bytes : stored, complete };
 }
 
@@ -50,7 +55,7 @@ export async function downloadModel(m, onProgress, signal) {
   if (onProgress) onProgress((await downloadInfo(m)).stored, m.bytes);
   let before = 0;
   for (const [i, url] of filesOf(m).entries()) {
-    await k.cacheFile(url, { signal, onProgress: (done, total) => onProgress && onProgress(before + done, m.bytes || total) });
+    await k.cacheFile(url, { signal, size: sizeOf(m, i), onProgress: (done, total) => onProgress && onProgress(before + done, m.bytes || total) });
     before += sizes[i] || (await k.cachedFileInfo(url)).size;
   }
 }
