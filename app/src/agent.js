@@ -21,6 +21,7 @@ import { bm25, tokenize } from './search.js';
 import { estTokens, truncate, uid } from './util.js';
 import { createTrace, openConv, addRound, takeRendered } from './trace.js';
 import { report } from './incidents.js';
+import { Checkpoint, decide as resumeDecide, repeatKey } from './resume.js';
 import { parseJsonl } from './merge.js';
 import { attachmentPrompt, saveAttachments, toRecord } from './attachments.js';
 
@@ -80,11 +81,15 @@ export const LITE_SYSTEM_NATIVE = [
 // because LFM3, told "clone my repo bubbles", searched memory three times and asked Keal for the URL: nothing said
 // git and gh are already signed in as him (failures.md case 20). Left out in demo mode (no account).
 const GITHUB_LINE = "git and gh are signed in as the user: \"my repo X\" is theirs, so gh repo clone X (it lands in /repos/X).";
+// LFM3's prompt had nothing on memory (only the big prompt did): case 21.
+// Just "use the tool": its description says how to word it and the scopes, and the harness handles the rest.
+const MEMORY_LINE = 'When the user tells you something lasting about themselves or their work, save it with the remember tool.';
 export const LITE_SYSTEM_BASH = [
   ...LITE_SYSTEM.split('\n').slice(0, 3),
-  'Use bash for files, the web, GitHub and maths: search WORDS, curl URL | grep -i WORD, git, gh, bc; `man` lists',
+  'Use bash for files, the web, GitHub and maths: search WORDS, curl URL | grep -i WORD, wiki NAME, git, gh, bc; `man` lists',
   'the custom commands. find(query) searches recipes, memory and past chats; ask_user(question) asks the user something only they know and waits.',
   GITHUB_LINE,
+  MEMORY_LINE,
   'Your context window is small: never cat a whole file or curl a whole page. Pipe into grep, head, tail, sed -n or wc,',
   'or save it to a file (> /tmp/page.txt) and work on the file in small pieces.',
   'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
@@ -175,8 +180,8 @@ function systemPrompt(threadId, session, phase = 'chat', known = []) {
       ? `Don't guess. For current information or anything you're unsure of: search WORDS, then curl the best links (pipe into grep for the part you need), and say which sites you used. Maths: echo "…" | bc -l. find(query) searches recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`
       : `Don't guess. For current information or anything you're unsure of: web_search, then fetch_url the best results, and say which sites you used. Maths goes through calculate. find(query) searches your tools, recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`,
     bashSurface()
-      ? `Save lasting facts about the user or their projects (preferences, decisions, names) with remember. Your context window is only ${settings.contextSize} tokens and every result says how much is left, so be careful with anything that could be long (files, web pages, command output): never cat a whole file or curl a whole page into your view. Pipe it through grep, head, tail, sed -n, wc or jq, or save it to a file (curl URL > /tmp/page.txt) and work on that file in small pieces.`
-      : `Save lasting facts about the user or their projects (preferences, decisions, names) with remember; search_history finds past conversations. Your context window is ${settings.contextSize} tokens and every tool result says how much is left: prefer grep and read_file line ranges, and keep notes with note on longer work without a plan.`,
+      ? `Save lasting facts about the user or their projects (preferences, decisions, names) with remember (scope "this chat" for what only matters here). Your context window is only ${settings.contextSize} tokens and every result says how much is left, so be careful with anything that could be long (files, web pages, command output): never cat a whole file or curl a whole page into your view. Pipe it through grep, head, tail, sed -n, wc or jq, or save it to a file (curl URL > /tmp/page.txt) and work on that file in small pieces.`
+      : `Save lasting facts about the user or their projects (preferences, decisions, names) with remember (scope "this chat" for what only matters here); search_history finds past conversations. Your context window is ${settings.contextSize} tokens and every tool result says how much is left: prefer grep and read_file line ranges, and keep notes with note on longer work without a plan.`,
     managed() ? UPFRONT : '',
     names,
     `Use tools when they help; answer directly when they don't. Be concise. Never invent file contents or tool results, and never say you saved, remembered, changed or pushed something unless you called the tool for it in this reply.`,
@@ -282,10 +287,11 @@ const STRIP_UNTRUSTED = /<\/?untrusted[^>]*>/g;
  * onCheckIn(task, decide(boolean)), onApproval(req, decide), onDone(msg),
  * onError(err). Returns the assistant message.
  */
-export function runTurn({ session, threadId = null, text, attachments = [], ui = {}, signal }) {
+export function runTurn({ session, threadId = null, text, attachments = [], ui = {}, signal, resume = null }) {
   const shown = text || (attachments.length ? 'Attached ' + attachments.map(a => a.name).join(', ') : '');
-  const userMsg = sessions.addMessage(session, { role: 'user', content: shown, thread: threadId, ...(attachments.length ? { attachments: attachments.map(toRecord) } : {}) });
-  ui.onUser && ui.onUser(userMsg);
+  // `resume`: a checkpoint (resume.js) of a turn the page lost; its user message is already in the chat.
+  const userMsg = resume ? session.messages.find(m => m.id === resume.user) : sessions.addMessage(session, { role: 'user', content: shown, thread: threadId, ...(attachments.length ? { attachments: attachments.map(toRecord) } : {}) });
+  if (!resume) ui.onUser && ui.onUser(userMsg);
   return engine.foreground(async () => {
     // Saved before the model runs, so read_file and grep can open them.
     if (attachments.length) {
@@ -294,18 +300,19 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
         observe: (o) => sessions.addObservation(session, { ...o, thread: threadId }),
       }).catch(e => console.warn('attachments', e));
     }
-    const turn = new Turn({ session, threadId, shown, attachments, ui, signal, userMsg });
+    const turn = new Turn({ session, threadId, shown, attachments, ui, signal, userMsg, resume });
     ui.onStart && ui.onStart(turn.reply);
     tasks.compactOld(session);
     try {
       const lastReply = [...sessions.lineMessages(session, threadId)].reverse().find(m => m.role === 'assistant');
-      const resume = tasks.resumable(session, threadId, shown, lastReply && lastReply.task);
-      if (resume) {
-        const task = resume.task;
+      const goOn = resume ? null : tasks.resumable(session, threadId, shown, lastReply && lastReply.task);
+      if (resume) await turn.resumeFrom(resume);
+      else if (goOn) {
+        const task = goOn.task;
         // Files sent with the answer: the model sees their paths (it reads them with read_file).
         const note = attachments.length ? attachmentPrompt(attachments, 0).note : '';
         if (note) task.attachNote = [task.attachNote, note].filter(Boolean).join('\n');
-        if (resume.how === 'answer') tasks.answerNeed(task, shown);
+        if (goOn.how === 'answer') tasks.answerNeed(task, shown);
         else { task.status = 'active'; tasks.touch(task); }
         sessions.saveTask(session, task);
         await turn.steps(task);
@@ -314,6 +321,9 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
         if (task) await turn.steps(task);
       }
     } catch (e) {
+      // The GPU went and didn't come back: the page reloads and the checkpoint picks the reply up (chat.js onReload),
+      // unless this turn was already picked up MAX_TRIES times.
+      if (e && e.reloadToResume && ui.onReload && resumeDecide(turn.cp.cp) === 'resume') { turn.cp.write(); ui.onReload(); return null; }   // the checkpoint stays for the reload
       const msg = e && e.overhead ? e.message : /too many tokens|context|kv.?cache|exceed/i.test(String(e && e.message || e))
         ? 'The conversation got too long for the model\'s context window. Start a new chat to keep going.'
         : (e.message || e);
@@ -332,6 +342,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
       }
     }
     const reply = turn.reply;
+    turn.cp.clear();   // finished, stopped or failed: nothing left to pick up
     reply.content = scrubFakeToolNotes(turn.prefix).trim();
     // Which model wrote it (and how it ran), so a saved chat can be read against the right model.
     reply.model = replyModel();
@@ -368,8 +379,12 @@ function replyModel() {
 
 // One turn's state: the reply being written, counters, and the phases.
 class Turn {
-  constructor({ session, threadId, shown, attachments, ui, signal, userMsg }) {
+  constructor({ session, threadId, shown, attachments, ui, signal, userMsg, resume = null }) {
     Object.assign(this, { session, threadId, shown, attachments, ui, signal, userMsg });
+    // The checkpoint of this turn (resume.js): written now, so a page lost before the first word is still picked up.
+    this.cp = new Checkpoint({ session: session.id, thread: threadId, user: userMsg.id, text: shown, phase: 'chat', tries: resume ? (resume.tries || 0) + 1 : 0, model: settings.model });
+    this.carry = '';         // raw text of a half-written reply to carry on from (the next model call only)
+    this.seen = new Map();   // read-only calls already made this turn → their result (resume.js repeatKey)
     this.reply = { role: 'assistant', content: '', thread: threadId, tools: [], context: null };
     this.trace = createTrace();   // the whole context, exactly as sent (trace.js); saved with the reply
     this.pendingAdded = [];
@@ -465,9 +480,11 @@ class Turn {
     const base = this.thinking;
     const added = this.pendingAdded; this.pendingAdded = [];
     let r;
+    const resume = this.carry; this.carry = '';
+    this.cp.partial('');
     try {
       r = await engine.respond(this.conv, input, {
-        signal: this.signal,
+        signal: this.signal, resume, track: (raw) => this.cp.partial(raw),
         onText: (t) => { if (show) this.ui.onText && this.ui.onText(this.prefix + t); },
         onThinking: (t) => this.ui.onThinking && this.ui.onThinking((base ? base + '\n\n' : '') + t),
       });
@@ -508,7 +525,7 @@ class Turn {
       // on, other chats') and, for small models, memory facts into a labelled block
       // after the request (recall.js); only on a real question and above a bar.
       others: settings.recallChats === true ? sessions.list() : [],
-      small: lite(),
+      small: lite(), frozen: dialect().frozen,
       // No prompt means nothing from Squiggle in the system turn, memory notes included.
       recall: noPrompt() ? null : (q, k) => memory.recall(q, k), factText: memory.factText, factsTitle: dialect().memoryTitle,
       // "Tool calls you made" read to small models as things the user said; LFM3 is trained for harness text, and
@@ -719,6 +736,47 @@ class Turn {
   }
 
   // ── Step mode ───────────────────────────────────────────────────────────
+  // Writes the turn's checkpoint: the reply so far and the tool calls that ran (their results come back from here
+  // after a reload, never from running them again); the task goes to the session with it.
+  save(patch = {}) {
+    if (this.task) sessions.saveTask(this.session, this.task);
+    this.cp.set({ prefix: this.prefix, thinking: this.thinking.slice(-4000), tools: this.reply.tools, task: this.task ? this.task.id : null, raw: '', ...patch });
+  }
+
+  // Picks the turn up where the page lost it (resume.js): the finished steps and tool calls stay as they are.
+  async resumeFrom(cp) {
+    const { session } = this;
+    this.reply.tools = cp.tools || [];
+    for (const t of this.reply.tools) {   // what ran before the page was lost answers the same call again
+      const key = t.ok !== false && t.result !== undefined && t.args ? repeatKey(t.name, t.args) : null;
+      if (key) this.seen.set(key, { label: t.label, response: { value: t.result } });
+    }
+    this.prefix = cp.prefix || '';
+    this.thinking = cp.thinking || '';
+    if (this.thinking) this.ui.onThinking && this.ui.onThinking(this.thinking);
+    if (this.prefix) this.ui.onText && this.ui.onText(this.prefix);
+    const task = cp.task && session.tasks && session.tasks[cp.task];
+    if (task && cp.phase === 'final' && task.status === 'done') {
+      this.task = task;
+      this.carry = cp.model === settings.model ? cp.raw || '' : '';   // the final reply's prompt is the same as before, so it carries on mid-sentence
+      return this.final(task);
+    }
+    if (task && task.status !== 'done') {
+      task.status = 'active'; delete task.waiting;
+      const step = task.steps.find(st => st.status === 'active');
+      // The step starts again; its prompt lists the calls it already made with their results ("don't repeat them").
+      if (step) { step.status = 'todo'; this.stepRetry = { id: step.id, n: 0, resumed: true }; }
+      tasks.touch(task); sessions.saveTask(session, task);
+      return this.steps(task);
+    }
+    // Still in the chat phase. With tools already run, it carries on in a fresh context from what they found
+    // (carryOn); with none, the first reply carries on from the words it had.
+    if (this.reply.tools.some(t => t.ok !== false && !['plan', 'done', 'tool_info', 'checkpoint'].includes(t.name))) return this.steps(this.carryOn());
+    this.carry = cp.model === settings.model ? cp.raw || '' : '';
+    const t = await this.chat();
+    if (t) await this.steps(t);
+  }
+
   async steps(task) {
     this.task = task;
     this.ui.onPlan && this.ui.onPlan(task);
@@ -726,7 +784,7 @@ class Turn {
     while (!this.aborted) {
       const step = tasks.startStep(task);
       if (!step) break;
-      sessions.saveTask(this.session, task);
+      this.save({ phase: 'step' });
       this.ui.onPlan && this.ui.onPlan(task);
       const outcome = await this.runStep(task, step);
       if (outcome !== 'again') this.stepRetry = null;
@@ -807,7 +865,7 @@ class Turn {
   retryText(task, step, retry) {
     const calls = (task.log || []).filter(l => l.step === step.id && !tasks.HARNESS.has(l.name))
       .map(l => `- ${l.label}${l.text ? `\n${wrapUntrusted('tool output', truncate(String(l.text).replace(STRIP_UNTRUSTED, ''), 600))}` : ''}`);
-    return [`It ended without calling a tool. ${retry.why}`,
+    return [retry.resumed ? 'It was interrupted before it finished (the page was left).' : `It ended without calling a tool. ${retry.why}`,
       calls.length ? `Tool calls it made (their results are below; don't repeat them):\n${calls.join('\n')}` : 'It made no tool calls.',
       retry.said ? `What it wrote: ${truncate(retry.said, 400)}` : ''].filter(Boolean).join('\n');
   }
@@ -1004,6 +1062,7 @@ class Turn {
     tasks.touch(task);
     sessions.saveTask(this.session, task);
     this.finishedNow = true;
+    this.save({ phase: 'final', raw: this.carry });
     this.ui.onPlan && this.ui.onPlan(task);
     const maxTokens = Math.max(600, settings.contextSize - Math.min(MAX_OUTPUT, 1024) - 300);
     await this.open('Final reply', { system: tasks.finalSystem(systemPrompt(this.threadId, this.session, 'final'), task, { maxTokens, dialect: dialect() }), messages: [], tools: [], maxOutputTokens: MAX_OUTPUT });
@@ -1033,6 +1092,7 @@ class Turn {
     if (settings.debugTools && result !== undefined) rec.result = debugText(result);
     this.reply.tools.push(rec);
     this.ui.onTool && this.ui.onTool({ ...t, running: false });
+    this.save();
   }
 
   // Runs one tool call (harness tools here, agent tools in tools.js).
@@ -1078,12 +1138,18 @@ class Turn {
     }
     if (name === 'tool_info') return { response: this.toolInfo(args, task, step) };
     if (name === 'done') return { response: { error: 'There is no step to finish yet. Call plan first, or just answer.' } };
+    const key = repeatKey(name, args), earlier = key && this.seen.get(key);
+    if (earlier) {
+      this.toolEvent({ name, label: `${earlier.label} (already ran: same result)`, ok: true, args }, earlier.response);
+      return { response: { ...earlier.response, note: 'You already ran this exact call in this task; this is its result from then. Use it; don\'t run it again.' } };
+    }
     const res = await runTool(call, { session: this.session, threadId: this.threadId, room, pageCards: lite() && !plain(), approve: (req) => askApproval(req, this.ui, this.signal),
       ...(lite() ? { allowUrl: (u) => this.allowUrl(u) } : {}) });
     this.noteUrls(res);
     this.toolEvent({ name: res.name, label: res.label, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
     if (res.observation) sessions.addObservation(this.session, { ...res.observation, thread: this.threadId });
     let response = res.model && typeof res.model === 'object' ? res.model : { value: res.model };
+    if (key && res.ok) this.seen.set(key, { label: res.label, response });
     const json = JSON.stringify(response);
     if (json.length > room) response = { truncated: 'Result cut to fit your context; ask for less (e.g. grep, or a line range).', partial: json.slice(0, Math.max(0, room - 200)) };
     if (task) tasks.logCall(task, step, { name: res.name, args: res.args, ok: res.ok, label: res.label, text: json.replace(STRIP_UNTRUSTED, '') });
