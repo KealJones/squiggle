@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Squiggle download check</title>
+<style>
+  body { font: 15px/1.45 -apple-system, system-ui, sans-serif; background: #171b2e; color: #e6e8f2; margin: 0; padding: 16px; }
+  h1 { font-size: 19px; margin: 0 0 12px; }
+  pre { white-space: pre-wrap; word-break: break-word; background: #20263d; padding: 12px; border-radius: 10px; font: 13px/1.4 ui-monospace, Menlo, monospace; }
+  button { font: inherit; padding: 10px 14px; border-radius: 10px; border: 0; background: #4fc3b5; color: #10131f; margin: 4px 6px 4px 0; }
+</style>
+</head>
+<body>
+<h1>Download check (LFM3 1.7B on Keptsam)</h1>
+<p>Checks this site's storage and tries the first pieces of the LFM3 1.7B download into a scratch cache (deleted after).
+Screenshot the box when it says done.</p>
+<button id="run">Run again</button>
+<pre id="out">starting…</pre>
+<script type="module">
+const URL_1_7B = 'https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-QAD-Q4_0.gguf';
+const KEPTSAM = 'https://cdn.jsdelivr.net/gh/KealJones/Keptsam@cb81ebdb5970617dee868ee49719a4cf0f9a3185/src/index.js';
+const out = document.getElementById('out');
+const lines = [];
+const say = (s) => { lines.push(s); out.textContent = lines.join('\n'); };
+const mb = (n) => `${(n / 1e6).toFixed(0)} MB`;
+const ms = (t0) => `${Math.round(performance.now() - t0)} ms`;
+// Promise.race with a deadline, so a step that never settles says so instead of hanging the check.
+const within = (p, t, what) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(`${what}: no answer after ${t / 1000} s`)), t))]);
+
+async function run() {
+  lines.length = 0;
+  say(navigator.userAgent);
+  try {
+    const e = await navigator.storage.estimate();
+    say(`storage: ${mb(e.usage || 0)} used of ${mb(e.quota || 0)} allowed; persisted: ${await navigator.storage.persisted?.()}`);
+  } catch (e) { say(`storage estimate failed: ${e.message}`); }
+
+  // What each cache holds. Keptsam keeps 16 MB pieces per file under https://keptsam.cache/<file>/…
+  try {
+    for (const name of await caches.keys()) {
+      const c = await caches.open(name);
+      const keys = await c.keys();
+      if (name !== 'keptsam-v1') { say(`cache ${name}: ${keys.length} entries`); continue; }
+      const files = {};
+      for (const r of keys) {
+        const m = r.url.match(/^https:\/\/keptsam\.cache\/([^/]+)\/(\d+|size)/);
+        if (!m) continue;
+        const f = decodeURIComponent(m[1]).split('/').pop();
+        files[f] = files[f] || { pieces: 0, size: null };
+        if (m[2] === 'size') files[f].size = Number(await (await c.match(r)).text()); else files[f].pieces++;
+      }
+      say(`cache keptsam-v1:`);
+      for (const [f, v] of Object.entries(files)) say(`  ${f}: ${v.pieces} pieces (~${mb(v.pieces * 16 * 1048576)})${v.size ? `, complete size ${mb(v.size)}` : ', not finished'}`);
+    }
+  } catch (e) { say(`listing caches failed: ${e.message}`); }
+
+  say(`service worker controlling this page: ${Boolean(navigator.serviceWorker && navigator.serviceWorker.controller)}`);
+
+  // The first 16 bytes straight from Hugging Face, as Keptsam asks for them.
+  let t0 = performance.now();
+  try {
+    const r = await within(fetch(URL_1_7B, { headers: { Range: 'bytes=0-15' } }), 30000, 'range request');
+    const b = new Uint8Array(await r.arrayBuffer());
+    say(`range request: ${r.status}, ${b.length} bytes, Content-Range ${r.headers.get('Content-Range')}, starts "${String.fromCharCode(...b.slice(0, 4))}", ${ms(t0)}`);
+  } catch (e) { say(`range request failed after ${ms(t0)}: ${e.name}: ${e.message}`); }
+
+  // Keptsam's own download, three pieces, into a scratch cache.
+  t0 = performance.now();
+  let k;
+  try { k = await within(import(KEPTSAM), 30000, 'loading Keptsam'); say(`Keptsam loaded, ${ms(t0)}`); } catch (e) { say(`loading Keptsam failed: ${e.message}`); return say('done'); }
+  const ctl = new AbortController();
+  let pieces = 0;
+  t0 = performance.now();
+  try {
+    await within(k.cacheFile(URL_1_7B, { cacheName: 'keptsam-probe', signal: ctl.signal, onProgress: (d, t) => {
+      pieces++; say(`  piece ${pieces}: ${mb(d)} of ${mb(t)} at ${ms(t0)}`); if (pieces >= 3) ctl.abort();
+    } }), 90000, 'download');
+  } catch (e) { say(pieces >= 3 && e.name === 'AbortError' ? 'download works (stopped after 3 pieces)' : `download failed after ${ms(t0)}: ${e.name}: ${e.message}`); }
+  try { await caches.delete('keptsam-probe'); } catch {}
+
+  // Can this site store one more 16 MB piece at all?
+  try {
+    const c = await caches.open('keptsam-probe');
+    await within(c.put(new Request('https://keptsam.cache/probe'), new Response(new Uint8Array(16 << 20))), 30000, 'storing 16 MB');
+    say('storing a 16 MB piece: ok');
+  } catch (e) { say(`storing a 16 MB piece failed: ${e.name}: ${e.message}`); }
+  try { await caches.delete('keptsam-probe'); } catch {}
+  say('done');
+}
+document.getElementById('run').onclick = run;
+run();
+</script>
+</body>
+</html>
