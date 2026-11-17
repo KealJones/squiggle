@@ -186,6 +186,27 @@ const factLine = factText;
 
 // ── find ─────────────────────────────────────────────────────────────────
 
+// Several wordings in one call ("git preference | rebase | merge", or a list): a fact saved in other words than the
+// question still turns up (Keal, 2026-11-16). At most 4, each searched on its own; empty and repeated ones dropped.
+export function splitQueries(q) {
+  const parts = (Array.isArray(q) ? q : String(q || '').split('|')).map(s => String(s || '').trim()).filter(Boolean);
+  const seen = new Set();
+  return parts.filter(p => !seen.has(p.toLowerCase()) && seen.add(p.toLowerCase())).slice(0, 4);
+}
+
+// find() for each wording, merged in order with repeats dropped, up to 2k of each kind.
+const KEYS = { tools: x => x.name, recipes: x => (x.recipe && (x.recipe.id || x.recipe.title)) || x.text, facts: x => String(x.text).toLowerCase(), chats: x => x.session || x.text, task: x => x.text };
+export async function findMany(queries, sources = {}, { k = 3 } = {}) {
+  if (queries.length <= 1) return find(queries[0] || '', sources, { k });
+  const all = await Promise.all(queries.map(q => find(q, sources, { k })));
+  const out = {};
+  for (const [kind, key] of Object.entries(KEYS)) {
+    const seen = new Set();
+    out[kind] = all.flatMap(r => r[kind] || []).filter(x => !seen.has(key(x)) && seen.add(key(x))).slice(0, 2 * k);
+  }
+  return out;
+}
+
 export async function find(query, sources = {}, { k = 3 } = {}) {
   const out = { tools: [], recipes: [], facts: [], chats: [], task: [] };
   query = String(query || '').trim();

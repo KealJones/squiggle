@@ -9,7 +9,7 @@ import * as memory from './memory.js';
 import * as storage from './storage.js';
 import * as recipes from './recipes.js';
 import * as tasks from './tasks.js';
-import { find as findAll, renderFind, nothingFor, NOTHING, PAST_CHAT, PUSHBACK, checkQuery, rerankWeb, urlLedger, rankTools } from './find.js';
+import { findMany, splitQueries, renderFind, nothingFor, NOTHING, PAST_CHAT, PUSHBACK, checkQuery, rerankWeb, urlLedger, rankTools } from './find.js';
 import * as prefetchLib from './prefetch.js';
 import { buildEntities, resolve as resolveRefs, renderRefs } from './refs.js';
 import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes, chunk, resultGist } from './context.js';
@@ -240,8 +240,9 @@ function phaseTools(step) {
   const h = tasks.HARNESS_SPECS;
   const info = gated() ? [tasks.TOOL_INFO_SPEC] : [];
   const ask = h[askName()];
-  if (managed()) return [...base, tasks.MANAGED_SPECS.plan, ...(step ? [h.done] : []), ask, h.find, ...info, tasks.MANAGED_SPECS.checkpoint];
-  return [...base, h.plan, ...(step ? [h.done] : []), ask, h.find, ...info];
+  const find = dialect().frozen ? h.find : tasks.FIND_SPEC_V3;
+  if (managed()) return [...base, tasks.MANAGED_SPECS.plan, ...(step ? [h.done] : []), ask, find, ...info, tasks.MANAGED_SPECS.checkpoint];
+  return [...base, h.plan, ...(step ? [h.done] : []), ask, find, ...info];
 }
 
 // Tokens the tool definitions take: fenced small models see only names and looked-up one-liners (~300);
@@ -836,7 +837,7 @@ class Turn {
       .filter(({ l }) => l.step !== step.id && l.text && !tasks.HARNESS.has(l.name))
       .map(({ l, i }) => ({ id: 'l:' + i, source: 'tool output', text: `${l.label}\n${l.text}` }));
     if (earlier.length) {
-      const r = await findAll(step.text, { taskItems: earlier }, { k: 2 });
+      const r = await findMany([step.text], { taskItems: earlier }, { k: 2 });
       if (r.task.length) sections.push({ title: 'Found earlier in this task', text: wrapUntrusted('earlier tool output', r.task.map(t => t.text.replace(STRIP_UNTRUSTED, '')).join('\n\n')) });
     }
     const prep = await this.prepare(focus);
@@ -1104,7 +1105,8 @@ class Turn {
     this.ui.onTool && this.ui.onTool({ name, running: true });
     if (name === 'find' || ASKING.has(name)) {
       const asking = ASKING.has(name);
-      const query = String(args.query || args.question || args.what || args.q || '').trim();
+      const raw = args.query || args.question || args.what || args.q;
+      const query = (Array.isArray(raw) ? splitQueries(raw).join(' | ') : String(raw || '')).trim();
       // Small models call need/find with nothing (or echo the request) when they mean something else;
       // an empty question must not reach the user.
       if (!query) {
@@ -1178,7 +1180,8 @@ class Turn {
   // turns up nothing of the user's own falls through to web_search (docs/harness.md, "find falls
   // through to the web"): small models reach for find to look up facts, and then kept calling it.
   async find(query, task, { web = true } = {}) {
-    const r = await findAll(query, {
+    const parts = splitQueries(query);
+    const r = await findMany(parts, {
       tools: modelTools(),
       recipes,
       recall: (q, k) => memory.recall(q, k),
@@ -1211,8 +1214,9 @@ class Turn {
     const toolAsked = r.tools.some(t => !LOOKUP_TOOLS.includes(t.name) && (t.score || 0) > 4);
     if (web && !own && !toolAsked && !PAST_CHAT.test(String(query).toLowerCase()) && this.webOn()) {
       // A question naming someone or something gets Wikipedia and Wikidata too, alongside the web.
-      const wikiOn = prefetchLib.namesIn(query).length && modelTools().some(t => t.name === 'wiki_lookup');
-      const [w, wiki] = await Promise.all([this.webFallback(query), wikiOn ? this.wikiTop(query, 'for find') : null]);
+      const wikiOn = prefetchLib.namesIn(parts[0] || query).length && modelTools().some(t => t.name === 'wiki_lookup');
+      // One web search, on the first wording: one per wording would cost a search each for the same question.
+      const [w, wiki] = await Promise.all([this.webFallback(parts[0] || query), wikiOn ? this.wikiTop(parts[0] || query, 'for find') : null]);
       if (w) return { text: wiki ? `Wikipedia and Wikidata:\n${wiki}\n\n${w}` : w, tools: [], empty: false, answers, web: true };
     }
     return { text, tools: r.tools.map(t => t.name), empty, answers };

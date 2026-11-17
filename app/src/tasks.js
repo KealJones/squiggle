@@ -37,6 +37,8 @@ export const HARNESS_SPECS = {
   ask_user: { name: 'ask_user', description: 'Ask the user a question and wait for their answer: something only they can tell you (a choice, a name, a detail, a go-ahead). If memory already answers it, you get that instead; call it again to ask anyway.', parameters: S({ question: str('The question, as you would ask it, e.g. "Should the new repo be public or private?"') }, ['question']) },
   find: { name: 'find', description: 'Search what Squiggle knows: other tools (and how to call them), recipes from past tasks, memory, past chats, this task\'s results.', parameters: S({ query: str('What you are looking for') }, ['query']) },
 };
+// v3 only (Squiggle Small's text is frozen): several wordings in one call.
+export const FIND_SPEC_V3 = { ...HARNESS_SPECS.find, parameters: S({ query: str('What you are looking for. Several wordings at once: separate them with |, e.g. "git preference | rebase | merge"') }, ['query']) };
 // AI-managed context (docs/harness.md, "the model manages its own context"): plan steps can say what they
 // need attached, and `checkpoint` hands off to a fresh context instead of running out.
 const NEEDS = { type: 'array', items: { type: 'string' }, description: 'What to attach: "step:2" (that step\'s result), "note:<id>", "file:<path>" or "file:<path>:10-40", "find:<query>"' };

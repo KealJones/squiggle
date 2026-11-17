@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { find, renderFind, rankTools, snippet, NOTHING, BARS, rerankWeb, urlLedger, urlsIn, PUSHBACK, checkQuery } from '../app/src/find.js';
+import { find, findMany, splitQueries, renderFind, rankTools, snippet, NOTHING, BARS, rerankWeb, urlLedger, urlsIn, PUSHBACK, checkQuery } from '../app/src/find.js';
 import { findTools } from '../app/src/engine-wllama.js';
 import * as R from '../app/src/recipes.js';
 
@@ -356,4 +356,15 @@ test('case 15: a GitHub repo named outright is a job for git_clone, whatever the
   const top = rankTools('Can you pull GitHub.com/kealjones/bubbles', specs);
   assert.equal(top[0].name, 'git_clone', JSON.stringify(top.map(t => [t.name, t.score])));
   assert.ok(top[0].score > 4);
+});
+
+test('find takes several wordings: each is searched, results merge without repeats (2026-11-16)', async () => {
+  assert.deepEqual(splitQueries('git preference | rebase |  | Rebase | merge | squash | extra'), ['git preference', 'rebase', 'merge', 'squash']);
+  assert.deepEqual(splitQueries(['a', ' b ', '']), ['a', 'b']);
+  assert.deepEqual(splitQueries('just one'), ['just one']);
+  const facts = [{ id: 'f1', text: 'The user always uses rebase, never merge commits' }, { id: 'f2', text: 'The user deploys on Fridays' }];
+  const recall = async (q) => facts.filter(f => q.split(/\s+/).some(w => f.text.toLowerCase().includes(w.toLowerCase()))).map(fact => ({ fact, score: 0.9 }));
+  const factText = (r) => r.facts.map(x => x.text);
+  assert.deepEqual(factText(await findMany(['git preference'], { recall })), [], 'one wording misses it');
+  assert.deepEqual(factText(await findMany(['git preference', 'rebase', 'merge'], { recall })), ['The user always uses rebase, never merge commits'], 'another wording finds it, once');
 });
