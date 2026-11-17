@@ -306,7 +306,7 @@ export function buildEntities({ messages = [], facts = [], toolCalls = [] } = {}
   for (const f of facts || []) {
     if (!f || f.deleted) continue;
     for (const n of factNames(f)) known.names.set(n.value.toLowerCase(), n);
-    const text = `${f.s || ''} ${f.p || ''} ${f.o || ''} ${f.note || ''}`;
+    const text = `${f.text || `${f.s || ''} ${f.p || ''} ${f.o || ''}`} ${f.note || ''}`;
     for (const m of extractMentions(text, known)) if (m.type === 'repo') known.repos.add(m.value.toLowerCase());
     events.push({ at: -1, seq: events.length, kind: 'fact', f, text });
   }
