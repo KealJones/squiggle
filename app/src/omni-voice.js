@@ -82,17 +82,31 @@ const join = (parts) => { const out = new Float32Array(parts.reduce((s, p) => s 
  * The microphone, cut into utterances by loudness: onUtterance(pcm16k) after each stretch of speech followed by
  * `silenceMs` of quiet. The threshold follows the room's noise floor. Returns { stop() }.
  */
-export async function listen({ onUtterance, onSpeech = () => {}, silenceMs = 900, minSpeechMs = 250, maxMs = 30000 }) {
+// Call it straight from the tap, before any await: iOS only lets an AudioContext run if it's made and resumed inside
+// the gesture (made after awaiting the microphone, it stays suspended and hears nothing; Keal's iPhone, 2026-11-17).
+// One context serves every listen, so a call's later turns (started after a reply, not by a tap) keep hearing.
+let micAc = null;
+export function micContext() {
+  if (!micAc || micAc.state === 'closed') micAc = new (globalThis.AudioContext || globalThis.webkitAudioContext)();
+  try { micAc.resume(); } catch {}
+  return micAc;
+}
+export function listen(opts) {
+  return listenOn(micContext(), opts);
+}
+
+async function listenOn(ac, { onUtterance, onSpeech = () => {}, silenceMs = 900, minSpeechMs = 250, maxMs = 30000, keepAll = false }) {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
-  const ac = new (globalThis.AudioContext || globalThis.webkitAudioContext)();
   try { await ac.resume(); } catch {}
   const src = ac.createMediaStreamSource(stream);
   const proc = ac.createScriptProcessor(4096, 1, 1);
   const rate = ac.sampleRate, blockMs = (4096 / rate) * 1000;
   let floor = 0.01, speech = [], pre = [], speechMs = 0, quietMs = 0, talking = false, stopped = false;
+  const all = [];   // everything heard (keepAll), for a recording the person ends themselves
   proc.onaudioprocess = (ev) => {
     if (stopped) return;
     const x = ev.inputBuffer.getChannelData(0).slice();
+    if (keepAll) all.push(x);
     let e = 0; for (let i = 0; i < x.length; i++) e += x[i] * x[i];
     const rms = Math.sqrt(e / x.length);
     const thr = Math.max(0.012, floor * 3);
@@ -114,6 +128,13 @@ export async function listen({ onUtterance, onSpeech = () => {}, silenceMs = 900
   return {
     // Whatever was being said right now, as an utterance (true if there was any).
     flush() {
+      if (keepAll) {
+        // The whole recording, whatever the loudness check made of it (a quiet voice still counts).
+        if (!all.length) return false;
+        stopped = true;
+        to16k(join(all), rate).then(onUtterance, () => {});
+        return true;
+      }
       if (!talking || !speech.length) return false;
       talking = false;
       const pcm = join(speech); speech = []; pre = [];
@@ -125,7 +146,6 @@ export async function listen({ onUtterance, onSpeech = () => {}, silenceMs = 900
       stopped = true;
       try { proc.disconnect(); src.disconnect(); } catch {}
       for (const t of stream.getTracks()) t.stop();
-      try { ac.close(); } catch {}
     },
   };
 }
@@ -169,10 +189,12 @@ export function omniRecognition({ transcribe }) {
 }
 
 /** One utterance from the microphone (ends after a pause, or on stop()): { done: Promise<pcm16k|null>, stop() }. */
-export function recordOnce({ silenceMs = 1500, onSpeech } = {}) {
-  let mic = null, settle;
+// Ends by itself after a pause once speech was heard, or when stop() is called: then everything recorded counts.
+// Call it straight from the tap (see listen).
+export function recordOnce({ silenceMs = 2000, onSpeech } = {}) {
+  let mic = null, settle, stopWanted = false;
   const done = new Promise((r) => { settle = r; });
   const finish = (pcm) => { if (mic) { mic.stop(); mic = null; } settle(pcm); };
-  listen({ silenceMs, onSpeech, onUtterance: finish }).then((m) => { mic = m; }, (e) => settle(Promise.reject(e)));
-  return { done, stop: () => { if (!(mic && mic.flush())) finish(null); } };
+  listen({ silenceMs, onSpeech, keepAll: true, onUtterance: finish }).then((m) => { mic = m; if (stopWanted && !m.flush()) finish(null); }, (e) => settle(Promise.reject(e)));
+  return { done, stop: () => { if (!mic) { stopWanted = true; return; } if (!mic.flush()) finish(null); } };
 }

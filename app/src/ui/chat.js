@@ -18,6 +18,7 @@ import { renderSide } from './side.js';
 import { toggleReadAloud } from './voice-ui.js';
 import { ensureModel, loadCrashMarker, updateComposerNote, useSessionModel, sessionModel, switchModel, useSessionContext } from './model-ui.js';
 import * as engine from '../engine.js';
+import { recordOnce } from '../omni-voice.js';
 import { CONTEXT_MODES, contextMode } from '../context.js';
 import { showChatInUrl } from './links.js';
 
@@ -332,14 +333,15 @@ export function setupComposer(form, input, onSend) {
     notice.textContent = problems.join(' ');
   };
   picker.addEventListener('change', () => { add(picker.files); picker.value = ''; });
+  // Pictures, videos and recordings go to a model that takes them in itself (LFM3 Omni) instead of being read as text.
+  attachments.setSees((kind) => Boolean(engine.hasSense && engine.hasSense(kind, sessionModel())));
   inner.insertBefore(h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Attach files', title: 'Attach files', onclick: () => picker.click() }, icon('i-attach')), input);
   // Speak a message (LFM3 Omni): the model writes down what you said, into the box, to send or edit. Hidden unless the
   // loaded model hears for itself (model-ui.js updateComposerNote).
   let rec = null;
   const mic = h('button', { id: 'composer-mic', class: 'icon-btn', type: 'button', hidden: true, 'aria-label': 'Speak a message', title: 'Speak a message', onclick: async () => {
     if (rec) { rec.stop(); return; }
-    const { recordOnce } = await import('../omni-voice.js');
-    rec = recordOnce();
+    rec = recordOnce();   // before any await: iOS only starts audio inside the tap
     mic.classList.add('recording'); mic.setAttribute('aria-pressed', 'true'); mic.title = 'Stop and write it down';
     notice.hidden = false; notice.textContent = 'Listening… tap the microphone again when you\'re done.';
     try {
