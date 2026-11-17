@@ -1,7 +1,8 @@
 # Squiggle — notes for engineers and coding agents
 
-A browser-only agent: LFM3 1.7B on WebLLM (WebGPU, our own MLC build) on phones and computers, or its GGUF on the
-CPU (wllama) without WebGPU (`engine.DEFAULTS`, 2026-11-10); optionally Gemma 4 26B on the relay's Workers AI. Keal's
+A browser-only agent: LFM3 on Keal's own WebGPU engine, Keptsam (LFM3 Omni 2B: it also sees pictures and video, hears
+sound and speaks; 2026-11-16), on phones and computers, or LFM3 1.7B's GGUF on the CPU (wllama) without WebGPU
+(`engine.DEFAULTS`); the WebLLM build (our own MLC build) is the GPU fallback; optionally Gemma 4 26B on the relay's Workers AI. Keal's
 own Squiggle Small and Tiny Gemma 4 stay as experimental options; every other model was removed (2026-11-10), the
 runtimes (LiteRT, wllama, WebLLM) and tool formats stay so adding one is a registry entry. State is
 synced through a private GitHub "storage repo", via a Cloudflare Worker that relays GitHub requests browsers
@@ -47,6 +48,12 @@ app/                    static app, plain ES modules, no build step
     recall.js           smart mode's recalled block: earlier messages (this chat + other chats) and memory, quoted after the request; time phrases, size caps
     search.js           BM25 (light stemmer: -ing/-ies/-ed/-s and a trailing e) + blend with optional embeddings (embed.js, MiniLM on CPU in embed-worker.js, terminated after 15 s idle on phones / 3 min on computers so its memory is freed)
     engine-webllm.js    WebLLM (MLC on WebGPU) under engine-wllama.js's conversations; per-model WebLLM version (`webllm`); streams any tool format
+    engine-keptsam.js   Keptsam (github.com/KealJones/Keptsam, pinned by commit, from jsDelivr) posing as a WebLLM engine under that shim: raw
+                        completions, prompt reuse by snapshot at the shim's safe cut (prefix-cache.js snapshotPoint), ⟦media:id⟧ markers → the
+                        file itself, speak()/transcribe() in a side sequence (the chat's cache survives them); files in Cache Storage keptsam-v1
+    media.js            files the model takes in itself (Omni): kept in memory for the page under an id, a marker in the prompt, decoded once
+    omni-voice.js       Omni's own voice (a voice.js speaker: a sentence plays once made, the next made meanwhile), a SpeechRecognition stand-in
+                        (mic + loudness check, each utterance transcribed by the model) for calls, recordOnce for the composer's microphone
     resume.js           a turn's checkpoint (localStorage `squiggle-resume`): phase, reply so far, tool calls run with results, the raw text of the call in flight; picked up on the next open (chat.js `resumeUnfinished`), given up after 2 tries
     prefix-cache.js     on by default (?reuse=0 turns it off for that browser): keeps a prompt prefix in the model's cache between raw completions (two sequences, fork at a safe cut); reverted once, see docs/lab.md "Reuse the prompt already in the cache"
     toolformats/        how each model family's template writes tools, calls and results, for WebLLM (docs/extending.md "Tool formats")
@@ -154,6 +161,10 @@ works the same way (`sessionContextMode` / `useSessionContext`, applied with the
 each turn; `settings.defaultContextMode` is the saved default, `settings.contextMode` the mode in effect). `model` on a reply is which
 model wrote it (`agent.js replyModel`: `{ id, label, how, smallMode?, contextSize, contextMode }`). A session seeded by the
 demo carries `demo: true` (demo.js `clearSamples` removes those).
+Attachments the model takes in itself (Omni: pictures, video, sound; `attachments.setSees`) are kept in memory only
+(media.js), carry `media` (the id) and `kind` on the record, and reach the prompt as a ⟦media:id⟧ marker, counted in
+the window by `media.tokensFor`; pictures still kept are shown again in later turns, video and sound only named. Up to
+200 MB each (`MEDIA_MAX_BYTES`); nothing is stored, no OCR.
 Attachments: storage only holds text, so text files are saved as-is and PDFs as
 their extract (`<name>.txt`) under `home/attachments/<session>/`; images as the text
 Tesseract.js reads from them (`ocr.js`, two passes: full size and half-size grayscale), also
@@ -239,7 +250,12 @@ saved results). On Keal's iPhone (2026-11-15) LFM3 re-ran the same two Wikipedia
 
 ## Voice (voice.js)
 
-- Speech-to-text is the Web Speech API; text-to-speech is the browser's own speech synthesis
+- With LFM3 Omni loaded (`engine.hasSense('voice'|'audio')`) the model speaks and hears for itself unless Settings →
+  Voice picks "This device's" (`settings.voiceEngine`): read aloud and calls use `omniSpeaker` (`settings.omniVoice`
+  female/male), calls listen through `omniRecognition`, and the composer gets a microphone (`#composer-mic`, shown by
+  model-ui.js `updateComposerNote`) that writes what was said into the box. Omni's voice is slower than real time for
+  now (~0.3× on an iPhone 16), so sentences play whole with pauses between them.
+- Otherwise speech-to-text is the Web Speech API; text-to-speech is the browser's own speech synthesis
   (`systemSpeaker`, best installed voice via `pickVoice`, or the one picked in Settings).
 - Read aloud: the speaker button under a reply (`voice.readAloud`) uses the same voice.
 - An on-device neural voice (Kokoro-82M / KittenTTS on ONNX Runtime Web) used to live here; it was
@@ -264,9 +280,10 @@ stubs the Web Speech API; real-model behaviour needs a WebGPU device and is chec
 
 iOS Safari kills tabs that load Gemma 4 E2B/E4B, and smaller ONNX models (tried and removed:
 Gemma 3, SmolLM, a QAT E2B build on onnxruntime-web) failed on WebGPU readback. The defaults are `engine.DEFAULTS`
-(one place to change): LFM3 1.7B everywhere since 2026-11-10 (settings.js `lfm3Default` moves devices on an old default
-once). A model can have several builds (`engine.GROUPS`, `group` on each MODELS entry): LFM3 is `WLF3QAD` (WebLLM,
-q4f16, `f16Only`) then `LF3` (GGUF on wllama, CPU). The user picks the model; `engine.forDevice` picks the first build
+(one place to change): LFM3 everywhere since 2026-11-10 (settings.js `lfm3Default` moves devices on an old default
+once). A model can have several builds (`engine.GROUPS`, `group` on each MODELS entry): LFM3 is `KOMNI` (LFM3 Omni 2B on
+Keptsam, WebGPU without shader-f16, since 2026-11-16), then `WLF3QAD` (WebLLM, q4f16 with a q4f32 twin), then `LF3` (GGUF on
+wllama, CPU). The user picks the model; `engine.forDevice` picks the first build
 that runs here (`runsHere`: WebGPU for GPU builds, shader-f16 for f16-only ones after `probeGpu`, not in
 `settings.avoidBuilds`), and that one build is the only one listed. `initModel` resolves the saved model to it,
 `sessionModel` resolves a chat saved on another device to it, and `cleanupStorage` frees the other build's download.

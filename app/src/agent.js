@@ -373,7 +373,7 @@ function replyModel() {
   const id = settings.model;
   const m = engine.MODELS[id] || {};
   const info = engine.smallInfo && engine.smallInfo();
-  const how = m.runtime === 'cloud' ? 'relay' : m.runtime === 'litert' ? 'webgpu' : info ? (info.webllm ? 'webllm' : info.gpu ? 'wllama-gpu' : `wllama-cpu${info.threads > 1 ? `-${info.threads}` : ''}`) : m.runtime || '';
+  const how = m.runtime === 'cloud' ? 'relay' : m.runtime === 'litert' ? 'webgpu' : info ? (info.keptsam ? 'keptsam' : info.webllm ? 'webllm' : info.gpu ? 'wllama-gpu' : `wllama-cpu${info.threads > 1 ? `-${info.threads}` : ''}`) : m.runtime || '';
   return { id, label: m.label || id, how, ...(smallModeSwitchable(id) ? { smallMode: smallMode(id) } : {}), ...(noPrompt(id) ? { noPrompt: true } : {}), contextSize: settings.contextSize, contextMode: settings.contextMode };
 }
 
@@ -581,10 +581,10 @@ class Turn {
     // Recalled earlier messages go after the request, clearly quoted (not for plain chat).
     if (ctx.recalled && !plain()) { pending += `\n\n${ctx.recalled}`; used += estTokens(ctx.recalled); }
     this.attNote = att.note || '';
-    used += estTokens(att.text);
+    used += estTokens(att.text) + (att.mediaTokens || 0);
     const reserve = Math.min(MAX_OUTPUT, 700);
     if (managed()) pending += `\n\n${tasks.budgetLine(used, settings.contextSize, reserve, dialect())}`;
-    this.setWindow(windowOf(ctx.report, { system: plain() ? 0 : estTokens(ctx.system), tools: toolTokens, message: estTokens(this.shown) + estTokens(att.text) }), used);
+    this.setWindow(windowOf(ctx.report, { system: plain() ? 0 : estTokens(ctx.system), tools: toolTokens, message: estTokens(this.shown) + estTokens(att.text) + (att.mediaTokens || 0) }), used);
     let chatCalls = 0, full = false, askedForAnswer = false, lastThink = 0;
     let messages = ctx.messages;
     if (seed) {

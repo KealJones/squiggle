@@ -333,6 +333,32 @@ export function setupComposer(form, input, onSend) {
   };
   picker.addEventListener('change', () => { add(picker.files); picker.value = ''; });
   inner.insertBefore(h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Attach files', title: 'Attach files', onclick: () => picker.click() }, icon('i-attach')), input);
+  // Speak a message (LFM3 Omni): the model writes down what you said, into the box, to send or edit. Hidden unless the
+  // loaded model hears for itself (model-ui.js updateComposerNote).
+  let rec = null;
+  const mic = h('button', { id: 'composer-mic', class: 'icon-btn', type: 'button', hidden: true, 'aria-label': 'Speak a message', title: 'Speak a message', onclick: async () => {
+    if (rec) { rec.stop(); return; }
+    const { recordOnce } = await import('../omni-voice.js');
+    rec = recordOnce();
+    mic.classList.add('recording'); mic.setAttribute('aria-pressed', 'true'); mic.title = 'Stop and write it down';
+    notice.hidden = false; notice.textContent = 'Listening… tap the microphone again when you\'re done.';
+    try {
+      const pcm = await rec.done;
+      if (pcm) {
+        notice.textContent = 'Writing down what you said…';
+        const text = await engine.transcribe(pcm);
+        if (text) { input.value = (input.value ? input.value.replace(/\s*$/, ' ') : '') + text; input.dispatchEvent(new Event('input')); input.focus(); }
+      }
+      notice.hidden = true;
+    } catch (e) {
+      notice.hidden = false;
+      notice.textContent = e && e.name === 'NotAllowedError' ? 'Microphone access is blocked. Allow it for this site in your browser settings.' : `Couldn't listen: ${(e && e.message) || e}`;
+    } finally {
+      rec = null;
+      mic.classList.remove('recording'); mic.removeAttribute('aria-pressed'); mic.title = 'Speak a message';
+    }
+  } }, icon('i-mic'));
+  inner.insertBefore(mic, input);
   form.insertBefore(chips, inner);
   form.insertBefore(notice, inner);
   form.append(picker);

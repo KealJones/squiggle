@@ -293,6 +293,9 @@ export function useSessionContext(session) {
 
 export function updateComposerNote() {
   renderSide();
+  // The composer's microphone is there while the model hears for itself (LFM3 Omni).
+  const mic = $('#composer-mic');
+  if (mic) mic.hidden = !(state.modelState === 'ready' && engine.hasSense && engine.hasSense('audio'));
   const note = $('#composer-note');
   if (!note || state.modelState !== 'ready') return;
   const cloud = engine.MODELS[agent.settings.model].runtime === 'cloud';
@@ -309,7 +312,7 @@ export function updateComposerNote() {
 export function smallHow() {
   const i = engine.isLite() ? engine.smallInfo() : null;
   if (!i) return '';
-  const parts = [i.webllm ? `GPU, WebLLM${i.webllmVersion ? ' ' + i.webllmVersion : ''}` : i.gpu ? 'GPU' : `${i.threads} CPU core${i.threads === 1 ? '' : 's'}`];
+  const parts = [i.keptsam ? `GPU, Keptsam ${i.keptsam}` : i.webllm ? `GPU, WebLLM${i.webllmVersion ? ' ' + i.webllmVersion : ''}` : i.gpu ? 'GPU' : `${i.threads} CPU core${i.threads === 1 ? '' : 's'}`];
   if (i.reuse) parts.push('prompt reuse on');
   if (i.compat) parts.push('Safari compatibility build');
   if (i.asked && i.asked.gpu && !i.gpu) parts.push('no WebGPU here');

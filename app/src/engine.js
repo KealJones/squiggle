@@ -34,6 +34,16 @@ export const MODELS = {
       model_lib: HF + 'kealjones/LFM3-1.7B-QAD-q4f32_1-MLC/resolve/main/LFM3-1.7B-q4f32_1-b1-webgpu.wasm',
       overrides: { context_window_size: 6144 },
     } },
+  // LFM3 Omni 2B on Keptsam (github.com/KealJones/Keptsam, engine-keptsam.js), the GPU build since 2026-11-16: the
+  // same LFM3 backbone (24 layers, Q4_0), plus Omni's encoders (mmproj, Q8_0) so it sees pictures and video, hears
+  // sound and speaks in its own voice. Keal's own WebGPU engine: no shader-f16 needed, GPU work in short submits for
+  // iOS's ~3 s limit, encoders loaded only while used. On Keal's iPhone 16 (Keptsam's demo, 2026-11-16): reads 51
+  // tokens a second, writes 12.6; 1,123 MB at a 4K window, 1,241 MB at its peak while speaking.
+  KOMNI: { label: 'LFM3 Omni 2B', size: '1.55 GB', group: 'LFM3', note: 'Liquid\'s LFM3 with eyes, ears and a voice, on Keal\'s own WebGPU engine (Keptsam): it sees pictures and video, hears audio, and can answer out loud. Tools in its own format, thinking first. 6K context at most', phone: true, runtime: 'wllama', backend: 'keptsam', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 6144,
+    senses: ['image', 'video', 'audio', 'voice'],
+    url: HF + 'LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/LFM3-Omni-2B-Q4_0.gguf',
+    mmproj: HF + 'LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/mmproj-LFM3-Omni-2B-Q8_0.gguf',
+    bytes: 1049617920 + 506842528, fileBytes: [1049617920, 506842528] },
   // The CPU build, for devices without WebGPU: Liquid's QAD GGUF on wllama (llama.cpp WASM, ≥ 3.13), tools through
   // the GGUF's own template. Slow on a phone CPU (1 GB, thinks first).
   LF3: { label: 'LFM3 1.7B', size: '1.0 GB', maxContext: 4096, group: 'LFM3', note: 'Liquid\'s LFM3 1.7B with tools in its own format, thinking first: the first small model trained for agent harnesses. On this device it runs on the CPU (no WebGPU here), so replies are slower than on a GPU', phone: true, runtime: 'wllama', tools: true, native: true, family: 'lfm3',
@@ -120,7 +130,7 @@ export function isMobile() {
 export const hasWebGpu = () => typeof navigator !== 'undefined' && Boolean(navigator.gpu);
 // The defaults in one place. Since 2026-11-10 it's LFM3 1.7B everywhere (Keal: "we only need LFM3"): our WebLLM build
 // on WebGPU, Liquid's GGUF on the CPU without it. Gemma 4 E4B, LFM2.5 1.2B and the rest are lab-mode options.
-export const DEFAULTS = { computer: 'WLF3QAD', phoneGpu: 'WLF3QAD', phoneCpu: 'LF3' };
+export const DEFAULTS = { computer: 'KOMNI', phoneGpu: 'KOMNI', phoneCpu: 'LF3' };
 export function deviceModel() {
   return forDevice(isMobile() ? DEFAULTS.phoneGpu : DEFAULTS.computer);
 }
@@ -135,7 +145,7 @@ export const contextFor = (id) => (MODELS[id] && MODELS[id].maxContext) || 16384
 // `group` naming the model it's a build of; GROUPS lists the builds in order of preference, and the first one
 // that can run on this device is the one listed, loaded and resolved to when a chat from another device names
 // a different build.
-export const GROUPS = { LFM3: { label: 'LFM3 1.7B', builds: ['WLF3QAD', 'LF3'] } };
+export const GROUPS = { LFM3: { label: 'LFM3', builds: ['KOMNI', 'WLF3QAD', 'LF3'] } };
 export const groupOf = (id) => (MODELS[id] && MODELS[id].group) || null;
 // Whether the GPU has 16-bit floats (shader-f16): null until probeGpu() has asked the adapter. A build marked f16Only
 // (no q4f32 twin) takes the next build on a GPU without them; LFM3's WebLLM build has its twin (mlcRecordF32).
@@ -154,7 +164,7 @@ export const setAvoided = (ids) => { avoid = new Set(ids || []); };
 export function runsHere(id) {
   const m = MODELS[id];
   if (!m || !modelFitsDevice(id) || avoid.has(id)) return false;
-  if (m.backend === 'webllm' || m.runtime === 'litert') {
+  if (m.backend === 'webllm' || m.backend === 'keptsam' || m.runtime === 'litert') {
     if (!hasWebGpu()) return false;
     if (m.f16Only && gpuF16 === false) return false;
   }
@@ -170,6 +180,7 @@ export function runnerLabel(id) {
   const m = MODELS[id];
   if (!m) return '';
   if (m.runtime === 'cloud') return 'in the cloud, through the relay';
+  if (m.backend === 'keptsam') return 'on your GPU (WebGPU, Keptsam)';
   if (m.backend === 'webllm' || m.runtime === 'litert') return 'on your GPU (WebGPU)';
   return 'on the CPU' + (typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated ? ', all cores' : '');
 }
@@ -201,8 +212,11 @@ async function webllm() {
 const metaKey = (url) => 'model-meta:' + url;
 const recSize = (r) => (r == null ? 0 : r.size ?? r.byteLength);
 
+const keptsam = () => import('./engine-keptsam.js');
+
 export async function downloadInfo(id) {
   const wm = MODELS[id];
+  if (wm && wm.backend === 'keptsam') return (await keptsam()).downloadInfo(wm);
   if (wm && wm.backend === 'webllm') {
     const done = await (await webllm()).isDownloaded(wm.mlc);
     return { total: wm.bytes, stored: done ? wm.bytes : 0, complete: done };
@@ -240,6 +254,10 @@ export async function download(id, onProgress, signal, { onWaiting } = {}) {
 
 async function downloadUnlocked(id, onProgress, signal) {
   if ((await downloadInfo(id)).complete) return;
+  if (MODELS[id].backend === 'keptsam') {
+    try { await navigator.storage?.persist?.(); } catch {}
+    return (await keptsam()).downloadModel(MODELS[id], onProgress, signal);
+  }
   if (MODELS[id].backend === 'webllm') {
     try { await navigator.storage?.persist?.(); } catch {}
     const total = MODELS[id].bytes;
@@ -345,6 +363,7 @@ async function storedBytes(url) {
 }
 
 export async function deleteModel(id) {
+  if (MODELS[id] && MODELS[id].backend === 'keptsam') return (await keptsam()).removeModel(MODELS[id]);
   if (MODELS[id] && MODELS[id].backend === 'webllm') return (await webllm()).removeModel(MODELS[id].mlc);
   if (MODELS[id] && MODELS[id].runtime === 'wllama') return (await import('./engine-wllama.js')).removeModel(MODELS[id].url);
   for (const { url } of modelFiles(id)) {
@@ -410,7 +429,9 @@ export async function load(id, contextSize, { fast = true, onStage = () => {}, s
   }
   if (MODELS[id].runtime === 'wllama') {
     const m = MODELS[id];
-    engine = m.backend === 'webllm'
+    engine = m.backend === 'keptsam'
+      ? await (await keptsam()).createEngine({ id, ...m }, contextSize, onStage, { native: Boolean(m.native), toolFormat: m.toolFormat || null })
+      : m.backend === 'webllm'
       ? await (await webllm()).createEngine(m.mlc, contextSize, onStage, { native: Boolean(m.native), toolFormat: m.toolFormat || null })
       : await (await import('./engine-wllama.js')).createEngine(m.url, contextSize, onStage, { ...small, native: Boolean(m.native) });
     loadedModel = id; engineContext = contextSize; engineFast = fast; engineSmall = smallKey;
@@ -584,6 +605,15 @@ export async function background(fn) {
   bgBusy = true;
   try { return await genLock(fn); } finally { bgBusy = false; }
 }
+
+// ── The model's own senses (LFM3 Omni on Keptsam) ─────────────────────────
+// Which of 'image', 'video', 'audio' (hearing) and 'voice' (speaking) the model takes in or makes itself.
+export const senses = (id = loadedModel) => (MODELS[id] && MODELS[id].senses) || [];
+export const hasSense = (sense, id = loadedModel) => senses(id).includes(sense);
+// Speaking and listening use the GPU like a reply does, so they wait their turn (and a background job yields).
+export const speak = (text, opts) => foreground(async () => (await keptsam()).speak(text, opts));
+export const transcribe = (pcm, opts) => foreground(async () => (await keptsam()).transcribe(pcm, opts));
+export const decodeAudio = async (blob) => (await keptsam()).decodeAudio(blob);
 
 // One-off text generation with no tools, e.g. "summarize this".
 export async function complete(system, prompt, { maxOutputTokens = 400 } = {}) {
