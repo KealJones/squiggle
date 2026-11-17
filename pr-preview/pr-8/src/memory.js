@@ -5,7 +5,8 @@
 // A fact is a subject → relation → object edge, e.g.
 //   { s: 'Keal', p: 'prefers', o: 'no approval prompts for pushes' }
 //   { s: 'squiggle', p: 'stores sessions in', o: 'a private GitHub repo' }
-// Entities are the subjects/objects; recall walks one hop from matching facts.
+// Entities are the subjects/objects; recall walks one hop from matching facts. Since 2026-11-16 the remember tool
+// saves one sentence instead ({ text }); those have no entities, so recall finds them by their words alone.
 import * as storage from './storage.js';
 import { uid, emitter } from './util.js';
 import { parseJsonl, toJsonl } from './merge.js';
@@ -27,12 +28,13 @@ export async function load() {
 
 export const all = () => facts.filter(f => !f.deleted);
 const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
-const key = (f) => `${norm(f.s)}|${norm(f.p)}|${norm(f.o)}`;
+const key = (f) => f.text ? `t|${norm(f.text)}` : `${norm(f.s)}|${norm(f.p)}|${norm(f.o)}`;
 
-export function add({ s, p, o, note, source, auto = false }) {
-  if (!s || !p || !o) throw new Error('A fact needs a subject, a relation and an object.');
+export function add({ text, s, p, o, note, source, auto = false }) {
+  text = String(text || '').trim();
+  if (!text && (!s || !p || !o)) throw new Error('A fact needs its text (or a subject, a relation and an object).');
   const now = Date.now();
-  const k = key({ s, p, o });
+  const k = key({ text, s, p, o });
   const existing = facts.find(f => key(f) === k);
   if (existing) {
     Object.assign(existing, { deleted: false, mts: now, note: note || existing.note });
@@ -40,7 +42,7 @@ export function add({ s, p, o, note, source, auto = false }) {
     save();
     return existing;
   }
-  const f = { id: uid('f'), s: String(s).trim(), p: String(p).trim(), o: String(o).trim(), ts: now, mts: now, auto };
+  const f = text ? { id: uid('f'), text, ts: now, mts: now, auto } : { id: uid('f'), s: String(s).trim(), p: String(p).trim(), o: String(o).trim(), ts: now, mts: now, auto };
   if (note) f.note = String(note).trim();
   if (source) f.source = source;
   facts.push(f);
@@ -103,7 +105,7 @@ export async function recall(query, k = 8) {
 export function entities() {
   const map = new Map();
   for (const f of all()) {
-    for (const e of [f.s, f.o]) {
+    for (const e of [f.s, f.o].filter(Boolean)) {
       const n = norm(e);
       if (!map.has(n)) map.set(n, { name: e, facts: [] });
       map.get(n).facts.push(f);
