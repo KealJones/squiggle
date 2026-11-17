@@ -17,7 +17,9 @@ const systemSpeaker = () => voice.systemSpeaker({ synth: window.speechSynthesis,
 // LFM3 Omni speaks and hears for itself (omni-voice.js), unless Settings picks the device's own voices.
 const omniWanted = () => agent.settings.voiceEngine !== 'system';
 export const omniVoice = () => Boolean(engine.hasSense && engine.hasSense('voice')) && omniWanted();
-export const omniEars = () => Boolean(engine.hasSense && engine.hasSense('audio')) && omniWanted();
+// Hearing you in a call: the browser's own speech recognition when it has one (live words, instant; Keal 2026-11-17),
+// the model's ears only where there's none.
+export const omniEars = () => Boolean(engine.hasSense && engine.hasSense('audio')) && omniWanted() && !voice.support(window).recognition;
 let omni = null;
 const omniOf = () => (omni ||= omniSpeaker({ speak: (text, o) => engine.speak(text, { ...o, voice: agent.settings.omniVoice || 'female' }) }));
 const speakerNow = () => (omniVoice() ? omniOf() : systemSpeaker());

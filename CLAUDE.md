@@ -250,10 +250,12 @@ saved results). On Keal's iPhone (2026-11-15) LFM3 re-ran the same two Wikipedia
 
 ## Voice (voice.js)
 
-- With LFM3 Omni loaded (`engine.hasSense('voice'|'audio')`) the model speaks and hears for itself unless Settings →
-  Voice picks "This device's" (`settings.voiceEngine`): read aloud and calls use `omniSpeaker` (`settings.omniVoice`
-  female/male), calls listen through `omniRecognition`, and the composer gets a microphone (`#composer-mic`, shown by
-  model-ui.js `updateComposerNote`) that writes what was said into the box. Omni's voice is slower than real time for
+- With LFM3 Omni loaded (`engine.hasSense('voice')`) the model speaks for itself unless Settings → Voice picks "This
+  device's" (`settings.voiceEngine`): read aloud and calls use `omniSpeaker` (`settings.omniVoice` female/male).
+  Hearing stays with the browser's own speech recognition wherever it exists, for its live words (Keal, 2026-11-17);
+  only without it do calls listen through `omniRecognition` (voice-ui.js `omniEars`). The composer's microphone
+  (`#composer-mic`, shown by model-ui.js `updateComposerNote`) dictates live into the box with the same recognition,
+  else records and has Omni write it down. Omni's ears are for attached recordings and video soundtracks. Omni's voice is slower than real time for
   now (~0.3× on an iPhone 16), so sentences play whole with pauses between them.
 - Otherwise speech-to-text is the Web Speech API; text-to-speech is the browser's own speech synthesis
   (`systemSpeaker`, best installed voice via `pickVoice`, or the one picked in Settings).

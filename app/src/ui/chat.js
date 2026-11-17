@@ -336,29 +336,57 @@ export function setupComposer(form, input, onSend) {
   // Pictures, videos and recordings go to a model that takes them in itself (LFM3 Omni) instead of being read as text.
   attachments.setSees((kind) => Boolean(engine.hasSense && engine.hasSense(kind, sessionModel())));
   inner.insertBefore(h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Attach files', title: 'Attach files', onclick: () => picker.click() }, icon('i-attach')), input);
-  // Speak a message (LFM3 Omni): the model writes down what you said, into the box, to send or edit. Hidden unless the
-  // loaded model hears for itself (model-ui.js updateComposerNote).
+  // Speak a message: live dictation through the phone's own speech recognition (words appear as you talk), or, where
+  // the browser has none, LFM3 Omni writes it down once you stop (Keal, 2026-11-17: live text matters more than
+  // on-device here; Omni's ears are for recordings and video). Hidden unless one of them can (model-ui.js updateComposerNote).
   let rec = null;
-  const mic = h('button', { id: 'composer-mic', class: 'icon-btn', type: 'button', hidden: true, 'aria-label': 'Speak a message', title: 'Speak a message', onclick: async () => {
-    if (rec) { rec.stop(); return; }
+  const micOff = () => { rec = null; mic.classList.remove('recording'); mic.removeAttribute('aria-pressed'); mic.title = 'Speak a message'; };
+  const micOn = (title) => { mic.classList.add('recording'); mic.setAttribute('aria-pressed', 'true'); mic.title = title; };
+  const typed = (text) => { input.value = text; input.dispatchEvent(new Event('input')); };
+  const micError = (e) => {
+    notice.hidden = false;
+    const name = e && (e.name || e.error);
+    notice.textContent = name === 'NotAllowedError' || name === 'not-allowed' || name === 'service-not-allowed'
+      ? 'Microphone access is blocked. Allow it for this site in your browser settings.'
+      : `Couldn't listen: ${(e && (e.message || e.error)) || e}`;
+  };
+  const dictate = (SR) => {
+    const r = new SR();
+    r.continuous = true; r.interimResults = true; r.lang = navigator.language || 'en-US';
+    const base = input.value ? input.value.replace(/\s*$/, ' ') : '';
+    let heard = '', live = '';
+    r.onresult = (ev) => {
+      live = '';
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const t = ev.results[i][0].transcript;
+        if (ev.results[i].isFinal) heard += t; else live += t;
+      }
+      typed(base + heard + live);
+    };
+    r.onerror = (e) => { if (e.error !== 'no-speech' && e.error !== 'aborted') micError(e); };
+    r.onend = () => { if (live) typed(base + heard + live); micOff(); notice.hidden = true; input.focus(); };
+    r.start();   // inside the tap: iOS only starts listening from a gesture
+    rec = { stop: () => r.stop() };
+    micOn('Stop dictating');
+  };
+  const omniDictate = async () => {
     rec = recordOnce();   // before any await: iOS only starts audio inside the tap
-    mic.classList.add('recording'); mic.setAttribute('aria-pressed', 'true'); mic.title = 'Stop and write it down';
+    micOn('Stop and write it down');
     notice.hidden = false; notice.textContent = 'Listening… tap the microphone again when you\'re done.';
     try {
       const pcm = await rec.done;
       if (pcm) {
         notice.textContent = 'Writing down what you said…';
         const text = await engine.transcribe(pcm);
-        if (text) { input.value = (input.value ? input.value.replace(/\s*$/, ' ') : '') + text; input.dispatchEvent(new Event('input')); input.focus(); }
+        if (text) { typed((input.value ? input.value.replace(/\s*$/, ' ') : '') + text); input.focus(); }
       }
       notice.hidden = true;
-    } catch (e) {
-      notice.hidden = false;
-      notice.textContent = e && e.name === 'NotAllowedError' ? 'Microphone access is blocked. Allow it for this site in your browser settings.' : `Couldn't listen: ${(e && e.message) || e}`;
-    } finally {
-      rec = null;
-      mic.classList.remove('recording'); mic.removeAttribute('aria-pressed'); mic.title = 'Speak a message';
-    }
+    } catch (e) { micError(e); } finally { micOff(); }
+  };
+  const mic = h('button', { id: 'composer-mic', class: 'icon-btn', type: 'button', hidden: true, 'aria-label': 'Speak a message', title: 'Speak a message', onclick: () => {
+    if (rec) { rec.stop(); return; }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    try { if (SR) dictate(SR); else omniDictate(); } catch (e) { micError(e); micOff(); }
   } }, icon('i-mic'));
   inner.insertBefore(mic, input);
   form.insertBefore(chips, inner);
