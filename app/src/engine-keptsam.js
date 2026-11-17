@@ -15,7 +15,7 @@ import { snapshotPoint } from './prefix-cache.js';
 import * as media from './media.js';
 
 // Pinned to a commit: Keptsam is plain ES modules, loaded straight from jsDelivr (no build step on either side).
-export const KEPTSAM_SHA = '8c251da23c04d3553fdefed5a60546642ac71296';
+export const KEPTSAM_SHA = 'cb81ebdb5970617dee868ee49719a4cf0f9a3185';
 const defaultUrl = () => `https://cdn.jsdelivr.net/gh/KealJones/Keptsam@${KEPTSAM_SHA}/src/index.js`;
 // Tests and local checks can point it elsewhere (globalThis.SQUIGGLE_KEPTSAM = '/keptsam/src/index.js').
 const libUrl = () => globalThis.SQUIGGLE_KEPTSAM || defaultUrl();
@@ -46,6 +46,8 @@ export async function downloadInfo(m) {
 export async function downloadModel(m, onProgress, signal) {
   const k = await lib();
   const sizes = m.fileBytes || filesOf(m).map(() => 0);
+  // Say how far along it is straight away (pieces already cached count), so a slow first piece doesn't look stuck.
+  if (onProgress) onProgress((await downloadInfo(m)).stored, m.bytes);
   let before = 0;
   for (const [i, url] of filesOf(m).entries()) {
     await k.cacheFile(url, { signal, onProgress: (done, total) => onProgress && onProgress(before + done, m.bytes || total) });
