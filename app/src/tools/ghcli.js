@@ -74,7 +74,7 @@ async function jqOut(env, o, data) {
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function repoOf(env, o) {
+export function repoOf(env, o) {
   const given = o.R || o.repo;
   let owner, name;
   if (given && given !== true) {
@@ -559,9 +559,23 @@ run.view = async (env, o) => {
     out.push(`${jb.conclusion === 'success' ? '✓' : jb.conclusion ? 'X' : '*'} ${jb.name} in ${dur(jb.started_at, jb.completed_at)} (ID ${jb.id})`);
     if (o.v || o.verbose || jb.conclusion === 'failure') for (const s of jb.steps || []) out.push(`  ${s.conclusion === 'success' ? '✓' : s.conclusion === 'skipped' ? '-' : s.conclusion ? 'X' : '*'} ${s.name}`);
   }
-  if (o.log || o['log-failed']) out.push('', '(Logs aren\'t available here; the steps above show what failed.)');
+  if (o.log || o['log-failed']) {
+    const pick = o['log-failed'] ? jobs.filter(jb => jb.conclusion === 'failure') : jobs;
+    if (x.status !== 'completed') return fail(`run ${x.id} is still in progress; logs will be available when it is complete`);
+    if (!env.logs) return fail('Logs need the relay, which isn\'t set up here; the steps above show what failed.');
+    const text = [];
+    for (const jb of pick) text.push(...String(await env.logs(r.owner, r.name, jb.id)).replace(/^\uFEFF/, '').split(/\r?\n/).filter(Boolean).map(l => `${jb.name}\t${l}`));
+    return ok(text.join('\n'));
+  }
   out.push('', `View this run on GitHub: ${x.html_url}`);
   return ok(out.join('\n'));
+};
+run.cancel = async (env, o) => {
+  const r = repoOf(env, o);
+  const id = o._[0];
+  if (!id) return fail('give the run id (gh run list)');
+  await env.gh(`${r.path}/actions/runs/${id}/cancel`, { method: 'POST' });
+  return ok(`✓ Request to cancel workflow ${id} submitted.`);
 };
 run.rerun = async (env, o) => {
   const r = repoOf(env, o);
@@ -577,6 +591,26 @@ workflow.list = async (env, o) => {
   const j = await jsonOut(env, o, rows, { id: w => w.id, name: w => w.name, path: w => w.path, state: w => w.state });
   if (j) return j;
   return ok(rows.map(w => [w.name, w.state, w.id].join('\t')).join('\n'));
+};
+// gh workflow run <file|name|id> [--ref b] [-f key=value]: starts a workflow_dispatch run (asks the user first: it runs
+// code on their Actions).
+workflow.run = async (env, o) => {
+  const r = repoOf(env, o);
+  const wf = o._[0];
+  if (!wf) return fail('workflow name, ID, or filename required');
+  const inputs = {};
+  for (const kv of [...(o.multi.f || []), ...(o.multi['raw-field'] || []), ...(o.multi.F || []), ...(o.multi.field || [])]) { const i = String(kv).indexOf('='); if (i > 0) inputs[kv.slice(0, i)] = kv.slice(i + 1); }
+  let id = wf;
+  if (!/\.ya?ml$|^\d+$/.test(wf)) {
+    const found = ((await env.gh(`${r.path}/actions/workflows?per_page=100`)).workflows || []).find(w => w.name.toLowerCase() === wf.toLowerCase());
+    if (!found) return fail(`could not find any workflows named ${wf}`);
+    id = found.id;
+  }
+  const ref = o.r || o.ref || (await env.gh(r.path)).default_branch;
+  await ask(env, { title: `Run workflow ${wf} in ${r.full}`, details: [`On ${ref}`, ...Object.entries(inputs).map(([k, v]) => `${k} = ${String(v).slice(0, 200)}`)] });
+  const res = await env.gh(`${r.path}/actions/workflows/${enc(String(id))}/dispatches`, { method: 'POST', body: { ref, inputs, return_run_details: true } });
+  const url = res && res.html_url;
+  return ok(`✓ Created workflow_dispatch event for ${wf} at ${ref}${url ? `\n${url}\n\nTo see the created workflow run, try: gh run view ${res.workflow_run_id}` : ''}`);
 };
 const release = {};
 release.list = async (env, o) => {
@@ -686,6 +720,7 @@ const VERB_SPECS = {
   'issue edit': [...OUT, 't', 'title', ...BODY, 'add-label', 'remove-label', 'add-assignee', 'remove-assignee', 'm', 'milestone'],
   'issue comment': [...OUT, ...BODY], 'issue close': [...OUT, 'c', 'comment', 'r', 'reason'],
 };
+VERB_SPECS['workflow run'] = ['R', 'repo', 'r', 'ref', 'f', 'raw-field', 'F', 'field'];
 const SPECS = { repo: ['R', 'repo', 'json', 'q', 'jq', 'L', 'limit', 'visibility'], run: ['R', 'repo', 'json', 'q', 'jq', 'L', 'limit', 'b', 'branch', 's', 'status', 'e', 'event', 'u', 'user', 'w', 'workflow', 'job'], workflow: ['R', 'repo', 'json', 'q', 'jq', 'L', 'limit'], release: ['R', 'repo', 'json', 'q', 'jq', 'L', 'limit'], search: ['json', 'q', 'jq', 'L', 'limit', 'repo', 'owner', 'state', 'language'] };
 export const GH_COMMANDS = Object.fromEntries(Object.entries(GROUPS).map(([k, v]) => [k, Object.keys(v)]));
 

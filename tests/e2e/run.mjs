@@ -1551,6 +1551,11 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
   assert.match(r.out, /gh +GitHub's CLI/);
   r = await run('man gh');
   assert.match(r.out, /pr create --title/);
+  r = await run('man job');
+  assert.match(r.out, /^job: run a long command on GitHub Actions/);
+  r = await run('cd /repos/app && npm test');
+  assert.equal(r.code, 127, JSON.stringify(r));
+  assert.match(r.err, /^npm: doesn't run here[\s\S]*job run (-R \S+ )?-- "npm ci && npm test"/, JSON.stringify(r));
   r = await run('git --help | head -3');
   assert.match(r.out, /real git on clones in \/repos/);
   r = await run('cd /repos/app && git log --oneline -n 2 && git diff main..agent/fix-readme --stat && git branch -a');

@@ -117,6 +117,21 @@ export async function gitAuth() {
   return { username: 'x-access-token', password: await token() };
 }
 
+// An Actions job's log, through the relay: GitHub answers with a redirect to a storage URL that sends no CORS
+// headers, so a browser can't read it directly. Text, the last 2 MB at most (the relay keeps the end).
+export async function jobLogs(owner, repo, jobId) {
+  const r = await fetch(`${apiBase()}/gh/logs/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(jobId)}`, {
+    cache: 'no-store', headers: { Authorization: 'Bearer ' + await token() },
+  }).catch(() => { throw relayError('Can\'t reach the relay.'); });
+  if (!r.ok) {
+    const data = await r.json().catch(() => null);
+    const err = new Error((data && (data.message || data.error)) || `GitHub API error ${r.status}`);
+    err.status = r.status;
+    throw err;
+  }
+  return r.text();
+}
+
 // Cloud model on the relay. The relay checks who you are with your GitHub
 // token (the token stays in this module, like for git). Throws with the
 // relay's message; a daily-limit refusal carries .code = 'limit' and .resetsAt.
