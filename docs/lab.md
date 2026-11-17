@@ -232,6 +232,34 @@ off (the crash-loop guard). The WebLLM models made the GPU switch moot for phone
 
 **Verdict.** Lab-only; the WebLLM builds are the GPU path that ships.
 
+### Resume a reply after the tab loses focus — built, untested on a device
+
+**Idea.** Keal, 2026-11-15: "make Squiggle focus-resilient". Leaving the Safari tab on an iPhone either takes the
+GPU (the tab lives, `revive` reloads the model, but a reply with text already shown ended in "send the message
+again") or kills the tab (Safari reloads the page; the turn in progress vanished).
+
+**What was built.** Three layers. (1) The WebLLM shim (`engine-webllm.js stream`): a GPU lost after text was shown
+carries on in place for raw formats (LFM3): the same rendered prompt plus the raw text written so far (thinking
+and/or reply, half a tool call cut off), completed after the reload; the consumer only sees the next words.
+Chat-API formats can't continue an assistant turn, so the error carries `gpuLost` and `engine.respond` sends the
+same input again once (`conv.rewind()` undoes the failed try). Still one carry-on per reply: a second loss right
+after the reload is the usual error. (2) A checkpoint per turn (`resume.js`, localStorage `squiggle-resume`): the
+turn's phase (chat, step, final), the reply so far, the tool calls that ran with their results, and the raw text of
+the call in flight, written at the start, about once a second while streaming, and at every tool result and step
+boundary; cleared when the reply is saved (finished, stopped or failed). Plan state is not copied: it is
+`session.tasks`. (3) On the next open, once the model is loaded (`state.onReady` -> `chat.js resumeUnfinished`)
+the chat opens, "Resuming…" shows, and `runTurn({ resume })` goes on without a tap (`Turn.resumeFrom`): in a plan,
+the interrupted step starts again with the step's own "your last try" note (tools it ran are in the task log and
+are never run again); the final reply and a chat-phase first reply carry on mid-sentence from the raw text; a chat
+phase that already ran tools carries on in a fresh context from what they found (`carryOn`). Picked up twice and
+still died (a tab killed for memory every time): the reply is saved as written with a note, and Squiggle stops.
+
+**Limits.** Untested on a device. A step's in-flight call restarts (its prompt changes), it doesn't carry on
+mid-sentence; Squiggle Small's fenced steps (v2) don't get the "last try" note; attachments sent with the message
+aren't re-read; a very large checkpoint (storage full) loses the tool result text, and the turn goes on from the
+tool labels. The e2e check loses the page mid-step with a scripted model; the GPU paths are unit tests with fake
+engines.
+
 ## Test pages (deployed alongside the app)
 
 - **`memtest.html`**: loads a chosen model on a chosen runtime (wllama, WebLLM, transformers.js ONNX) with a

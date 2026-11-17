@@ -372,6 +372,7 @@ async function loadCurrentModel() {
     state.modelState = 'ready';
     banner();
     updateComposerNote();
+    if (state.onReady) setTimeout(state.onReady, 0);   // a reply the page lost is picked up (chat.js resumeUnfinished)
     if (['smart', 'fresh'].includes(agent.settings.contextMode) && agent.settings.semantic) loadSemantic();
   } catch (e) {
     setCrashMarker(null);

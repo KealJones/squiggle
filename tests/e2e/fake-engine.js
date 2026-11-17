@@ -103,6 +103,8 @@ function stepScript(conv, input, onText) {
       if (/NEEDTEST/.test(input)) return /The user answered/.test(sys) ? call('done', { result: 'Call it Wobble' }) : (conv.cfg.tools.some(t => t.name === 'ask_user') ? call('ask_user', { question: 'What should the new project be called?' }) : call('need', { what: 'What should the new project be called?' }));
       return { ...call('find', { query: 'search the web for what uses port 8080' }), thinking: 'Look it up first.' };
     }
+    // RESUMETEST (the page lost mid-step): step 2 never answers while localStorage says to hang, like a tab killed mid-reply.
+    if (/RESUMETEST/.test(input) && /Work on step 2 now/.test(input) && localStorage.getItem('hang-step-2')) return new Promise(() => {});
     if (/PLANTEST/.test(input) && /Work on step 2 now/.test(input)) return say('Stopped node (pid 4242).', onText);
     if (/^PLANTEST/.test(input)) return call('plan', { goal: 'Free port 8080', steps: ['Find what is listening on 8080', 'Stop it'] });
     if (/^NEEDTEST/.test(input)) return call('plan', { goal: 'Set up the repo', steps: ['Pick the repo'] });

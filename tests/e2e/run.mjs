@@ -20,13 +20,25 @@ if (split) console.log(`split mode: app ${appUrl}, relay ${relayUrl} (GitHub Pag
 const browser = await chromium.launch();
 const results = [];
 const only = process.env.E2E_ONLY; // run just the checks whose name contains this
+// Every device's console warnings and errors, printed with a failed check: CI failed for weeks with no reason
+// shown because the page's own warnings (a sync that didn't push, say) never reached the log.
+const pageLog = [];
+const watch = (page, label) => {
+  page.on('console', m => { if (m.type() === 'warning' || m.type() === 'error') pageLog.push(`[${label}] ${m.type()}: ${m.text().slice(0, 300)}`); });
+  page.on('pageerror', e => pageLog.push(`[${label}] uncaught: ${String(e.message || e).slice(0, 300)}`));
+};
 const check = async (name, fn) => {
   if (only && !name.includes(only)) return;
+  const from = pageLog.length;
   try {
     await Promise.race([fn(), new Promise((_, rej) => setTimeout(() => rej(new Error('timed out after 60s')), 60000))]);
     results.push(['ok', name]); console.log('ok  ', name);
   }
-  catch (e) { results.push(['FAIL', name, e]); console.log('FAIL', name, '\n     ', (e.stack||e.message).split('\n').slice(0, 8).join('\n      ')); }
+  catch (e) {
+    results.push(['FAIL', name, e]); console.log('FAIL', name, '\n     ', (e.stack||e.message).split('\n').slice(0, 8).join('\n      '));
+    const seen = pageLog.slice(from).slice(-25);
+    if (seen.length) console.log('      page warnings and errors during this check:\n        ' + seen.join('\n        '));
+  }
 };
 
 async function device(label, viewport) {
@@ -41,6 +53,7 @@ async function device(label, viewport) {
   });
   const page = await ctx.newPage();
   page.errors = [];
+  watch(page, label);
   page.on('pageerror', e => page.errors.push(String(e)));
   page.on('console', m => { if (m.type() === 'error') page.errors.push(m.text()); });
   await page.goto(appUrl + '/');
@@ -613,6 +626,7 @@ async function voiceDevice(label, ctxOpts) {
   await ctx.addInitScript(VOICE_STUB);
   const page = D.page = await ctx.newPage();
   page.errors = [];
+  watch(page, label);
   page.on('pageerror', e => page.errors.push(String(e)));
   page.on('console', m => { if (m.type() === 'error') page.errors.push(m.text()); });
   await page.goto(appUrl + '/');
@@ -858,6 +872,42 @@ await check('AI-managed context: budget line, steps attach earlier results, chec
   await D.page.evaluate(async () => { (await import('/src/ui/settings.js')).setDefaultContextMode('smart'); });
 });
 
+await check('a reply the page lost mid-step is picked up on the next open: "Resuming…", step 1 (its tool call) not run again, the answer arrives, the checkpoint is gone', async () => {
+  const D = await device('resume');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  await D.page.evaluate(() => localStorage.setItem('hang-step-2', '1'));
+  await D.page.fill('#input', 'PLANTEST RESUMETEST kill whatever is on port 8080');
+  await D.page.press('#input', 'Enter');
+  // Step 1 ran its tool call; step 2 is waiting on the model, like a tab killed mid-reply.
+  await D.page.waitForFunction(() => (window.__engineLog || []).some(e => e.type === 'respond' && /Work on step 2 now/.test((e.system || '') + e.input)), null, { timeout: 20000 });
+  const cp = await D.page.evaluate(() => JSON.parse(localStorage.getItem('squiggle-resume')));
+  assert.equal(cp.phase, 'step');
+  assert.ok(cp.tools.some(t => t.name === 'find'), 'the tool call that ran is in the checkpoint');
+  await D.page.evaluate(() => localStorage.removeItem('hang-step-2'));
+  // What leaving the tab does (app.js settle on "hidden"), before iOS drops the page; then nobody taps anything.
+  await D.page.evaluate(async () => { await (await import('/src/sessions.js')).flush({ sync: false }); await (await import('/src/storage.js')).persistNow(); });
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.waitForFunction(() => /it is free now/.test(document.querySelector('#messages-inner').textContent), null, { timeout: 20000 });
+  const r = await D.page.evaluate(() => ({
+    log: (window.__engineLog || []).filter(e => e.type === 'respond').map(e => (e.system || '').match(/Work on step \d now/) + ''),
+    sys: (window.__engineLog || []).filter(e => e.type === 'conversation' && /Work on step 2|step 2/.test(JSON.stringify(e.messages) + e.system)).map(e => e.system).join('\n'),
+    cp: localStorage.getItem('squiggle-resume'),
+    users: document.querySelectorAll('.msg.user').length,
+    resuming: document.body.textContent.includes('Resuming'),
+  }));
+  assert.ok(!r.log.some(x => /Work on step 1 now/.test(x)), 'step 1 is not run again: ' + JSON.stringify(r.log));
+  assert.match(r.sys, /It was interrupted before it finished/, 'step 2 is told it was interrupted');
+  assert.equal(r.cp, null, 'finished: the checkpoint is gone');
+  assert.equal(r.users, 1, 'the question is not asked twice');
+  assert.equal(r.resuming, false, 'the note goes away with the finished reply');
+});
+
 await check('chat details sidebar: model, context window breakdown (live and saved), progress, tools used; collapsible and remembered', async () => {
   const D = await device('side');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
@@ -966,7 +1016,9 @@ await check('chat links: #chat=<id> opens that chat (archived too); picking chat
   assert.equal(await titled('Link chat A'), 'Link chat A');
   assert.equal(await hash(), `#chat=${ids.a}`);
   await open(`#chat=${ids.old}`);
-  assert.equal(await titled('Link chat archived'), 'Link chat archived', 'archived chats open from a link');
+  // Flaky on CI only (twice by 2026-11-16, never in 15 local runs): the usual chat showed instead. Say why next time.
+  const why = (id) => D.page.evaluate(async (id) => { const S = await import('/src/sessions.js'); const s = S.get(id); return JSON.stringify({ hash: location.hash, loaded: !!s, archived: s && s.archived, deleted: s && s.deleted, messages: s && s.messages.length, chats: S.list().length }); }, id);   // T is gone after a reload; the app's own module instance
+  if (await titled('Link chat archived') !== 'Link chat archived') assert.fail(`archived chats open from a link: showed "${await title()}", ${await why(ids.old)}`);
 
   // Picking another chat puts it in the URL; back returns to the one before.
   await open(`#chat=${ids.a}`);
@@ -1318,6 +1370,7 @@ await check('a crash while loading the model is caught on the next open; phones 
     await ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
     const page = await ctx.newPage();
     page.errors = [];
+    watch(page, phone ? 'crash-phone' : 'crash');
     page.on('pageerror', e => page.errors.push(String(e)));
     await page.goto(appUrl + '/');
     await page.waitForSelector('#setup:not([hidden]) button'); // let first-run boot finish
@@ -1388,6 +1441,58 @@ await check('a crash while loading the model is caught on the next open; phones 
   }
 });
 
+await check('six devices sync at the same moment: every write lands (retries back off at random)', async () => {
+  const Ds = await Promise.all([1, 2, 3, 4, 5, 6].map(i => device('burst' + i)));
+  await Promise.all(Ds.map(D => D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG)));
+  const out = await Promise.all(Ds.map((D, i) => D.page.evaluate(async (i) => {
+    await T.storage.write(`notes/burst-${i}.md`, `from ${i}`);
+    await T.storage.sync();
+    return T.storage.syncStatus();
+  }, i)));
+  const files = git(stateRepo, 'ls-tree', '-r', '--name-only', 'main');
+  const missing = [0, 1, 2, 3, 4, 5].filter(i => !files.includes(`notes/burst-${i}.md`));
+  assert.deepEqual(missing, [], JSON.stringify(out.map(s => s.lastError)));
+  await Promise.all(Ds.map(D => D.ctx.close()));
+});
+
+await check('a page killed mid-sync keeps its unpushed files: the copy the sync held is put back on the next open, then pushed', async () => {
+  const D = await device('crash');
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  // A chat saved here and not pushed yet.
+  const id = await D.page.evaluate(async () => {
+    const s = T.sessions.newSession(); s.title = 'Unpushed chat';
+    T.sessions.addMessage(s, { role: 'user', content: 'keep me' }); T.sessions.addMessage(s, { role: 'assistant', content: 'ok' });
+    await T.sessions.flush({ sync: false });
+    return s.id;
+  });
+  // What a page killed between the sync's reset to the remote and its write-back leaves behind: the file gone from
+  // the tree, still pending, and the sync's copy in IndexedDB (storage.js syncOnce). Before the copy, this chat
+  // was gone after the reload and the next sync pushed it as deleted (CI, 2026-11-16).
+  await D.page.evaluate(async (id) => {
+    const { kv } = await import('/src/util.js');
+    const p = `sessions/${id}.json`;
+    await kv.set('storage-rebase', { [p]: await T.storage.read(p) });
+    await T.gitm.fs.promises.unlink('/state/' + p);
+    await T.gitm.persist();
+  }, id);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  const after = await D.page.evaluate(async (id) => {
+    const S = await import('/src/sessions.js');
+    const st = await import('/src/storage.js');
+    const { kv } = await import('/src/util.js');
+    const s = S.get(id);
+    await st.sync();
+    return { loaded: !!s, title: s && s.title, left: await kv.get('storage-rebase'), status: st.syncStatus() };
+  }, id);
+  assert.ok(after.loaded && after.title === 'Unpushed chat', JSON.stringify(after));
+  assert.equal(after.left, undefined, 'the copy is used up');
+  assert.match(git(stateRepo, 'ls-tree', '-r', '--name-only', 'main'), new RegExp(`sessions/${id}.json`), JSON.stringify(after.status));
+  // A sync that finishes leaves no copy behind.
+  assert.equal(await D.page.evaluate(async () => (await (await import('/src/util.js')).kv.get('storage-rebase')) ?? null), null);
+  await D.ctx.close();
+});
+
 await check('bash tool (lab): just-bash on the workspace; /home writes sync; git, curl, bc, help; .git out of reach', async () => {
   const D = await device('bash');
   await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
@@ -1404,8 +1509,25 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
   r = await run('mkdir -p /home/notes && echo "buy milk" > /home/notes/todo.md && echo "call Dana" >> /home/notes/todo.md && cat /home/notes/todo.md | wc -l');
   assert.equal(r.out.trim(), '2', JSON.stringify(r));
   // Through storage.js, so it syncs.
-  await D.page.evaluate(() => T.storage.sync());
-  assert.equal(git(stateRepo, 'show', 'main:home/notes/todo.md'), 'buy milk\ncall Dana');
+  const status = await D.page.evaluate(async () => { await T.storage.sync(); return T.storage.syncStatus(); });
+  const onServer = () => { try { return git(stateRepo, 'show', 'main:home/notes/todo.md'); } catch { return null; } };
+  assert.equal(onServer(), 'buy milk\ncall Dana', `/home write never reached the repo: ${JSON.stringify(status)}`);
+  // remember: one sentence, everywhere (memory) or this chat (the chat's notes, always in its prompt).
+  const mem = await D.page.evaluate(async () => {
+    const { runTool } = await import('/src/tools.js');
+    const session = window.__bashSession;
+    const call = (args) => runTool({ function: { name: 'remember', arguments: args } }, { session });
+    const a = await call({ fact: 'Keal likes short answers' });
+    const b = await call({ fact: 'the deploy is on Fridays', scope: 'this chat' });
+    const c = await call({});
+    await call({ fact: 'I like tea' });   // the user's words, saved as theirs
+    return { a: a.label, b: b.label, c: c.model.error, facts: T.memory.all().map(T.memory.factText), notes: Object.values(session.notes || {}).map(n => n.text) };
+  });
+  assert.ok(mem.facts.includes('Keal likes short answers') && !mem.facts.includes('the deploy is on Fridays'), JSON.stringify(mem));
+  assert.deepEqual(mem.notes, ['the deploy is on Fridays'], JSON.stringify(mem));
+  assert.match(mem.b, /^remembered for this chat/);
+  assert.match(mem.c, /Give the fact/);
+  assert.ok(mem.facts.includes('The user says: I like tea'), JSON.stringify(mem.facts));
   r = await run('git clone tester/app && cd /repos/app && ls && grep -rn console src | head -3 && git status');
   assert.equal(r.code, 0, JSON.stringify(r));
   assert.match(r.out, /README\.md[\s\S]*src[\s\S]*src\/index\.js:1:console\.log/);
