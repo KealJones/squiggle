@@ -3,8 +3,11 @@
 // lives in IndexedDB (not here), and /api/* is never cached.
 const CACHE = 'squiggle-app-v1';
 // WebLLM's model files (engine-webllm.js) live in its own caches; kept across
-// updates. Anything else (like the old natural voice's squiggle-tts-v1) is freed.
-const KEEP = new Set([CACHE, 'squiggle-flags', 'webllm/config', 'webllm/model', 'webllm/wasm']);
+// updates. So is transformers.js's cache: the search model (embed-worker.js, MiniLM)
+// and memtest.html's ONNX models, which were downloaded again after every update
+// that changed this file. Anything else (like the old natural voice's
+// squiggle-tts-v1) is freed.
+const KEEP = new Set([CACHE, 'squiggle-flags', 'webllm/config', 'webllm/model', 'webllm/wasm', 'transformers-cache']);
 // "Use all CPU cores" (settings): the page has to be cross-origin isolated for
 // wllama's threads (SharedArrayBuffer). When the flag is set, the app's own
 // responses get COOP/COEP; everything cross-origin it loads already uses CORS

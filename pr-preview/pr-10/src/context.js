@@ -129,6 +129,7 @@ export function chunk(text, maxTokens = CHUNK_TOKENS) {
  * @param {object[]} [o.extra]     sections from the harness, shown first: [{ kind, title, text, label }]
  * @param {object[]} [o.others]    other sessions to search (smart mode)
  * @param {boolean} [o.small]     small model: tighter recall limits, memory facts in the recalled block
+ * @param {boolean} [o.frozen]    the small model's prompt is its training text (Squiggle Small): no memory section
  * @param {boolean} [o.actions]    false leaves out the recap of earlier tool calls (small models)
  */
 export async function assembleContext(o) {
@@ -239,9 +240,12 @@ export async function assembleContext(o) {
     }
   }
 
-  // 4. Memory facts (all modes; they're small and about the person).
-  if (o.recall && !o.small && !M.fresh) {
-    const facts = (await o.recall(o.focus ? `${query}\n${o.focus}` : query, 10)).filter(r => r.score >= 0.2);
+  // 4. Memory facts (all modes; they're small and about the person). Small models get them in Smart's recalled
+  // block; in the other modes LFM3 got none at all, so a Git question never saw the saved Git preference (Keal,
+  // 2026-11-16): it gets at most 3 here, above Fresh's small-model bar. Squiggle Small's prompt is frozen.
+  const smallFacts = o.small && !o.frozen && !M.retrieve;
+  if (o.recall && (!o.small || smallFacts) && !M.fresh) {
+    const facts = (await o.recall(o.focus ? `${query}\n${o.focus}` : query, 10)).filter(r => r.score >= (smallFacts ? 0.3 : 0.2)).slice(0, smallFacts ? 3 : 10);
     const cap = Math.floor(budget * 0.12);
     const lines = [];
     let t = 0;

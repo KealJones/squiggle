@@ -493,19 +493,25 @@ export class NativeConversation {
     return this.tools.filter(t => { const n = nameOf(t); return this.gate.has(n) || this.active.has(n); });
   }
 
-  async *sendMessageStreaming(input) {
+  // Undo the last sendMessageStreaming (a failed call whose input and reply were not kept), so it can be sent again.
+  rewind() { if (this.mark !== undefined) this.messages.length = this.mark; }
+
+  // opts.resume: the raw text of a half-written reply to carry on from (a reload mid-reply; WebLLM raw formats only,
+  // the first call of this send); opts.track(raw): told the raw text as it grows (resume.js checkpoints it).
+  async *sendMessageStreaming(input, opts = {}) {
+    this.mark = this.messages.length;
     if (typeof input === 'string') this.messages.push({ role: 'user', content: input });
     else {
       for (const m of input) this.messages.push(m);
       for (const n of foundNames(input)) this.active.add(n);
     }
-    let r = yield* this.generate({ thinking: this.thinking });
+    let r = yield* this.generate({ thinking: this.thinking, resume: opts.resume, track: opts.track });
     if (r.overBudget && this.w.info && this.w.info.closesThinking && r.reasoning) {
       // The thinking used its budget: it's kept, and closed with a decision in the model's own words, so the reply
       // carries on from it. Restarting with thinking off threw it away, and the model re-argued it in the reply
       // (crazy math, 2026-11-11; this line tested on that chat: one example and a question, no circling).
       yield { thinking: `\n\n${ENOUGH_THINKING}\n\n[Squiggle added that line at the ${this.thinkBudget}-token thinking budget.]\n\n` };
-      r = yield* this.generate({ thinking: true, prefill: `${r.reasoning.trimEnd()}\n\n${ENOUGH_THINKING}\n`, reasoning: r.reasoning });
+      r = yield* this.generate({ thinking: true, prefill: `${r.reasoning.trimEnd()}\n\n${ENOUGH_THINKING}\n`, reasoning: r.reasoning, track: opts.track && (() => opts.track('')) });
     } else if (r.overBudget) {
       // Runtimes that can't continue a half-written turn (llama.cpp's own templates): the same request again with
       // thinking off, so the model answers (or calls) straight away.
@@ -520,7 +526,7 @@ export class NativeConversation {
 
   // One model reply; `thinking` is this call's switch. Returns { calls, looped, aborted, overBudget, reasoning }.
   // `reasoning` is thinking from a stopped first try, kept with the tool call it leads to (nativeMessages).
-  async *generate({ thinking, reasoning: earlier = '', prefill = '' }) {
+  async *generate({ thinking, reasoning: earlier = '', prefill = '', resume = '', track = null }) {
     const tools = this.declared();
     const ctrl = this.ctrl = new AbortController();
     const t0 = performance.now();
@@ -536,6 +542,8 @@ export class NativeConversation {
         ...(undeclared.length ? { tool_names: undeclared } : {}),
         chat_template_kwargs: { enable_thinking: thinking },
         ...(prefill ? { think_prefill: prefill } : {}),
+        ...(resume && !prefill ? { resume_raw: resume } : {}),
+        ...(track ? { on_raw: track } : {}),
         stream: true,
         max_tokens: this.max,
         ...samplingOptions(this.sampling, { greedy: this.greedy }),
