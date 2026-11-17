@@ -2,11 +2,24 @@
 // request, and which extracted facts are about the user at all. memory.js re-exports them.
 import { overlap, blend, tokenize } from './search.js';
 
-export const factText = (f) => `${f.s} ${f.p} ${f.o}${f.note ? ` (${f.note})` : ''}`;
+// A fact is free text (`text`, from 2026-11-16) or an older subject → relation → object triple.
+export const factText = (f) => `${f.text || `${f.s} ${f.p} ${f.o}`}${f.note ? ` (${f.note})` : ''}`;
 const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+// "What do you remember about me?" shares no words with what was saved ("Keal likes short answers"), so the
+// absolute bar finds nothing (Keal's iPhone, 2026-11-16; LFM3 then asked find("me")). Strip the words that only
+// point at the user (me/my/I are stopwords already) or at memory itself: a query with nothing else left is a
+// general question about the user and gets the newest facts; "what's my favorite food" keeps its words and is
+// matched as usual. Words, not phrases, so new wordings don't need a list.
+const ABOUT_USER = new Set(tokenize('user users myself mine am remember remembered know knows recall tell saved stored memory memories'));
+export function asksAboutMe(q) {
+  const words = tokenize(q);
+  return words.every(w => ABOUT_USER.has(w)) && (words.length > 0 || /\b(me|my|i|myself)\b/i.test(String(q || '')));
+}
 
 // The ranking behind recall, pure (tests): facts, the query, optional semantic scores by id.
 export function rankFacts(live, query, { sem = null, k = 8 } = {}) {
+  if (asksAboutMe(query)) return [...live].sort((a, b) => (b.mts || b.ts || 0) - (a.mts || a.ts || 0)).slice(0, k).map(fact => ({ fact, score: 1 }));
   const docs = live.map(f => ({ id: f.id, text: factText(f) }));
   const cov = overlap(docs);
   const kw = cov.score(query);
