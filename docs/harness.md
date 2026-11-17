@@ -408,13 +408,18 @@ referenced tool must still be in `tools` on every request). Its model card's sys
 Anthropic's tool search uses the same field names. So for agent-trained models on the bash surface
 (agent.js `deferring()`), instead of the gate and `tool_info`:
 
-- Declared up front (`LOADED`): `bash` with every command it had, the common tools beside it (tools/common.js, each
+- Declared up front (`LOADED`): `bash` with every command it had, `web_search`, `web_fetch` and `search_tools` (plus
+  `done` in a step and `checkpoint` in AI-managed mode). Keal, 2026-11-17: files, memory, plan and ask_user wait to be
+  found too (no model had called ask_user yet).
+- Deferred, and named by name only at the end of the system prompt (`deferredLine`: "More tools, found with
+  search_tools: …", the way Claude's own harness lists deferred tools): the common tools (tools/common.js, each
   running the Squiggle tool it names, so approvals, path rules and untrusted wrapping are the same): `read`
   {path, offset, limit}, `write` {path, content}, `edit` {path, edits[{oldText, newText}]} with Pi's schemas and
-  descriptions, `web_search` {query, count} and `web_fetch` {url, extractMode, maxChars} with OpenClaw's,
-  `memory_read` {query}, `memory_write` {fact, scope}; then `search_tools`, `plan`, `done`, `ask_user`, `checkpoint`.
-- Deferred: the rest of the surface (`wiki_lookup`, `search_history`, `forget`) and `find`.
-- `search_tools(query)` ranks the deferred tools (find.js `rankTools`, or a name) and answers `{text, tool_references}`;
+  descriptions, `web_fetch` {url, extractMode, maxChars} with OpenClaw's, `memory_read` {query}, `memory_write`
+  {fact, scope}, `session_search` {query} (past chats: Hermes's name; OpenClaw has sessions_search, Claude's apps
+  conversation_search); then `wiki_lookup`, `forget`, `plan`, `ask_user`. No `find`: memory_read and session_search
+  do its job. Found together (`BUNDLES`): read, write and edit; memory_read, memory_write and forget.
+- `search_tools(query)` ranks the deferred tools (find.js `rankTools`, or a name), adds their bundles, and answers `{text, tool_references}`;
   engine-wllama.js `nativeMessages` turns that into content parts, and toolformats/lfm3.js renders them the
   template's way (tests/fixtures/lfm3-template.json has cases rendered by the real template). Where llama.cpp renders
   the template (the CPU build) the same `<tool_response>` goes as text, which the template passes through. A search

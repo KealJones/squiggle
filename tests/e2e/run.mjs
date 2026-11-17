@@ -1728,7 +1728,7 @@ await check('Squiggle Small (fine-tuned) gets the harness: system prompt and too
   assert.equal(await D.page.evaluate(() => window.__engineLog.filter(e => e.type === 'complete').length), 0, 'no titles, facts or summaries from a small model');
 });
 
-await check('LFM3 gets the common tools (bash kept) and the rest deferred, found with search_tools as tool references', async () => {
+await check('LFM3 gets bash, the web and search_tools up front, the rest named and found with search_tools as tool references', async () => {
   const D = await device('lfm3');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
   await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
@@ -1740,20 +1740,23 @@ await check('LFM3 gets the common tools (bash kept) and the rest deferred, found
   await D.page.fill('#input', 'DEFERTEST what did I say about the eiffel tower?');
   await D.page.press('#input', 'Enter');
   await D.page.waitForFunction(() => document.querySelector('#messages') && /Looked through your past chats/.test(document.querySelector('#messages').textContent), null, { timeout: 15000 });
+  assert.match(await D.page.textContent('#messages'), /Found for files: read, write, edit\./, 'a file tool brings its bundle');
   const log = await D.page.evaluate(() => window.__engineLog);
   const c = log.find(e => e.type === 'conversation');
-  for (const n of ['bash', 'read', 'write', 'edit', 'web_search', 'web_fetch', 'memory_read', 'memory_write', 'search_tools', 'ask_user']) assert.ok(c.tools.includes(n), n + ' in ' + c.tools);
-  for (const n of ['read_file', 'write_file', 'edit_file', 'fetch_url', 'remember', 'recall', 'tool_info', 'calculate']) assert.ok(!c.tools.includes(n), n + ' should not be in ' + c.tools);
-  assert.ok(c.deferred.includes('search_history') && c.deferred.includes('wiki_lookup') && !c.deferred.includes('bash') && !c.deferred.includes('read'), JSON.stringify(c.deferred));
+  for (const n of ['bash', 'read', 'write', 'edit', 'web_search', 'web_fetch', 'memory_read', 'memory_write', 'session_search', 'search_tools', 'ask_user', 'plan']) assert.ok(c.tools.includes(n), n + ' in ' + c.tools);
+  for (const n of ['read_file', 'write_file', 'edit_file', 'fetch_url', 'remember', 'recall', 'search_history', 'tool_info', 'calculate', 'find']) assert.ok(!c.tools.includes(n), n + ' should not be in ' + c.tools);
+  assert.deepEqual(c.tools.filter(n => !c.deferred.includes(n)).sort(), ['bash', 'search_tools', 'web_fetch', 'web_search'], 'only the shell, the web and the finder up front');
   assert.match(c.system, /If none of your current tools can handle a request, call search_tools to find one, then call the tool it returns\./);
+  const line = (c.system.match(/More tools, found with search_tools: (.*)\./) || [])[1] || '';
+  assert.deepEqual(line.split(', ').sort(), c.deferred.slice().sort(), 'every deferred tool is named, by name only');
   assert.match(c.system, /memory_write/);
   assert.doesNotMatch(c.system, /tool_info|the remember tool/);
   assert.match(c.descriptions.web_search, /web_fetch/, 'web_search points at web_fetch on this surface');
   assert.doesNotMatch(c.descriptions.web_search, /fetch_url/);
   const found = log.filter(e => e.type === 'respond' && Array.isArray(e.input) && e.input[0].content[0].name === 'search_tools')[0];
   assert.ok(found, JSON.stringify(log.map(e => e.type)));
-  assert.ok(found.input[0].content[0].response.tool_references.includes('search_history'), JSON.stringify(found.input[0].content[0].response));
-  assert.ok(log.some(e => e.type === 'respond' && Array.isArray(e.input) && e.input[0].content[0].name === 'search_history'), 'the found tool ran');
+  assert.ok(found.input[0].content[0].response.tool_references.includes('session_search'), JSON.stringify(found.input[0].content[0].response));
+  assert.ok(log.some(e => e.type === 'respond' && Array.isArray(e.input) && e.input[0].content[0].name === 'session_search'), 'the found tool ran');
   // The common tools run the Squiggle tools under them, and speak their own names and arguments.
   const r = await D.page.evaluate(async () => {
     const { runTool } = await import('/src/tools.js');

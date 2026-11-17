@@ -122,13 +122,14 @@ export async function respond(conv, input, { onText } = {}) {
   // Fresh context: the first input is the result of the lookup the agent made for the model.
   const looked = Array.isArray(input) && input[0] && input[0].content[0].name === 'find' && ((input[0].content[0].response || {}).found || '');
   if (looked && /^Looked up before answering/.test(looked)) return say(`From the lookup: ${looked.split('\n')[0]}`, onText);
-  // DEFERTEST (LFM3, deferred tools): search_tools for past chats, then the tool it returned, then an answer.
+  // DEFERTEST (LFM3, deferred tools): search_tools for past chats, then the tool it returned, then search_tools for
+  // file editing (a bundle: read, write and edit come together), then an answer naming what that found.
   if (typeof input === 'string' && /^DEFERTEST/.test(input)) return call('search_tools', { query: 'search past conversations' });
   if (Array.isArray(input) && input[0] && input[0].content[0].name === 'search_tools') {
     const refs = (input[0].content[0].response || {}).tool_references || [];
-    return refs.includes('search_history') ? call('search_history', { query: 'eiffel' }) : say(`search_tools found: ${refs.join(', ') || 'nothing'}`, onText);
+    return refs.includes('session_search') ? call('session_search', { query: 'eiffel' }) : say(`Looked through your past chats. Found for files: ${refs.join(', ') || 'nothing'}.`, onText);
   }
-  if (Array.isArray(input) && input[0] && input[0].content[0].name === 'search_history') return say('Looked through your past chats.', onText);
+  if (Array.isArray(input) && input[0] && input[0].content[0].name === 'session_search') return call('search_tools', { query: 'edit a file' });
   const scripted = stepScript(conv, input, onText);
   if (scripted) return scripted;
   if (typeof input === 'string') {

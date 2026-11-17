@@ -13,7 +13,7 @@ import { wikiTool, wikidataQuery } from './wiki.js';
 import { remember, recall, forget, searchHistory } from './memory.js';
 import { calculate, runJs } from './compute.js';
 import { bash } from './bash.js';
-import { read, write, edit, webFetch, memoryRead, memoryWrite } from './common.js';
+import { read, write, edit, webFetch, memoryRead, memoryWrite, sessionSearch } from './common.js';
 
 export const BUILTIN = [
   // Files
@@ -29,7 +29,7 @@ export const BUILTIN = [
   // The shell: in place of the file, web and git tools when settings.toolSurface is 'bash' (lab; agent.js)
   bash,
   // The common harness tools next to it on that surface (common.js): what LFM3 saw in Pi, OpenClaw and Hermes
-  read, write, edit, webFetch, memoryRead, memoryWrite,
+  read, write, edit, webFetch, memoryRead, memoryWrite, sessionSearch,
 ];
 for (const t of BUILTIN) registerTool(t);
 
