@@ -293,9 +293,9 @@ export function useSessionContext(session) {
 
 export function updateComposerNote() {
   renderSide();
-  // The composer's microphone is there while the model hears for itself (LFM3 Omni).
+  // The composer's microphone: the browser's dictation where it has one, else the model's own hearing (LFM3 Omni).
   const mic = $('#composer-mic');
-  if (mic) mic.hidden = !(state.modelState === 'ready' && engine.hasSense && engine.hasSense('audio'));
+  if (mic) mic.hidden = !(window.SpeechRecognition || window.webkitSpeechRecognition || (state.modelState === 'ready' && engine.hasSense && engine.hasSense('audio')));
   const note = $('#composer-note');
   if (!note || state.modelState !== 'ready') return;
   const cloud = engine.MODELS[agent.settings.model].runtime === 'cloud';

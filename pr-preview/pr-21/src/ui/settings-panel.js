@@ -76,7 +76,7 @@ function voiceSettingsField(S, seg) {
   const omniRow = omniHere ? h('div', {},
     h('div', { class: 'row' }, seg([['omni', 'The model\'s own'], ['system', 'This device\'s']], useOmni ? 'omni' : 'system', (v) => { S.voiceEngine = v; })),
     h('span', { class: 'hint' }, useOmni
-      ? 'LFM3 Omni speaks and listens for itself, on this device. Its voice is slower than real time for now, so there are pauses between sentences.'
+      ? 'LFM3 Omni speaks for itself, on this device; it hears you through this device\'s dictation (live words), or by itself where there is none. Its voice is slower than real time for now, so there are pauses between sentences.'
       : 'The device\'s speech recognition and voices.'),
     useOmni ? h('div', { class: 'voice-row' }, seg([['female', 'Female'], ['male', 'Male']], S.omniVoice || 'female', (v) => { S.omniVoice = v; })) : '') : '';
   return h('div', { class: 'field' }, h('span', { class: 'label' }, 'Voice calls'), omniRow,
