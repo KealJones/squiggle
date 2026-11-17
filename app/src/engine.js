@@ -20,19 +20,19 @@ export const MODELS = {
   // (toolformats/lfm3.js). Liquid's quantization-aware-trained 4-bit weights copied in exactly (job lfm3-mlc-8,
   // qad_to_mlc.py: Q4_0 (k-8)*d = MLC (q-7)*s with q = 15-k, s = -d) and a one-sequence model library (~17 MB of
   // scratch instead of ~163). On an iPhone 16 in Squiggle: first word in 15 s, 13.7 tok/s (2026-11-10).
-  WLF3QAD: { label: 'LFM3 1.7B', size: '~990 MB', group: 'LFM3', note: 'Liquid\'s LFM3 1.7B on WebGPU with tools in its own format, thinking first: the first small model trained for agent harnesses, about 14 words a second on an iPhone. Liquid\'s own 4-bit weights. 4K context at most', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 4096,
+  WLF3QAD: { label: 'LFM3 1.7B', size: '~990 MB', group: 'LFM3', note: 'Liquid\'s LFM3 1.7B on WebGPU with tools in its own format, thinking first: the first small model trained for agent harnesses, about 14 words a second on an iPhone. Liquid\'s own 4-bit weights. 6K context at most', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 6144,   // 6K: on Keal's iPhone 16 it loaded at 1065 MB (4K: 1021) and read a ~3K-token prompt; 8K killed the tab while loading (2026-11-15)
     mlc: 'LFM3-1.7B-QAD-q4f16_1-MLC', bytes: 990000000,
     mlcRecord: {
       model: HF + 'kealjones/LFM3-1.7B-QAD-q4f16_1-MLC/resolve/main/',
       model_lib: HF + 'kealjones/LFM3-1.7B-QAD-q4f16_1-MLC/resolve/main/LFM3-1.7B-q4f16_1-b1-webgpu.wasm',
-      overrides: { context_window_size: 4096 },
+      overrides: { context_window_size: 6144 },
     },
     // GPUs without 16-bit floats (shader-f16): the same QAD weights in q4f32_1 (job lfm3-mlc-9: the 4-bit integers
     // exact, scales widened to fp32 and stored as bf16 like every MLC q4f32 build). More GPU memory than q4f16.
     mlcRecordF32: {
       model: HF + 'kealjones/LFM3-1.7B-QAD-q4f32_1-MLC/resolve/main/',
       model_lib: HF + 'kealjones/LFM3-1.7B-QAD-q4f32_1-MLC/resolve/main/LFM3-1.7B-q4f32_1-b1-webgpu.wasm',
-      overrides: { context_window_size: 4096 },
+      overrides: { context_window_size: 6144 },
     } },
   // The CPU build, for devices without WebGPU: Liquid's QAD GGUF on wllama (llama.cpp WASM, ≥ 3.13), tools through
   // the GGUF's own template. Slow on a phone CPU (1 GB, thinks first).
@@ -518,7 +518,15 @@ export async function conversation({ system, messages = [], tools = [], thinking
 // Streams one model response. Returns { text, thinking, toolCalls }.
 export async function respond(conv, input, opts = {}) {
   try {
-    return await respondOnce(conv, input, opts);
+    try {
+      return await respondOnce(conv, input, opts);
+    } catch (e) {
+      // The GPU went away after some of the reply was shown and the format can't carry on from it (webllm shim): the
+      // call starts over from the same input, once, with what the failed try added to the conversation undone.
+      if (!(e && e.gpuLost) || typeof conv.rewind !== 'function' || (opts.signal && opts.signal.aborted)) throw e;
+      conv.rewind();
+      return await respondOnce(conv, input, { ...opts, resume: '' });
+    }
   } catch (e) {
     // Gemma 4 wrote a tool call LiteRT couldn't parse (e.g. "plain quotes" instead
     // of <|"|>). Read it leniently and carry on; if it can't be read, ask once more.
@@ -531,7 +539,7 @@ export async function respond(conv, input, opts = {}) {
   }
 }
 
-async function respondOnce(conv, input, { onText, onThinking, signal } = {}) {
+async function respondOnce(conv, input, { onText, onThinking, signal, resume, track } = {}) {
   activeConv = conv;
   const local = MODELS[loadedModel] && MODELS[loadedModel].runtime !== 'cloud';
   if (local) progress('writing the reply');
@@ -539,7 +547,7 @@ async function respondOnce(conv, input, { onText, onThinking, signal } = {}) {
   const abort = () => { try { conv.cancel(); } catch {} };
   if (signal) signal.addEventListener('abort', abort, { once: true });
   try {
-    for await (const chunk of conv.sendMessageStreaming(input)) {
+    for await (const chunk of conv.sendMessageStreaming(input, { resume, track })) {
       const th = thinkingOf(chunk);
       if (th) { out.thinking += th; onThinking && onThinking(out.thinking); }
       if (Array.isArray(chunk.tool_calls)) out.toolCalls.push(...chunk.tool_calls);

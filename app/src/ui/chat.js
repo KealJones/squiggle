@@ -8,6 +8,7 @@ import * as agent from '../agent.js';
 import * as attachments from '../attachments.js';
 import { checkFiles, fmtSize } from '../attachments.js';
 import * as voice from '../voice.js';
+import * as resume from '../resume.js';
 import { bm25 } from '../search.js';
 import { $, h, icon, md, ago, squiggleWait, iconButton, scrollDown, keepAwake, toast } from './dom.js';
 import { smoothText } from './smooth.js';
@@ -401,7 +402,29 @@ function syncSendButton() {
 }
 
 // ── A turn ─────────────────────────────────────────────────────────────────
-export async function send(text, threadId, files = [], opts = {}) {
+// A reply the page lost (resume.js) is picked up once the model is loaded: the chat opens, "Resuming…" shows, and the
+// turn goes on from its checkpoint with no tap. A reply picked up twice that still died is kept as written and left.
+export async function resumeUnfinished() {
+  const cp = resume.load();
+  if (!cp || state.busy || state.modelState !== 'ready') return;
+  const session = sessions.get(cp.session);
+  const at = session ? session.messages.findIndex(m => m.id === cp.user) : -1;
+  const answered = at >= 0 && session.messages.slice(at + 1).some(m => m.role === 'assistant' && !m.deleted && (m.thread || null) === (cp.thread || null));
+  if (at < 0 || answered || session.deleted) { resume.clear(); return; }
+  if (resume.decide(cp) === 'give-up') {
+    sessions.addMessage(session, { role: 'assistant', content: resume.leftOver(cp), thread: cp.thread || null });
+    resume.clear();
+    if (state.current && state.current.id === session.id) renderChat();
+    toast('A reply was interrupted twice, so Squiggle kept what it had and stopped.');
+    return;
+  }
+  if (!state.current || state.current.id !== session.id) openSession(session, null, { url: 'replace' });
+  if (cp.thread) openThread(cp.thread);
+  await send(cp.text, cp.thread || null, [], cp);
+}
+
+export async function send(text, threadId, files = [], opts = null) {
+  const resumed = opts && opts.session ? opts : null;   // a lost reply picked up (resumeUnfinished), or a brainstorm's { wrap }
   if (state.busy) return;
   await useSessionModel(state.current);
   if (state.modelState !== 'ready') {
@@ -410,7 +433,7 @@ export async function send(text, threadId, files = [], opts = {}) {
     if (!ok) return;
   }
   const session = state.current;
-  if (session.brainstorm && !threadId) return runBrainstorm(text, files, opts);
+  if (session.brainstorm && !threadId) return runBrainstorm(text, files, opts || {});
   // The first message settles the chat's context type: what was picked, or the default (it's shown, not changed, after).
   if (!session.contextMode && !session.messages.some(m => !m.deleted)) session.contextMode = agent.settings.defaultContextMode || 'compact';
   const container = threadId ? $('#thread-messages') : $('#messages-inner');
@@ -424,9 +447,10 @@ export async function send(text, threadId, files = [], opts = {}) {
   setBusy(true);
   const controller = state.controller = new AbortController();
   try {
-    const atts = await readFiles(files, session);
+    const atts = resumed ? [] : await readFiles(files, session);
+    let note = null, from = -1;
     await agent.runTurn({
-      session, threadId, text, attachments: atts, signal: controller.signal,
+      session, threadId, text, attachments: atts, signal: controller.signal, resume: resumed,
       ui: {
         onUser: (m) => { container.append(messageEl(m, { inThread: Boolean(threadId) })); scrollDown(scroller, { force: true }); renderSessions(); },
         onStart: () => {
@@ -435,12 +459,16 @@ export async function send(text, threadId, files = [], opts = {}) {
           think = h('details', { class: 'thinking', hidden: true }, h('summary', {}, 'Thinking'), h('div'));
           plan = h('div', { hidden: true });
           body = h('div', { class: 'body' }, squiggleWait());
-          live.append(plan, trail, think, body);
+          if (resumed) note = h('div', { class: 'muted' }, 'Resuming…');
+          live.append(...[note, plan, trail, think, body].filter(Boolean));
           container.append(live);
           scrollDown(scroller);
         },
         onThinking: (t) => { think.hidden = false; think.lastChild.textContent = t; },
-        onText: (t) => { const clean = agent.scrubFakeToolNotes(t); smooth.feed(clean); if (vc) vc.feed(clean); },
+        onText: (t) => {
+          if (note) { if (from < 0) from = t.length; else if (t.length > from) { note.remove(); note = null; } }
+          const clean = agent.scrubFakeToolNotes(t); smooth.feed(clean); if (vc) vc.feed(clean);
+        },
         onTool: (t) => {
           if (t.name === 'note' && !t.running && state.drawerPanel === 'notes') renderNotesPanel();
           const existing = liveTools.find(x => x.running && x.name === t.name);
@@ -465,6 +493,7 @@ export async function send(text, threadId, files = [], opts = {}) {
           scrollDown(scroller);
           card.querySelector('button').focus({ preventScroll: true });
         },
+        onReload: () => { toast('Getting the GPU back: reloading, then the reply carries on.'); setTimeout(() => location.reload(), 300); },
         onDone: (m) => { smooth.stop(); if (vc) vc.finish(agent.scrubFakeToolNotes(m.content)); live.replaceWith(messageEl(m, { inThread: Boolean(threadId), session })); if (!threadId) $('#chat-title').textContent = session.title; state.liveTurn = null; renderSide(); },
       },
     });

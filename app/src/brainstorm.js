@@ -1,7 +1,7 @@
 // Brainstorm chats (Keal, 2026-11-12): the person sends the idea, then the model talks to itself. Two voices, A and B,
 // take turns, in one of two framings (session.brainstorm):
 // - 'transcript' (the default): the model gets the whole brainstorm as a labelled transcript in one user turn and
-//   writes one speaker's next turn, so nobody it talks to sits in the user role (failures.md case 22: in the role
+//   writes one speaker's next turn, so nobody it talks to sits in the user role (failures.md case 23: in the role
 //   flip LFM3 served and agreed with the other voice whatever the system prompt said).
 // - 'flip' (the first design; `true` on chats made before the switch): each voice sees its own turns as the
 //   assistant and everything else (the other voice, the person) as the user.
