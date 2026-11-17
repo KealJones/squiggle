@@ -16,7 +16,7 @@ import { state } from './state.js';
 import { openThread, openPanel, closeDrawer, renderThreadPanel, renderNotesPanel } from './panels.js';
 import { renderSide } from './side.js';
 import { toggleReadAloud } from './voice-ui.js';
-import { ensureModel, loadCrashMarker, updateComposerNote, useSessionModel, sessionModel, switchModel, useSessionContext } from './model-ui.js';
+import { ensureModel, loadCrashMarker, recoverGpuModel, updateComposerNote, useSessionModel, sessionModel, switchModel, useSessionContext } from './model-ui.js';
 import * as engine from '../engine.js';
 import { CONTEXT_MODES, contextMode } from '../context.js';
 import { showChatInUrl } from './links.js';
@@ -110,11 +110,16 @@ export function renderChat() {
 }
 
 function emptyState() {
-  const ideas = ['What do you remember about me?', 'Clone one of my repos and summarize it', 'Read https://example.com and tell me what it says'];
+  const local = storage.isLocal();
+  const ideas = [
+    'What do you remember about me?',
+    local ? 'What is Pip written in?' : 'Clone one of my repos and summarize it',
+    'Read https://example.com and tell me what it says',
+  ];
   return h('div', { class: 'empty' },
     icon('squiggle'),
     h('h2', {}, 'What are we working on?'),
-    h('p', {}, 'Squiggle runs on this device and picks up where you left off on any other.'),
+    h('p', {}, local ? 'Squiggle runs on this device. Demo chats stay in this browser.' : 'Squiggle runs on this device and picks up where you left off on any other.'),
     newChatSettings(),
     h('div', { class: 'suggestions' }, ideas.map(t => h('button', { onclick: () => { $('#input').value = t; $('#input').focus(); } }, t))));
 }
@@ -399,6 +404,7 @@ export async function send(text, threadId, files = [], resumed = null) {
     const ok = await ensureModel();
     if (!ok) return;
   }
+  if (state.busy) return;
   const session = state.current;
   // The first message settles the chat's context type: what was picked, or the default (it's shown, not changed, after).
   if (!session.contextMode && !session.messages.some(m => !m.deleted)) session.contextMode = agent.settings.defaultContextMode || 'compact';
@@ -415,6 +421,7 @@ export async function send(text, threadId, files = [], resumed = null) {
   try {
     const atts = resumed ? [] : await readFiles(files, session);
     let note = null, from = -1;
+    let modelError;
     await agent.runTurn({
       session, threadId, text, attachments: atts, signal: controller.signal, resume: resumed,
       ui: {
@@ -430,6 +437,7 @@ export async function send(text, threadId, files = [], resumed = null) {
           container.append(live);
           scrollDown(scroller);
         },
+        onError: (error) => { modelError = error; },
         onThinking: (t) => { think.hidden = false; think.lastChild.textContent = t; },
         onText: (t) => {
           if (note) { if (from < 0) from = t.length; else if (t.length > from) { note.remove(); note = null; } }
@@ -463,6 +471,7 @@ export async function send(text, threadId, files = [], resumed = null) {
         onDone: (m) => { smooth.stop(); if (vc) vc.finish(agent.scrubFakeToolNotes(m.content)); live.replaceWith(messageEl(m, { inThread: Boolean(threadId), session })); if (!threadId) $('#chat-title').textContent = session.title; state.liveTurn = null; renderSide(); },
       },
     });
+    if (modelError) await recoverGpuModel(modelError);
   } finally {
     smooth.stop();
     setBusy(false);

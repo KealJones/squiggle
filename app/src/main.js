@@ -3,11 +3,13 @@
 import * as github from './github.js';
 import { loadConfig } from './config.js';
 import * as storage from './storage.js';
+import { probeGpu } from './engine.js';
 import { loadSettings } from './ui/settings.js';
 import { showSetup } from './ui/setup.js';
 import { startApp, fatal } from './ui/app.js';
 
 async function boot() {
+  await probeGpu();
   loadSettings();
   await loadConfig();
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});

@@ -83,13 +83,6 @@ export function loadSettings() {
     Object.assign(agent.settings, { contextSize: 4096, fastDecode: false, mobileTuned: true });
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...saved, model: agent.settings.model, contextSize: 4096, fastDecode: false, mobileTuned: true })); } catch {}
   }
-  // Harness v2: smart context is the default (BM25 alone is enough on a phone;
-  // embeddings stay optional). Move existing devices over once.
-  if (!saved.harnessV2) {
-    agent.settings.contextMode = 'smart';
-    saved = { ...saved, contextMode: 'smart', harnessV2: true };
-    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
-  }
   // Compress really is the default (2026-11-11): until now a new browser ran the "simplified" step above and then the
   // older harnessV2 one, which put it back on Smart (Greg's phone, every demo visitor). Devices left on Smart move to
   // Compress once; chats keep the type they were started with (session.contextMode).

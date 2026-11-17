@@ -45,3 +45,28 @@ test('a GPU without 16-bit floats keeps the GPU build (its q4f32 twin); a build 
   assert.equal(engine.forDevice('WLF3QAD'), 'LF3');
   engine.setAvoided([]);
 });
+
+test('WebGPU without a usable adapter keeps setup and chats on the CPU build', async () => {
+  const original = globalThis.navigator;
+  try {
+    for (const [scenario, requestAdapter] of [
+      ['missing', async () => null],
+      ['rejected', async () => { throw new Error('GPU unavailable'); }],
+    ]) {
+      let requests = 0;
+      globalThis.navigator = { userAgent: MAC, gpu: { requestAdapter: () => { requests++; return requestAdapter(); } } };
+      const engine = await import(`../app/src/engine.js?adapter=${scenario}`);
+      const [status, shaderF16] = await Promise.all([engine.webgpuStatus(), engine.probeGpu()]);
+      assert.equal(status.ok, false);
+      assert.equal(shaderF16, null);
+      assert.equal(requests, 1);
+      assert.equal(engine.deviceModel(), 'LF3');
+      assert.equal(engine.forDevice('LF3'), 'LF3');
+      assert.equal(engine.forDevice('WLF3QAD'), 'LF3');
+      assert.ok(engine.listedModels().includes('LF3'));
+      assert.ok(!engine.listedModels().includes('WLF3QAD'));
+    }
+  } finally {
+    globalThis.navigator = original;
+  }
+});
