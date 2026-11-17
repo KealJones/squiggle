@@ -67,6 +67,16 @@ test('memory facts are included in every mode', async () => {
   }
 });
 
+test('small models outside Smart get at most 3 memory facts above a higher bar; Squiggle Small (frozen) gets none', async () => {
+  const line = [msg('user', 'hi'), msg('assistant', 'hey')];
+  const session = { messages: line, threads: {}, observations: [], summaries: {} };
+  const recall = async () => [0.9, 0.8, 0.7, 0.6, 0.25].map((score, i) => ({ fact: { id: 'f' + i, text: `The user prefers git rebase ${i}` }, score }));
+  const facts = async (o) => ((await assembleContext({ line, session, query: 'git?', budget: 3000, mode: 'compact', system: 's', recall, factText: (f) => f.text, ...o })).system.match(/prefers git rebase/g) || []).length;
+  assert.equal(await facts({}), 5);
+  assert.equal(await facts({ small: true }), 3);
+  assert.equal(await facts({ small: true, frozen: true }), 0);
+});
+
 test('pinned messages survive leaving the window', async () => {
   const line = longChat();
   line[0].pinned = true;

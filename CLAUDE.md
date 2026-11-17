@@ -73,7 +73,7 @@ app/                    static app, plain ES modules, no build step
     storage.js          storage repo: setup, clone at /state, client-side rebase sync
     merge.js            conflict-free merges (sessions JSON, .jsonl)
     sessions.js         sessions + threads + observations on top of storage
-    memory.js           fact graph (memory/facts.jsonl), recall with 1-hop expansion (through specific entities only)
+    memory.js           facts (memory/facts.jsonl): one sentence each from `remember` (scope "this chat" saves a chat note instead), older ones subject → relation → object; recall with 1-hop expansion (through specific entities only)
     memory-rank.js      the pure parts of memory: rankFacts (absolute relevance, search.js overlap), aboutTheUser (extraction guard)
     github.js           device flow, token refresh, REST helpers (token never leaves here)
     git.js              LightningFS + isomorphic-git wiring
@@ -112,7 +112,11 @@ docs/                   harness.md (the agent loop contract), failures.md (caseb
 - Writes reach IndexedDB promptly. LightningFS keeps the file tree in memory and saves it only after 500 ms
   idle; storage.js persists after every sync and at most every 300 ms while writes keep coming (git.js
   `persist` = `pfs.flush`), and app.js `settle()` flushes chats and memory and persists on hide/pagehide. In
-  demo mode the browser is the only copy.
+  demo mode the browser is the only copy. A sync resets the tree to the remote and writes the pending files back, so it
+  keeps their contents in kv (`storage-rebase`) until they're back and persisted; `open()` puts back a copy a killed
+  page left (2026-11-16: CI lost an unpushed chat that way). Running out of push attempts is a sync error, not a success. A push the server refuses because another
+  holds the branch's lock ("failed to update ref") is retried like a non-fast-forward, after a random wait that grows
+  (2026-11-16: it used to throw, which was CI's flaky e2e for weeks; tests/e2e "six devices sync at the same moment").
 - The bash surface (`agent.bashSurface()`): the model gets `bash` and `remember` plus the harness tools instead of the
   file, web, git and maths tools. Commands that reach the network, GitHub or the sandbox go through `runTool` with the
   agent's context, so a push still needs the approval card and curl fetches any URL (the allowed-URL check stays on fetch_url for the two fine-tunes); the whole output is

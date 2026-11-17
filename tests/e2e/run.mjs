@@ -20,13 +20,25 @@ if (split) console.log(`split mode: app ${appUrl}, relay ${relayUrl} (GitHub Pag
 const browser = await chromium.launch();
 const results = [];
 const only = process.env.E2E_ONLY; // run just the checks whose name contains this
+// Every device's console warnings and errors, printed with a failed check: CI failed for weeks with no reason
+// shown because the page's own warnings (a sync that didn't push, say) never reached the log.
+const pageLog = [];
+const watch = (page, label) => {
+  page.on('console', m => { if (m.type() === 'warning' || m.type() === 'error') pageLog.push(`[${label}] ${m.type()}: ${m.text().slice(0, 300)}`); });
+  page.on('pageerror', e => pageLog.push(`[${label}] uncaught: ${String(e.message || e).slice(0, 300)}`));
+};
 const check = async (name, fn) => {
   if (only && !name.includes(only)) return;
+  const from = pageLog.length;
   try {
     await Promise.race([fn(), new Promise((_, rej) => setTimeout(() => rej(new Error('timed out after 60s')), 60000))]);
     results.push(['ok', name]); console.log('ok  ', name);
   }
-  catch (e) { results.push(['FAIL', name, e]); console.log('FAIL', name, '\n     ', (e.stack||e.message).split('\n').slice(0, 8).join('\n      ')); }
+  catch (e) {
+    results.push(['FAIL', name, e]); console.log('FAIL', name, '\n     ', (e.stack||e.message).split('\n').slice(0, 8).join('\n      '));
+    const seen = pageLog.slice(from).slice(-25);
+    if (seen.length) console.log('      page warnings and errors during this check:\n        ' + seen.join('\n        '));
+  }
 };
 
 async function device(label, viewport) {
@@ -41,6 +53,7 @@ async function device(label, viewport) {
   });
   const page = await ctx.newPage();
   page.errors = [];
+  watch(page, label);
   page.on('pageerror', e => page.errors.push(String(e)));
   page.on('console', m => { if (m.type() === 'error') page.errors.push(m.text()); });
   await page.goto(appUrl + '/');
@@ -613,6 +626,7 @@ async function voiceDevice(label, ctxOpts) {
   await ctx.addInitScript(VOICE_STUB);
   const page = D.page = await ctx.newPage();
   page.errors = [];
+  watch(page, label);
   page.on('pageerror', e => page.errors.push(String(e)));
   page.on('console', m => { if (m.type() === 'error') page.errors.push(m.text()); });
   await page.goto(appUrl + '/');
@@ -1356,6 +1370,7 @@ await check('a crash while loading the model is caught on the next open; phones 
     await ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
     const page = await ctx.newPage();
     page.errors = [];
+    watch(page, phone ? 'crash-phone' : 'crash');
     page.on('pageerror', e => page.errors.push(String(e)));
     await page.goto(appUrl + '/');
     await page.waitForSelector('#setup:not([hidden]) button'); // let first-run boot finish
@@ -1426,6 +1441,58 @@ await check('a crash while loading the model is caught on the next open; phones 
   }
 });
 
+await check('six devices sync at the same moment: every write lands (retries back off at random)', async () => {
+  const Ds = await Promise.all([1, 2, 3, 4, 5, 6].map(i => device('burst' + i)));
+  await Promise.all(Ds.map(D => D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG)));
+  const out = await Promise.all(Ds.map((D, i) => D.page.evaluate(async (i) => {
+    await T.storage.write(`notes/burst-${i}.md`, `from ${i}`);
+    await T.storage.sync();
+    return T.storage.syncStatus();
+  }, i)));
+  const files = git(stateRepo, 'ls-tree', '-r', '--name-only', 'main');
+  const missing = [0, 1, 2, 3, 4, 5].filter(i => !files.includes(`notes/burst-${i}.md`));
+  assert.deepEqual(missing, [], JSON.stringify(out.map(s => s.lastError)));
+  await Promise.all(Ds.map(D => D.ctx.close()));
+});
+
+await check('a page killed mid-sync keeps its unpushed files: the copy the sync held is put back on the next open, then pushed', async () => {
+  const D = await device('crash');
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  // A chat saved here and not pushed yet.
+  const id = await D.page.evaluate(async () => {
+    const s = T.sessions.newSession(); s.title = 'Unpushed chat';
+    T.sessions.addMessage(s, { role: 'user', content: 'keep me' }); T.sessions.addMessage(s, { role: 'assistant', content: 'ok' });
+    await T.sessions.flush({ sync: false });
+    return s.id;
+  });
+  // What a page killed between the sync's reset to the remote and its write-back leaves behind: the file gone from
+  // the tree, still pending, and the sync's copy in IndexedDB (storage.js syncOnce). Before the copy, this chat
+  // was gone after the reload and the next sync pushed it as deleted (CI, 2026-11-16).
+  await D.page.evaluate(async (id) => {
+    const { kv } = await import('/src/util.js');
+    const p = `sessions/${id}.json`;
+    await kv.set('storage-rebase', { [p]: await T.storage.read(p) });
+    await T.gitm.fs.promises.unlink('/state/' + p);
+    await T.gitm.persist();
+  }, id);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  const after = await D.page.evaluate(async (id) => {
+    const S = await import('/src/sessions.js');
+    const st = await import('/src/storage.js');
+    const { kv } = await import('/src/util.js');
+    const s = S.get(id);
+    await st.sync();
+    return { loaded: !!s, title: s && s.title, left: await kv.get('storage-rebase'), status: st.syncStatus() };
+  }, id);
+  assert.ok(after.loaded && after.title === 'Unpushed chat', JSON.stringify(after));
+  assert.equal(after.left, undefined, 'the copy is used up');
+  assert.match(git(stateRepo, 'ls-tree', '-r', '--name-only', 'main'), new RegExp(`sessions/${id}.json`), JSON.stringify(after.status));
+  // A sync that finishes leaves no copy behind.
+  assert.equal(await D.page.evaluate(async () => (await (await import('/src/util.js')).kv.get('storage-rebase')) ?? null), null);
+  await D.ctx.close();
+});
+
 await check('bash tool (lab): just-bash on the workspace; /home writes sync; git, curl, bc, help; .git out of reach', async () => {
   const D = await device('bash');
   await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
@@ -1442,14 +1509,25 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
   r = await run('mkdir -p /home/notes && echo "buy milk" > /home/notes/todo.md && echo "call Dana" >> /home/notes/todo.md && cat /home/notes/todo.md | wc -l');
   assert.equal(r.out.trim(), '2', JSON.stringify(r));
   // Through storage.js, so it syncs.
-  // sync() keeps its errors (the app just syncs again later); on CI one failed once (2026-11-16), so allow a retry and say why.
+  const status = await D.page.evaluate(async () => { await T.storage.sync(); return T.storage.syncStatus(); });
   const onServer = () => { try { return git(stateRepo, 'show', 'main:home/notes/todo.md'); } catch { return null; } };
-  let status;
-  for (let i = 0; i < 3 && onServer() === null; i++) {
-    status = await D.page.evaluate(async () => { await T.storage.sync(); return T.storage.syncStatus(); });
-    if (onServer() === null) console.log('      bash sync: not on the server yet', JSON.stringify(status));
-  }
   assert.equal(onServer(), 'buy milk\ncall Dana', `/home write never reached the repo: ${JSON.stringify(status)}`);
+  // remember: one sentence, everywhere (memory) or this chat (the chat's notes, always in its prompt).
+  const mem = await D.page.evaluate(async () => {
+    const { runTool } = await import('/src/tools.js');
+    const session = window.__bashSession;
+    const call = (args) => runTool({ function: { name: 'remember', arguments: args } }, { session });
+    const a = await call({ fact: 'Keal likes short answers' });
+    const b = await call({ fact: 'the deploy is on Fridays', scope: 'this chat' });
+    const c = await call({});
+    await call({ fact: 'I like tea' });   // the user's words, saved as theirs
+    return { a: a.label, b: b.label, c: c.model.error, facts: T.memory.all().map(T.memory.factText), notes: Object.values(session.notes || {}).map(n => n.text) };
+  });
+  assert.ok(mem.facts.includes('Keal likes short answers') && !mem.facts.includes('the deploy is on Fridays'), JSON.stringify(mem));
+  assert.deepEqual(mem.notes, ['the deploy is on Fridays'], JSON.stringify(mem));
+  assert.match(mem.b, /^remembered for this chat/);
+  assert.match(mem.c, /Give the fact/);
+  assert.ok(mem.facts.includes('The user says: I like tea'), JSON.stringify(mem.facts));
   r = await run('git clone tester/app && cd /repos/app && ls && grep -rn console src | head -3 && git status');
   assert.equal(r.code, 0, JSON.stringify(r));
   assert.match(r.out, /README\.md[\s\S]*src[\s\S]*src\/index\.js:1:console\.log/);
