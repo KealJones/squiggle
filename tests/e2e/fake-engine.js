@@ -7,6 +7,8 @@ export const MODELS = {
   G3: { label: 'Fake G3', size: '242 MB', note: 'test', url: 'fake://g3', phone: true, runtime: 'wllama' },
   SQ: { label: 'Fake SQ', size: '219 MB', note: 'test', url: 'fake://sq', phone: true, runtime: 'wllama', tools: true },
   cloud: { label: 'Fake Cloud', size: 'no download', note: 'test', phone: true, runtime: 'cloud', needsRelay: true },
+  // LFM3 (agent-trained, native tools, deferred tools): only for the checks that set it, so model lists stay as they were.
+  ...(localStorage.getItem('fake-lfm3') ? { LF3: { label: 'Fake LFM3', size: '1.0 GB', note: 'test', url: 'fake://lf3', phone: true, runtime: 'wllama', tools: true, native: true, family: 'lfm3' } } : {}),
 };
 const log = (window.__engineLog = window.__engineLog || []);
 let ready = false;
@@ -16,7 +18,8 @@ const lock = (fn) => { const r = chain.then(fn, fn); chain = r.catch(() => {}); 
 export const engineReady = () => ready;
 export const currentModel = () => 'E2B';
 export const isLite = (id) => Boolean(MODELS[id] && MODELS[id].runtime === 'wllama');
-export const agentTrained = () => false;
+export const agentTrained = (id) => Boolean(MODELS[id] && MODELS[id].family === 'lfm3');
+export const nativeTools = (id) => isLite(id) && Boolean(MODELS[id] && MODELS[id].native);
 // Each model's own window (the real engine: its maxContext, else 16K): the small fake models 4K, the big ones 8K, the
 // window these tests were written against.
 export const contextFor = (id) => (MODELS[id] && MODELS[id].maxContext) || (isLite(id) ? 4096 : 8192);
@@ -61,7 +64,7 @@ export const foreground = (fn) => lock(fn);
 export const background = (fn) => lock(fn);
 
 export async function conversation(cfg) {
-  log.push({ type: 'conversation', system: cfg.system, messages: cfg.messages, tools: cfg.tools.map(t => t.name), known: cfg.known || [] });
+  log.push({ type: 'conversation', system: cfg.system, messages: cfg.messages, tools: cfg.tools.map(t => t.name), known: cfg.known || [], deferred: cfg.tools.filter(t => t.defer_loading).map(t => t.name), descriptions: Object.fromEntries(cfg.tools.map(t => [t.name, t.description])) });
   return { cfg, delete: async () => {}, cancel() {}, replaceResult(msg, response) { log.push({ type: 'replace', name: msg.content[0].name, response }); return true; } };
 }
 
@@ -119,6 +122,13 @@ export async function respond(conv, input, { onText } = {}) {
   // Fresh context: the first input is the result of the lookup the agent made for the model.
   const looked = Array.isArray(input) && input[0] && input[0].content[0].name === 'find' && ((input[0].content[0].response || {}).found || '');
   if (looked && /^Looked up before answering/.test(looked)) return say(`From the lookup: ${looked.split('\n')[0]}`, onText);
+  // DEFERTEST (LFM3, deferred tools): search_tools for past chats, then the tool it returned, then an answer.
+  if (typeof input === 'string' && /^DEFERTEST/.test(input)) return call('search_tools', { query: 'search past conversations' });
+  if (Array.isArray(input) && input[0] && input[0].content[0].name === 'search_tools') {
+    const refs = (input[0].content[0].response || {}).tool_references || [];
+    return refs.includes('search_history') ? call('search_history', { query: 'eiffel' }) : say(`search_tools found: ${refs.join(', ') || 'nothing'}`, onText);
+  }
+  if (Array.isArray(input) && input[0] && input[0].content[0].name === 'search_history') return say('Looked through your past chats.', onText);
   const scripted = stepScript(conv, input, onText);
   if (scripted) return scripted;
   if (typeof input === 'string') {

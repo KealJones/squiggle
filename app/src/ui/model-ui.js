@@ -147,7 +147,7 @@ function showCrashBanner(c) {
     if (sameModel) { S.avoidBuilds = [...new Set([...(S.avoidBuilds || []), S.model])]; engine.setAvoided(S.avoidBuilds); }
     setDefaultModel(next); setCrashMarker(null);
     state.modelPromise = null; ensureModel(); // downloads the lighter model first if needed, then loads
-  } }, sameModel ? `Run it on the CPU instead (${nm.size}, slower)` : next === S.model ? 'Use lighter settings' : `Use lighter settings (${nm.label}, ${nm.size})`);
+  } }, sameModel ? (nm.backend ? `Try its other GPU build (${nm.size})` : `Run it on the CPU instead (${nm.size}, slower)`) : next === S.model ? 'Use lighter settings' : `Use lighter settings (${nm.label}, ${nm.size})`);
   // Settings may have become lighter since the crash (e.g. phones moved to a phone model).
   const changed = c.model !== S.model || c.contextSize !== S.contextSize || Boolean(c.fast) !== Boolean(S.fastDecode)
     || Boolean(c.small && c.small.gpu) !== Boolean(S.smallGpu && engine.MODELS[S.model].runtime === 'wllama' && !engine.MODELS[S.model].backend)

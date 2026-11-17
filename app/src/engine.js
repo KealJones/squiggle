@@ -34,12 +34,19 @@ export const MODELS = {
       model_lib: HF + 'kealjones/LFM3-1.7B-QAD-q4f32_1-MLC/resolve/main/LFM3-1.7B-q4f32_1-b1-webgpu.wasm',
       overrides: { context_window_size: 6144 },
     } },
+  // LFM3 1.7B on Keptsam (2026-11-17): Liquid's quantization-aware 4-bit GGUF, the same file as the CPU build, on the
+  // GPU without shader-f16. The text model with every training stage (MOPD, agentic RL): it thinks and reaches for
+  // tools on its own. LFM3's first build; WebLLM's next, then the CPU.
+  KLF3: { label: 'LFM3 1.7B', size: '1.0 GB', group: 'LFM3', note: 'Liquid\'s LFM3 1.7B, the text model trained for agent harnesses: it thinks first and uses tools in its own format. On Keal\'s own WebGPU engine (Keptsam), Liquid\'s own 4-bit weights. 6K context at most', phone: true, runtime: 'wllama', backend: 'keptsam', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 6144,
+    url: HF + 'LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-QAD-Q4_0.gguf', bytes: 1049615680, fileBytes: [1049615680] },
   // LFM3 Omni 2B on Keptsam (github.com/KealJones/Keptsam, engine-keptsam.js), the GPU build since 2026-11-16: the
   // same LFM3 backbone (24 layers, Q4_0), plus Omni's encoders (mmproj, Q8_0) so it sees pictures and video, hears
   // sound and speaks in its own voice. Keal's own WebGPU engine: no shader-f16 needed, GPU work in short submits for
   // iOS's ~3 s limit, encoders loaded only while used. On Keal's iPhone 16 (Keptsam's demo, 2026-11-16): reads 51
   // tokens a second, writes 12.6; 1,123 MB at a 4K window, 1,241 MB at its peak while speaking.
-  KOMNI: { label: 'LFM3 Omni 2B', size: '1.55 GB', group: 'LFM3', note: 'Liquid\'s LFM3 with eyes, ears and a voice, on Keal\'s own WebGPU engine (Keptsam): it sees pictures and video, hears audio, and can answer out loud. Tools in its own format, thinking first. 6K context at most', phone: true, runtime: 'wllama', backend: 'keptsam', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 6144,
+  // Its thinking is started for it (toolformats/lfm3.js lfm3Omni): Omni's branch skipped the 1.7B's MOPD and agentic
+  // RL and closes an open <think> at once (llama.cpp, 2026-11-17).
+  KOMNI: { label: 'LFM3 Omni 2B', size: '1.55 GB', group: 'LFM3O', note: 'Liquid\'s LFM3 with eyes, ears and a voice, on Keal\'s own WebGPU engine (Keptsam): it sees pictures and video, hears audio, and can answer out loud. Tools in its own format; Squiggle starts its thinking for it. 6K context at most', phone: true, runtime: 'wllama', backend: 'keptsam', tools: true, native: true, toolFormat: 'lfm3-omni', family: 'lfm3', maxContext: 6144,
     senses: ['image', 'video', 'audio', 'voice'],
     url: HF + 'LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/LFM3-Omni-2B-Q4_0.gguf',
     mmproj: HF + 'LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/mmproj-LFM3-Omni-2B-Q8_0.gguf',
@@ -145,7 +152,12 @@ export const contextFor = (id) => (MODELS[id] && MODELS[id].maxContext) || 16384
 // `group` naming the model it's a build of; GROUPS lists the builds in order of preference, and the first one
 // that can run on this device is the one listed, loaded and resolved to when a chat from another device names
 // a different build.
-export const GROUPS = { LFM3: { label: 'LFM3', builds: ['KOMNI', 'WLF3QAD', 'LF3'] } };
+// LFM3 Omni 2B is its own model since 2026-11-17 (LFM3 1.7B listed beside it); where it can't run, a chat saved with it
+// opens on the best LFM3 1.7B build here.
+export const GROUPS = {
+  LFM3: { label: 'LFM3 1.7B', builds: ['KLF3', 'WLF3QAD', 'LF3'] },
+  LFM3O: { label: 'LFM3 Omni 2B', builds: ['KOMNI', 'KLF3', 'WLF3QAD', 'LF3'] },
+};
 export const groupOf = (id) => (MODELS[id] && MODELS[id].group) || null;
 // Whether the GPU has 16-bit floats (shader-f16): null until probeGpu() has asked the adapter. A build marked f16Only
 // (no q4f32 twin) takes the next build on a GPU without them; LFM3's WebLLM build has its twin (mlcRecordF32).

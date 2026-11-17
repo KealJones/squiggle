@@ -1728,6 +1728,53 @@ await check('Squiggle Small (fine-tuned) gets the harness: system prompt and too
   assert.equal(await D.page.evaluate(() => window.__engineLog.filter(e => e.type === 'complete').length), 0, 'no titles, facts or summaries from a small model');
 });
 
+await check('LFM3 gets the common tools (bash kept) and the rest deferred, found with search_tools as tool references', async () => {
+  const D = await device('lfm3');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.evaluate(() => { localStorage.setItem('fake-lfm3', '1'); const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'LF3'; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  await D.page.fill('#input', 'DEFERTEST what did I say about the eiffel tower?');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => document.querySelector('#messages') && /Looked through your past chats/.test(document.querySelector('#messages').textContent), null, { timeout: 15000 });
+  const log = await D.page.evaluate(() => window.__engineLog);
+  const c = log.find(e => e.type === 'conversation');
+  for (const n of ['bash', 'read', 'write', 'edit', 'web_search', 'web_fetch', 'memory_read', 'memory_write', 'search_tools', 'ask_user']) assert.ok(c.tools.includes(n), n + ' in ' + c.tools);
+  for (const n of ['read_file', 'write_file', 'edit_file', 'fetch_url', 'remember', 'recall', 'tool_info', 'calculate']) assert.ok(!c.tools.includes(n), n + ' should not be in ' + c.tools);
+  assert.ok(c.deferred.includes('search_history') && c.deferred.includes('wiki_lookup') && !c.deferred.includes('bash') && !c.deferred.includes('read'), JSON.stringify(c.deferred));
+  assert.match(c.system, /If none of your current tools can handle a request, call search_tools to find one, then call the tool it returns\./);
+  assert.match(c.system, /memory_write/);
+  assert.doesNotMatch(c.system, /tool_info|the remember tool/);
+  assert.match(c.descriptions.web_search, /web_fetch/, 'web_search points at web_fetch on this surface');
+  assert.doesNotMatch(c.descriptions.web_search, /fetch_url/);
+  const found = log.filter(e => e.type === 'respond' && Array.isArray(e.input) && e.input[0].content[0].name === 'search_tools')[0];
+  assert.ok(found, JSON.stringify(log.map(e => e.type)));
+  assert.ok(found.input[0].content[0].response.tool_references.includes('search_history'), JSON.stringify(found.input[0].content[0].response));
+  assert.ok(log.some(e => e.type === 'respond' && Array.isArray(e.input) && e.input[0].content[0].name === 'search_history'), 'the found tool ran');
+  // The common tools run the Squiggle tools under them, and speak their own names and arguments.
+  const r = await D.page.evaluate(async () => {
+    const { runTool } = await import('/src/tools.js');
+    const session = (await import('/src/sessions.js')).list()[0];
+    const run = async (name, args) => (await runTool({ function: { name, arguments: args } }, { session, room: 20000 })).model;
+    const w = await run('write', { path: '/home/notes/plan.md', content: 'one\ntwo\nthree\nfour\n' });
+    const e = await run('edit', { path: '/home/notes/plan.md', edits: [{ oldText: 'two', newText: 'TWO' }, { oldText: 'four', newText: 'FOUR' }] });
+    const bad = await run('edit', { path: '/home/notes/plan.md', edits: [{ oldText: 'nope', newText: 'x' }] });
+    const rd = await run('read', { path: '/home/notes/plan.md', offset: 2, limit: 2 });
+    const mw = await run('memory_write', { fact: 'The user likes short answers.' });
+    const mr = await run('memory_read', {});
+    return { w, e, bad, rd: JSON.stringify(rd), mw, mr: JSON.stringify(mr) };
+  });
+  assert.ok(!r.w.error && !r.e.error, JSON.stringify(r));
+  assert.match(r.bad.error, /oldText/, 'errors use the common argument names');
+  assert.doesNotMatch(r.bad.error, /old_text|edit_file/);
+  assert.match(r.rd, /TWO/); assert.match(r.rd, /three/); assert.doesNotMatch(r.rd, /FOUR/);
+  assert.match(r.mr, /short answers/);
+  await D.ctx.close();
+});
+
 await check('the prompt follows the model, with no switches: a big model gets the full prompt, Squiggle Small its find-first one', async () => {
   const D = await device('smallmode');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));

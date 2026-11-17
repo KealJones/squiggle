@@ -372,6 +372,570 @@
     }
    ],
    "expected": "<|im_start|>system\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for, e.g. \\\"weather in Phoenix\\\"\"}, \"count\": {\"type\": \"integer\", \"description\": \"How many results\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\na<|im_end|>\n<|im_start|>assistant\n<think></think>first answer<|im_end|>\n<|im_start|>user\nb<|im_end|>\n<|im_start|>assistant\n<think>look it up</think><tool_call>\n<function=web_search>\n<parameter=query>\nb\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\nB!\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>"
+  },
+  "deferred tools stay out of <tools>": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns."
+    },
+    {
+     "role": "user",
+     "content": "how tall is the eiffel tower in feet?"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "search_tools",
+     "description": "Search a catalog of more tools. Returns the ones that fit, ready to call.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What you need a tool for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "wiki_lookup",
+     "description": "Facts about a person, place or thing from Wikipedia and Wikidata.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "description": "Who or what"
+       },
+       "question": {
+        "type": "string",
+        "description": "What you want to know"
+       }
+      },
+      "required": [
+       "name"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "calculate",
+     "description": "Work out a maths expression.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "expression": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "expression"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "search_history",
+     "description": "Search past chats.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     },
+     "defer_loading": true
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns.\n\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for\"}}, \"required\": [\"query\"]}}\n{\"name\": \"search_tools\", \"description\": \"Search a catalog of more tools. Returns the ones that fit, ready to call.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What you need a tool for\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\nhow tall is the eiffel tower in feet?<|im_end|>\n<|im_start|>assistant\n<think></think>"
+  },
+  "every tool deferred and no system message: no system turn": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "how tall is the eiffel tower in feet?"
+    }
+   ],
+   "tools": [
+    {
+     "name": "wiki_lookup",
+     "description": "Facts about a person, place or thing from Wikipedia and Wikidata.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "description": "Who or what"
+       },
+       "question": {
+        "type": "string",
+        "description": "What you want to know"
+       }
+      },
+      "required": [
+       "name"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "calculate",
+     "description": "Work out a maths expression.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "expression": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "expression"
+      ]
+     },
+     "defer_loading": true
+    }
+   ],
+   "expected": "<|im_start|>user\nhow tall is the eiffel tower in feet?<|im_end|>\n<|im_start|>assistant\n<think></think>"
+  },
+  "search_tools answers with tool_reference parts: <additional_tools>": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns."
+    },
+    {
+     "role": "user",
+     "content": "how tall is the eiffel tower in feet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "c1",
+       "type": "function",
+       "function": {
+        "name": "search_tools",
+        "arguments": {
+         "query": "facts about a landmark"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "c1",
+     "content": [
+      {
+       "type": "text",
+       "text": "Found 2 tools."
+      },
+      {
+       "type": "tool_reference",
+       "name": "wiki_lookup"
+      },
+      {
+       "type": "tool_reference",
+       "name": "calculate"
+      }
+     ]
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "search_tools",
+     "description": "Search a catalog of more tools. Returns the ones that fit, ready to call.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What you need a tool for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "wiki_lookup",
+     "description": "Facts about a person, place or thing from Wikipedia and Wikidata.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "description": "Who or what"
+       },
+       "question": {
+        "type": "string",
+        "description": "What you want to know"
+       }
+      },
+      "required": [
+       "name"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "calculate",
+     "description": "Work out a maths expression.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "expression": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "expression"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "search_history",
+     "description": "Search past chats.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     },
+     "defer_loading": true
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns.\n\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for\"}}, \"required\": [\"query\"]}}\n{\"name\": \"search_tools\", \"description\": \"Search a catalog of more tools. Returns the ones that fit, ready to call.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What you need a tool for\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\nhow tall is the eiffel tower in feet?<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=search_tools>\n<parameter=query>\nfacts about a landmark\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\nFound 2 tools.\n<additional_tools>\n{\"name\": \"wiki_lookup\", \"description\": \"Facts about a person, place or thing from Wikipedia and Wikidata.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\", \"description\": \"Who or what\"}, \"question\": {\"type\": \"string\", \"description\": \"What you want to know\"}}, \"required\": [\"name\"]}}\n{\"name\": \"calculate\", \"description\": \"Work out a maths expression.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"expression\": {\"type\": \"string\"}}, \"required\": [\"expression\"]}}\n</additional_tools>\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>"
+  },
+  "references only, then the found tool is called": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns."
+    },
+    {
+     "role": "user",
+     "content": "how tall is the eiffel tower in feet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "c1",
+       "type": "function",
+       "function": {
+        "name": "search_tools",
+        "arguments": {
+         "query": "wikipedia"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "c1",
+     "content": [
+      {
+       "type": "tool_reference",
+       "name": "wiki_lookup"
+      }
+     ]
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "c2",
+       "type": "function",
+       "function": {
+        "name": "wiki_lookup",
+        "arguments": {
+         "name": "Eiffel Tower",
+         "question": "height"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "c2",
+     "content": "{\"height\": \"330 m\"}"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "search_tools",
+     "description": "Search a catalog of more tools. Returns the ones that fit, ready to call.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What you need a tool for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "wiki_lookup",
+     "description": "Facts about a person, place or thing from Wikipedia and Wikidata.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "description": "Who or what"
+       },
+       "question": {
+        "type": "string",
+        "description": "What you want to know"
+       }
+      },
+      "required": [
+       "name"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "calculate",
+     "description": "Work out a maths expression.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "expression": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "expression"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "search_history",
+     "description": "Search past chats.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     },
+     "defer_loading": true
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns.\n\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for\"}}, \"required\": [\"query\"]}}\n{\"name\": \"search_tools\", \"description\": \"Search a catalog of more tools. Returns the ones that fit, ready to call.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What you need a tool for\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\nhow tall is the eiffel tower in feet?<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=search_tools>\n<parameter=query>\nwikipedia\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\n<additional_tools>\n{\"name\": \"wiki_lookup\", \"description\": \"Facts about a person, place or thing from Wikipedia and Wikidata.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\", \"description\": \"Who or what\"}, \"question\": {\"type\": \"string\", \"description\": \"What you want to know\"}}, \"required\": [\"name\"]}}\n</additional_tools>\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=wiki_lookup>\n<parameter=name>\nEiffel Tower\n</parameter>\n<parameter=question>\nheight\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\n{\"height\": \"330 m\"}\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>"
+  },
+  "text between references splits the block": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns."
+    },
+    {
+     "role": "user",
+     "content": "how tall is the eiffel tower in feet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "c1",
+       "type": "function",
+       "function": {
+        "name": "search_tools",
+        "arguments": {
+         "query": "maths and history"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "c1",
+     "content": [
+      {
+       "type": "tool_reference",
+       "name": "calculate"
+      },
+      {
+       "type": "text",
+       "text": "and"
+      },
+      {
+       "type": "tool_reference",
+       "name": "search_history"
+      }
+     ]
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "search_tools",
+     "description": "Search a catalog of more tools. Returns the ones that fit, ready to call.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What you need a tool for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "wiki_lookup",
+     "description": "Facts about a person, place or thing from Wikipedia and Wikidata.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "description": "Who or what"
+       },
+       "question": {
+        "type": "string",
+        "description": "What you want to know"
+       }
+      },
+      "required": [
+       "name"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "calculate",
+     "description": "Work out a maths expression.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "expression": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "expression"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "search_history",
+     "description": "Search past chats.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     },
+     "defer_loading": true
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns.\n\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for\"}}, \"required\": [\"query\"]}}\n{\"name\": \"search_tools\", \"description\": \"Search a catalog of more tools. Returns the ones that fit, ready to call.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What you need a tool for\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\nhow tall is the eiffel tower in feet?<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=search_tools>\n<parameter=query>\nmaths and history\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\n<additional_tools>\n{\"name\": \"calculate\", \"description\": \"Work out a maths expression.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"expression\": {\"type\": \"string\"}}, \"required\": [\"expression\"]}}\n</additional_tools>\nand\n<additional_tools>\n{\"name\": \"search_history\", \"description\": \"Search past chats.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}}, \"required\": [\"query\"]}}\n</additional_tools>\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think>"
   }
  },
  "on": {
@@ -747,6 +1311,570 @@
     }
    ],
    "expected": "<|im_start|>system\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for, e.g. \\\"weather in Phoenix\\\"\"}, \"count\": {\"type\": \"integer\", \"description\": \"How many results\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\na<|im_end|>\n<|im_start|>assistant\n<think></think>first answer<|im_end|>\n<|im_start|>user\nb<|im_end|>\n<|im_start|>assistant\n<think>look it up</think><tool_call>\n<function=web_search>\n<parameter=query>\nb\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\nB!\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>"
+  },
+  "deferred tools stay out of <tools>": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns."
+    },
+    {
+     "role": "user",
+     "content": "how tall is the eiffel tower in feet?"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "search_tools",
+     "description": "Search a catalog of more tools. Returns the ones that fit, ready to call.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What you need a tool for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "wiki_lookup",
+     "description": "Facts about a person, place or thing from Wikipedia and Wikidata.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "description": "Who or what"
+       },
+       "question": {
+        "type": "string",
+        "description": "What you want to know"
+       }
+      },
+      "required": [
+       "name"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "calculate",
+     "description": "Work out a maths expression.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "expression": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "expression"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "search_history",
+     "description": "Search past chats.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     },
+     "defer_loading": true
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns.\n\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for\"}}, \"required\": [\"query\"]}}\n{\"name\": \"search_tools\", \"description\": \"Search a catalog of more tools. Returns the ones that fit, ready to call.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What you need a tool for\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\nhow tall is the eiffel tower in feet?<|im_end|>\n<|im_start|>assistant\n<think>"
+  },
+  "every tool deferred and no system message: no system turn": {
+   "messages": [
+    {
+     "role": "user",
+     "content": "how tall is the eiffel tower in feet?"
+    }
+   ],
+   "tools": [
+    {
+     "name": "wiki_lookup",
+     "description": "Facts about a person, place or thing from Wikipedia and Wikidata.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "description": "Who or what"
+       },
+       "question": {
+        "type": "string",
+        "description": "What you want to know"
+       }
+      },
+      "required": [
+       "name"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "calculate",
+     "description": "Work out a maths expression.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "expression": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "expression"
+      ]
+     },
+     "defer_loading": true
+    }
+   ],
+   "expected": "<|im_start|>user\nhow tall is the eiffel tower in feet?<|im_end|>\n<|im_start|>assistant\n<think>"
+  },
+  "search_tools answers with tool_reference parts: <additional_tools>": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns."
+    },
+    {
+     "role": "user",
+     "content": "how tall is the eiffel tower in feet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "c1",
+       "type": "function",
+       "function": {
+        "name": "search_tools",
+        "arguments": {
+         "query": "facts about a landmark"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "c1",
+     "content": [
+      {
+       "type": "text",
+       "text": "Found 2 tools."
+      },
+      {
+       "type": "tool_reference",
+       "name": "wiki_lookup"
+      },
+      {
+       "type": "tool_reference",
+       "name": "calculate"
+      }
+     ]
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "search_tools",
+     "description": "Search a catalog of more tools. Returns the ones that fit, ready to call.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What you need a tool for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "wiki_lookup",
+     "description": "Facts about a person, place or thing from Wikipedia and Wikidata.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "description": "Who or what"
+       },
+       "question": {
+        "type": "string",
+        "description": "What you want to know"
+       }
+      },
+      "required": [
+       "name"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "calculate",
+     "description": "Work out a maths expression.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "expression": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "expression"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "search_history",
+     "description": "Search past chats.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     },
+     "defer_loading": true
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns.\n\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for\"}}, \"required\": [\"query\"]}}\n{\"name\": \"search_tools\", \"description\": \"Search a catalog of more tools. Returns the ones that fit, ready to call.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What you need a tool for\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\nhow tall is the eiffel tower in feet?<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=search_tools>\n<parameter=query>\nfacts about a landmark\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\nFound 2 tools.\n<additional_tools>\n{\"name\": \"wiki_lookup\", \"description\": \"Facts about a person, place or thing from Wikipedia and Wikidata.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\", \"description\": \"Who or what\"}, \"question\": {\"type\": \"string\", \"description\": \"What you want to know\"}}, \"required\": [\"name\"]}}\n{\"name\": \"calculate\", \"description\": \"Work out a maths expression.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"expression\": {\"type\": \"string\"}}, \"required\": [\"expression\"]}}\n</additional_tools>\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>"
+  },
+  "references only, then the found tool is called": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns."
+    },
+    {
+     "role": "user",
+     "content": "how tall is the eiffel tower in feet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "c1",
+       "type": "function",
+       "function": {
+        "name": "search_tools",
+        "arguments": {
+         "query": "wikipedia"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "c1",
+     "content": [
+      {
+       "type": "tool_reference",
+       "name": "wiki_lookup"
+      }
+     ]
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "c2",
+       "type": "function",
+       "function": {
+        "name": "wiki_lookup",
+        "arguments": {
+         "name": "Eiffel Tower",
+         "question": "height"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "c2",
+     "content": "{\"height\": \"330 m\"}"
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "search_tools",
+     "description": "Search a catalog of more tools. Returns the ones that fit, ready to call.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What you need a tool for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "wiki_lookup",
+     "description": "Facts about a person, place or thing from Wikipedia and Wikidata.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "description": "Who or what"
+       },
+       "question": {
+        "type": "string",
+        "description": "What you want to know"
+       }
+      },
+      "required": [
+       "name"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "calculate",
+     "description": "Work out a maths expression.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "expression": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "expression"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "search_history",
+     "description": "Search past chats.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     },
+     "defer_loading": true
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns.\n\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for\"}}, \"required\": [\"query\"]}}\n{\"name\": \"search_tools\", \"description\": \"Search a catalog of more tools. Returns the ones that fit, ready to call.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What you need a tool for\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\nhow tall is the eiffel tower in feet?<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=search_tools>\n<parameter=query>\nwikipedia\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\n<additional_tools>\n{\"name\": \"wiki_lookup\", \"description\": \"Facts about a person, place or thing from Wikipedia and Wikidata.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"name\": {\"type\": \"string\", \"description\": \"Who or what\"}, \"question\": {\"type\": \"string\", \"description\": \"What you want to know\"}}, \"required\": [\"name\"]}}\n</additional_tools>\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=wiki_lookup>\n<parameter=name>\nEiffel Tower\n</parameter>\n<parameter=question>\nheight\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\n{\"height\": \"330 m\"}\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>"
+  },
+  "text between references splits the block": {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns."
+    },
+    {
+     "role": "user",
+     "content": "how tall is the eiffel tower in feet?"
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "tool_calls": [
+      {
+       "id": "c1",
+       "type": "function",
+       "function": {
+        "name": "search_tools",
+        "arguments": {
+         "query": "maths and history"
+        }
+       }
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "c1",
+     "content": [
+      {
+       "type": "tool_reference",
+       "name": "calculate"
+      },
+      {
+       "type": "text",
+       "text": "and"
+      },
+      {
+       "type": "tool_reference",
+       "name": "search_history"
+      }
+     ]
+    }
+   ],
+   "tools": [
+    {
+     "name": "web_search",
+     "description": "Search the web. Returns titles, links and snippets.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What to search for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "search_tools",
+     "description": "Search a catalog of more tools. Returns the ones that fit, ready to call.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string",
+        "description": "What you need a tool for"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     }
+    },
+    {
+     "name": "wiki_lookup",
+     "description": "Facts about a person, place or thing from Wikipedia and Wikidata.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "description": "Who or what"
+       },
+       "question": {
+        "type": "string",
+        "description": "What you want to know"
+       }
+      },
+      "required": [
+       "name"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "calculate",
+     "description": "Work out a maths expression.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "expression": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "expression"
+      ]
+     },
+     "defer_loading": true
+    },
+    {
+     "name": "search_history",
+     "description": "Search past chats.",
+     "parameters": {
+      "type": "object",
+      "properties": {
+       "query": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "query"
+      ]
+     },
+     "defer_loading": true
+    }
+   ],
+   "expected": "<|im_start|>system\nYou are Squiggle, an assistant that figures things out. Café ☕ ok.\nIf none of your current tools can handle a request, call search_tools to find one, then call the tool it returns.\n\n<tools>\n{\"name\": \"web_search\", \"description\": \"Search the web. Returns titles, links and snippets.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What to search for\"}}, \"required\": [\"query\"]}}\n{\"name\": \"search_tools\", \"description\": \"Search a catalog of more tools. Returns the ones that fit, ready to call.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\", \"description\": \"What you need a tool for\"}}, \"required\": [\"query\"]}}\n</tools><|im_end|>\n<|im_start|>user\nhow tall is the eiffel tower in feet?<|im_end|>\n<|im_start|>assistant\n<think></think><tool_call>\n<function=search_tools>\n<parameter=query>\nmaths and history\n</parameter>\n</function>\n</tool_call><|im_end|>\n<|im_start|>tool\n<tool_response>\n<additional_tools>\n{\"name\": \"calculate\", \"description\": \"Work out a maths expression.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"expression\": {\"type\": \"string\"}}, \"required\": [\"expression\"]}}\n</additional_tools>\nand\n<additional_tools>\n{\"name\": \"search_history\", \"description\": \"Search past chats.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"query\": {\"type\": \"string\"}}, \"required\": [\"query\"]}}\n</additional_tools>\n</tool_response><|im_end|>\n<|im_start|>assistant\n<think>"
   }
  }
 }

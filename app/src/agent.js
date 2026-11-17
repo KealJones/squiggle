@@ -9,6 +9,7 @@ import * as memory from './memory.js';
 import * as storage from './storage.js';
 import * as recipes from './recipes.js';
 import * as tasks from './tasks.js';
+import { COMMON_FROM } from './tools/common.js';
 import { find as findAll, renderFind, nothingFor, NOTHING, PAST_CHAT, PUSHBACK, checkQuery, rerankWeb, urlLedger, rankTools } from './find.js';
 import * as prefetchLib from './prefetch.js';
 import { buildEntities, resolve as resolveRefs, renderRefs } from './refs.js';
@@ -83,11 +84,15 @@ export const LITE_SYSTEM_NATIVE = [
 const GITHUB_LINE = "git and gh are signed in as the user: \"my repo X\" is theirs, so gh repo clone X (it lands in /repos/X).";
 // LFM3's prompt had nothing on memory (only the big prompt did): case 21.
 // Just "use the tool": its description says how to word it and the scopes, and the harness handles the rest.
-const MEMORY_LINE = 'When the user tells you something lasting about themselves or their work, save it with the remember tool.';
+// The bash surface (BASH_SURFACE): the tools LFM3 knows from Pi, OpenClaw and Hermes next to bash, and the rest
+// found with search_tools, in LFM3's own deferred-tools format (its model card's line, below). Keal, 2026-11-17.
+const MEMORY_LINE = 'When the user tells you something lasting about themselves or their work, save it with memory_write; check memory_read before answering about their preferences, people or projects.';
+export const SEARCH_TOOLS_LINE = 'If none of your current tools can handle a request, call search_tools to find one, then call the tool it returns.';
 export const LITE_SYSTEM_BASH = [
   ...LITE_SYSTEM.split('\n').slice(0, 3),
-  'Use bash for files, the web, GitHub and maths: search WORDS, curl URL | grep -i WORD, wiki NAME, git, gh, bc; `man` lists',
-  'the custom commands. find(query) searches recipes, memory and past chats; ask_user(question) asks the user something only they know and waits.',
+  'Look things up with web_search and web_fetch; read, write and edit work on files. bash does all of it too, plus GitHub and maths:',
+  'search WORDS, curl URL | grep -i WORD, wiki NAME, git, gh, bc; `man` lists the custom commands. ask_user(question) asks the user something only they know and waits.',
+  SEARCH_TOOLS_LINE,
   GITHUB_LINE,
   MEMORY_LINE,
   'Your context window is small: never cat a whole file or curl a whole page. Pipe into grep, head, tail, sed -n or wc,',
@@ -152,7 +157,7 @@ const plain = () => Boolean(engine.chatOnly && engine.chatOnly(settings.model));
 // prompt never leaves a usable tool unnamed: web_search was declared but never mentioned, and a model went
 // looking for it through tool_info instead of calling it.
 function toolNamesLine(phase, known = []) {
-  if (!gated() || phase === 'final') return '';
+  if (!gated() || deferring() || phase === 'final') return '';
   const all = phaseTools(phase === 'step').map(t => t.name);
   const ready = all.filter(n => GATE.includes(n) || known.includes(n));
   const byName = new Map(listTools().map(t => [t.spec.name, t.group || 'other']));
@@ -177,10 +182,10 @@ function systemPrompt(threadId, session, phase = 'chat', known = []) {
         ? `Workspace, through bash: /home is your own folder (synced to the user's devices); /repos/<name> holds clones of their GitHub repos. For code: git clone, git checkout -b (an agent/ branch; those push freely, any other branch asks the user first, and a refused push is final), edit the files, git commit -m, git push, then gh pr create if they want a review.`
         : `Workspace: /home is your own folder (synced to the user's devices); /repos/<name> holds clones of their GitHub repos. For code: git_clone, git_branch (an agent/ branch; those push freely, any other branch asks the user first, and a refused push is final), edit, git_commit, git_push, then github_open_pr if they want a review.`,
     bashSurface()
-      ? `Don't guess. For current information or anything you're unsure of: search WORDS, then curl the best links (pipe into grep for the part you need), and say which sites you used. Maths: echo "…" | bc -l. find(query) searches recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`
+      ? `Don't guess. For current information or anything you're unsure of: web_search, then web_fetch the best links (or search WORDS and curl in bash, piping into grep for the part you need), and say which sites you used. Files: read, write, edit (or bash). Maths: echo "…" | bc -l. find(query) searches recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`
       : `Don't guess. For current information or anything you're unsure of: web_search, then fetch_url the best results, and say which sites you used. Maths goes through calculate. find(query) searches your tools, recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`,
     bashSurface()
-      ? `Save lasting facts about the user or their projects (preferences, decisions, names) with remember (scope "this chat" for what only matters here). Your context window is only ${settings.contextSize} tokens and every result says how much is left, so be careful with anything that could be long (files, web pages, command output): never cat a whole file or curl a whole page into your view. Pipe it through grep, head, tail, sed -n, wc or jq, or save it to a file (curl URL > /tmp/page.txt) and work on that file in small pieces.`
+      ? `Save lasting facts about the user or their projects (preferences, decisions, names) with memory_write (scope "this chat" for what only matters here); memory_read reads them back. Your context window is only ${settings.contextSize} tokens and every result says how much is left, so be careful with anything that could be long (files, web pages, command output): never cat a whole file or curl a whole page into your view. Pipe it through grep, head, tail, sed -n, wc or jq, or save it to a file (curl URL > /tmp/page.txt) and work on that file in small pieces.`
       : `Save lasting facts about the user or their projects (preferences, decisions, names) with remember (scope "this chat" for what only matters here); search_history finds past conversations. Your context window is ${settings.contextSize} tokens and every tool result says how much is left: prefer grep and read_file line ranges, and keep notes with note on longer work without a plan.`,
     managed() ? UPFRONT : '',
     names,
@@ -228,17 +233,32 @@ const BIG_ONLY = ['wikidata_query'];
 // Tiny Gemma 4 keep the separate tools: those, and Squiggle Small's fenced prompt, are what they were trained on.
 export const bashSurface = () => settings.toolSurface === 'bash'
   && (engine.agentTrained(settings.model) || Boolean(engine.MODELS[settings.model] && engine.MODELS[settings.model].runtime === 'cloud'));
-const BASH_SURFACE = new Set(['bash', 'remember']);
-const onSurface = (name) => (bashSurface() ? BASH_SURFACE.has(name) : name !== 'bash');
+// The bash surface keeps bash (with all its commands) and adds the common harness tools beside it (Keal, 2026-11-17):
+// what Pi, OpenClaw and Hermes give a model, under their names (tools/common.js). The models with the separate
+// Squiggle tools never see these names, and this surface never sees those (read_file, fetch_url, remember…).
+const COMMON_NAMES = new Set(Object.keys(COMMON_FROM));
+const BASH_SURFACE = new Set(['bash', 'read', 'write', 'edit', 'web_search', 'web_fetch', 'memory_read', 'memory_write', 'wiki_lookup', 'search_history', 'forget']);
+const onSurface = (name) => (bashSurface() ? BASH_SURFACE.has(name) : name !== 'bash' && !COMMON_NAMES.has(name));
+// A common tool is on wherever the tool it runs is (a device that switched read_file off has read off too).
+const enabledTool = (name) => !settings.tools || settings.tools.has(name) || (COMMON_FROM[name] && settings.tools.has(COMMON_FROM[name]));
+// Deferred tools (LFM3's own format, from its chat template and model card): agent-trained models on the bash
+// surface declare LOADED and keep the rest out of the prompt with defer_loading until search_tools returns them
+// as tool_reference parts; the template then writes their definitions into the result (<additional_tools>).
+// Replaces tool_info for them; small native models without that training keep the gate.
+const deferring = () => gated() && bashSurface() && engine.agentTrained(settings.model);
+const LOADED = new Set(['bash', 'read', 'write', 'edit', 'web_search', 'web_fetch', 'memory_read', 'memory_write', 'search_tools', 'plan', 'done', 'need', 'ask_user', 'checkpoint']);
+const deferredMarked = (tools, known = []) => tools.map(t => (LOADED.has(t.name) || known.includes(t.name) ? t : { ...t, defer_loading: true }));
+// web_search's own description sends the model to fetch_url; on this surface the reader is web_fetch.
+const surfaceSpec = (t) => (bashSurface() && t.name === 'web_search' ? { ...t, description: t.description.replace(/pass its url to fetch_url/, 'fetch its url with web_fetch') } : t);
 // Demo mode (storage.isLocal: no GitHub sign-in) leaves out the tools that need one: git and GitHub.
 const NEEDS_GITHUB = new Set(listTools().filter(t => t.group === 'git and GitHub').map(t => t.spec.name));
-const modelTools = () => toolSpecs(settings.tools).filter(t => onSurface(t.name) && !(lite() && BIG_ONLY.includes(t.name)) && !(storage.isLocal() && NEEDS_GITHUB.has(t.name)));
+const modelTools = () => toolSpecs(null).filter(t => enabledTool(t.name)).map(surfaceSpec).filter(t => onSurface(t.name) && !(lite() && BIG_ONLY.includes(t.name)) && !(storage.isLocal() && NEEDS_GITHUB.has(t.name)));
 
 function phaseTools(step) {
   if (plain()) return [];
   const base = modelTools().filter(t => !(step && t.name === 'note'));
   const h = tasks.HARNESS_SPECS;
-  const info = gated() ? [tasks.TOOL_INFO_SPEC] : [];
+  const info = deferring() ? [tasks.SEARCH_TOOLS_SPEC] : gated() ? [tasks.TOOL_INFO_SPEC] : [];
   const ask = h[askName()];
   if (managed()) return [...base, tasks.MANAGED_SPECS.plan, ...(step ? [h.done] : []), ask, h.find, ...info, tasks.MANAGED_SPECS.checkpoint];
   return [...base, h.plan, ...(step ? [h.done] : []), ask, h.find, ...info];
@@ -249,6 +269,7 @@ function phaseTools(step) {
 function toolCost(tools, known = []) {
   if (plain()) return 0;
   if (lite() && !native()) return 300;
+  if (deferring()) return estTokens(JSON.stringify(tools.filter(t => LOADED.has(t.name) || known.includes(t.name))));
   if (gated()) {
     const ready = tools.filter(t => GATE.includes(t.name) || known.includes(t.name));
     // Formats that list the rest by name too (engine info toolNames: LFM2 on WebLLM) pay for {"name": …} each.
@@ -468,8 +489,10 @@ class Turn {
   // the engine and which of them the model sees in full (gated small models: the GATE set and what's known; the
   // fenced format: names only, details through find), and the messages it starts with.
   async open(phase, cfg) {
+    if (deferring() && cfg.tools) cfg = { ...cfg, tools: deferredMarked(cfg.tools, cfg.known || []), gate: null };
     const names = (cfg.tools || []).map(t => t.name);
-    const declared = !(cfg.tools || []).length ? [] : lite() && !native() ? [] : cfg.gate ? names.filter(n => cfg.gate.includes(n) || (cfg.known || []).includes(n)) : null;
+    const declared = !(cfg.tools || []).length ? [] : lite() && !native() ? [] : cfg.gate ? names.filter(n => cfg.gate.includes(n) || (cfg.known || []).includes(n))
+      : cfg.tools.some(t => t.defer_loading) ? cfg.tools.filter(t => !t.defer_loading).map(t => t.name) : null;
     openConv(this.trace, { phase, system: cfg.system, tools: cfg.tools || [], declared, messages: cfg.messages || [], model: (engine.MODELS[settings.model] || {}).label || settings.model });
     takeRendered();
     this.conv = await engine.conversation(cfg);
@@ -687,7 +710,7 @@ class Turn {
   // Out of room in the chat phase with more to do: the harness's own checkpoint. What this reply's tools returned
   // (in short, wrapped as untrusted) and the call the model was about to make carry over into a fresh context.
   carryOn(calls = []) {
-    const done = this.reply.tools.filter(t => t.ok !== false && !['plan', 'done', 'tool_info', 'checkpoint'].includes(t.name));
+    const done = this.reply.tools.filter(t => t.ok !== false && !['plan', 'done', 'tool_info', 'search_tools', 'checkpoint'].includes(t.name));
     let budget = Math.floor(settings.contextSize * 0.3 * 3.2);   // characters: about 30% of a fresh window
     const lines = [];
     for (const t of done.slice().reverse()) {
@@ -771,7 +794,7 @@ class Turn {
     }
     // Still in the chat phase. With tools already run, it carries on in a fresh context from what they found
     // (carryOn); with none, the first reply carries on from the words it had.
-    if (this.reply.tools.some(t => t.ok !== false && !['plan', 'done', 'tool_info', 'checkpoint'].includes(t.name))) return this.steps(this.carryOn());
+    if (this.reply.tools.some(t => t.ok !== false && !['plan', 'done', 'tool_info', 'search_tools', 'checkpoint'].includes(t.name))) return this.steps(this.carryOn());
     this.carry = cp.model === settings.model ? cp.raw || '' : '';
     const t = await this.chat();
     if (t) await this.steps(t);
@@ -1137,6 +1160,7 @@ class Turn {
       return { response: { found: text, ...(tools.length ? { tools } : {}), ...(name === 'ask_user' ? { not_asked: 'This was already saved, so the user was not asked. If it answers your question, use it; if not, call ask_user again with the same question and it goes to the user.' } : {}) } };
     }
     if (name === 'tool_info') return { response: this.toolInfo(args, task, step) };
+    if (name === 'search_tools') return { response: this.searchTools(args, task, step) };
     if (name === 'done') return { response: { error: 'There is no step to finish yet. Call plan first, or just answer.' } };
     const key = repeatKey(name, args), earlier = key && this.seen.get(key);
     if (earlier) {
@@ -1171,6 +1195,24 @@ class Turn {
     if (missing.length || !want.length) response.error = `${want.length ? `No tool named ${missing.join(', ')}.` : 'Give the names of the tools you want.'} Tools you can ask about: ${avail.filter(n => !GATE.includes(n)).join(', ')}.`;
     if (task) tasks.logCall(task, step, { name: 'tool_info', args, ok: found.length > 0, label: `tool_info ${found.join(', ') || '(nothing)'}` });
     this.toolEvent({ name: 'tool_info', label: found.length ? `looked up how to call ${found.join(', ')}` : 'looked up tools (none matched)', ok: found.length > 0, args, error: response.error });
+    return response;
+  }
+
+  // `search_tools` (deferred tools, LFM3's format): the deferred tools that fit the query, at most five, returned
+  // as tool_reference parts (`tool_references`; engine-wllama.js nativeMessages turns them into content parts and
+  // the template writes their definitions into the result). They count as known for the rest of the step or phase.
+  searchTools(args, task, step) {
+    const query = String(args.query || args.q || (Array.isArray(args.names) ? args.names.join(' ') : args.names) || '').trim();
+    const avail = phaseTools(Boolean(step)).filter(t => !LOADED.has(t.name));
+    const named = avail.filter(t => query.toLowerCase().split(/[\s,]+/).includes(t.name));
+    const ranked = query ? rankTools(query, avail, { k: 5 }).map(r => avail.find(t => t.name === r.name)).filter(Boolean) : [];
+    const found = [...new Set([...named, ...ranked].map(t => t.name))].slice(0, 5);
+    if (task && found.length) task.tools = [...new Set([...(task.tools || []), ...found])];
+    const response = found.length
+      ? { text: `Found ${found.length} tool${found.length === 1 ? '' : 's'}.`, tool_references: found }
+      : { text: `No tool matched "${query}". The catalog: ${avail.map(t => `${t.name} (${String(t.description || '').split(/(?<=\.)\s/)[0]})`).join('; ')}. Search again with a name to get one, or use the tools you have (bash runs any command).` };
+    if (task) tasks.logCall(task, step, { name: 'search_tools', args, ok: found.length > 0, label: `search_tools ${found.join(', ') || '(nothing)'}` });
+    this.toolEvent({ name: 'search_tools', label: found.length ? `found tools: ${found.join(', ')}` : `searched tools for "${truncate(query, 40)}" (none)`, ok: found.length > 0, args });
     return response;
   }
 
