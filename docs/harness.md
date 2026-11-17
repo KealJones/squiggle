@@ -408,17 +408,24 @@ referenced tool must still be in `tools` on every request). Its model card's sys
 Anthropic's tool search uses the same field names. So for agent-trained models on the bash surface
 (agent.js `deferring()`), instead of the gate and `tool_info`:
 
-- Declared up front (`LOADED`): `bash` with every command it had, `web_search`, `web_fetch` and `search_tools` (plus
-  `done` in a step and `checkpoint` in AI-managed mode). Keal, 2026-11-17: files, memory, plan and ask_user wait to be
-  found too (no model had called ask_user yet).
+- Declared up front (`LOADED`): `bash` with every command it had, `web_search`, `web_fetch`, `memory` and
+  `search_tools` (plus `done` in a step and `checkpoint` in AI-managed mode). Keal, 2026-11-17: files, plan and
+  ask_user wait to be found (no model had called ask_user yet); memory stays up front (failures.md case 22).
 - Deferred, and named by name only at the end of the system prompt (`deferredLine`: "More tools, found with
-  search_tools: …", the way Claude's own harness lists deferred tools): the common tools (tools/common.js, each
-  running the Squiggle tool it names, so approvals, path rules and untrusted wrapping are the same): `read`
-  {path, offset, limit}, `write` {path, content}, `edit` {path, edits[{oldText, newText}]} with Pi's schemas and
-  descriptions, `web_fetch` {url, extractMode, maxChars} with OpenClaw's, `memory_read` {query}, `memory_write`
-  {fact, scope}, `session_search` {query} (past chats: Hermes's name; OpenClaw has sessions_search, Claude's apps
-  conversation_search); then `wiki_lookup`, `forget`, `plan`, `ask_user`. No `find`: memory_read and session_search
-  do its job. Found together (`BUNDLES`): read, write and edit; memory_read, memory_write and forget.
+  search_tools: …", the way Claude's own harness lists deferred tools): the file tools (tools/common.js, each
+  running the Squiggle tool it names, so approvals, path rules and untrusted wrapping are the same) `read`
+  {file_path, offset, limit}, `write` {file_path, content}, `edit` {file_path, old_string, new_string, replace_all};
+  `session_search` {query} (past chats: Hermes's name; OpenClaw has sessions_search, Claude's apps
+  conversation_search); `wiki_lookup`, `plan`, `ask_user`. No `find`: the memory section of the prompt and
+  session_search do its job. Found together (`BUNDLES`): read, write and edit.
+- One convention, snake_case names and arguments (Hermes's and Claude's spelling); the other harnesses' spellings
+  of the same argument (path, filePath, oldString, oldText, Pi's edits[], maxChars) are accepted, the schemas name
+  only ours. `web_fetch` {url, extract_mode, max_chars}.
+- `memory` is Hermes's tool: {action: add|replace|remove, target: user|memory, content, old_text}; replace and
+  remove find the entry containing old_text (one, or the matches come back); no read, since what's relevant is in
+  the prompt's memory section. Both targets are facts.jsonl entries kept for every chat.
+- `blindCall`: a deferred tool called before its definition was handed over, with arguments that don't fit it,
+  doesn't run; its definition comes back as a tool_reference and the model calls it again. Arguments that fit run.
 - `search_tools(query)` ranks the deferred tools (find.js `rankTools`, or a name), adds their bundles, and answers `{text, tool_references}`;
   engine-wllama.js `nativeMessages` turns that into content parts, and toolformats/lfm3.js renders them the
   template's way (tests/fixtures/lfm3-template.json has cases rendered by the real template). Where llama.cpp renders

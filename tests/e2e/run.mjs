@@ -1743,13 +1743,13 @@ await check('LFM3 gets bash, the web and search_tools up front, the rest named a
   assert.match(await D.page.textContent('#messages'), /Found for files: read, write, edit\./, 'a file tool brings its bundle');
   const log = await D.page.evaluate(() => window.__engineLog);
   const c = log.find(e => e.type === 'conversation');
-  for (const n of ['bash', 'read', 'write', 'edit', 'web_search', 'web_fetch', 'memory_read', 'memory_write', 'session_search', 'search_tools', 'ask_user', 'plan']) assert.ok(c.tools.includes(n), n + ' in ' + c.tools);
-  for (const n of ['read_file', 'write_file', 'edit_file', 'fetch_url', 'remember', 'recall', 'search_history', 'tool_info', 'calculate', 'find']) assert.ok(!c.tools.includes(n), n + ' should not be in ' + c.tools);
-  assert.deepEqual(c.tools.filter(n => !c.deferred.includes(n)).sort(), ['bash', 'search_tools', 'web_fetch', 'web_search'], 'only the shell, the web and the finder up front');
+  for (const n of ['bash', 'read', 'write', 'edit', 'web_search', 'web_fetch', 'memory', 'session_search', 'search_tools', 'ask_user', 'plan']) assert.ok(c.tools.includes(n), n + ' in ' + c.tools);
+  for (const n of ['read_file', 'write_file', 'edit_file', 'fetch_url', 'remember', 'recall', 'forget', 'memory_read', 'memory_write', 'search_history', 'tool_info', 'calculate', 'find']) assert.ok(!c.tools.includes(n), n + ' should not be in ' + c.tools);
+  assert.deepEqual(c.tools.filter(n => !c.deferred.includes(n)).sort(), ['bash', 'memory', 'search_tools', 'web_fetch', 'web_search'], 'only the shell, the web, memory and the finder up front');
   assert.match(c.system, /If none of your current tools can handle a request, call search_tools to find one, then call the tool it returns\./);
   const line = (c.system.match(/More tools, found with search_tools: (.*)\./) || [])[1] || '';
   assert.deepEqual(line.split(', ').sort(), c.deferred.slice().sort(), 'every deferred tool is named, by name only');
-  assert.match(c.system, /memory_write/);
+  assert.match(c.system, /save it with the memory tool \(add\)/);
   assert.doesNotMatch(c.system, /tool_info|the remember tool/);
   assert.match(c.descriptions.web_search, /web_fetch/, 'web_search points at web_fetch on this surface');
   assert.doesNotMatch(c.descriptions.web_search, /fetch_url/);
@@ -1757,24 +1757,37 @@ await check('LFM3 gets bash, the web and search_tools up front, the rest named a
   assert.ok(found, JSON.stringify(log.map(e => e.type)));
   assert.ok(found.input[0].content[0].response.tool_references.includes('session_search'), JSON.stringify(found.input[0].content[0].response));
   assert.ok(log.some(e => e.type === 'respond' && Array.isArray(e.input) && e.input[0].content[0].name === 'session_search'), 'the found tool ran');
+  const blind = log.find(e => e.type === 'respond' && Array.isArray(e.input) && e.input[0].content[0].name === 'read');
+  assert.ok(blind && JSON.stringify(blind.input[0].content[0].response.tool_references) === '["read"]', 'a blind call with the wrong arguments gets the definition, not a run: ' + JSON.stringify(blind && blind.input));
+  assert.match(blind.input[0].content[0].response.text, /didn't run.*missing file_path; it takes no filename/);
   // The common tools run the Squiggle tools under them, and speak their own names and arguments.
   const r = await D.page.evaluate(async () => {
     const { runTool } = await import('/src/tools.js');
     const session = (await import('/src/sessions.js')).list()[0];
     const run = async (name, args) => (await runTool({ function: { name, arguments: args } }, { session, room: 20000 })).model;
-    const w = await run('write', { path: '/home/notes/plan.md', content: 'one\ntwo\nthree\nfour\n' });
-    const e = await run('edit', { path: '/home/notes/plan.md', edits: [{ oldText: 'two', newText: 'TWO' }, { oldText: 'four', newText: 'FOUR' }] });
-    const bad = await run('edit', { path: '/home/notes/plan.md', edits: [{ oldText: 'nope', newText: 'x' }] });
-    const rd = await run('read', { path: '/home/notes/plan.md', offset: 2, limit: 2 });
-    const mw = await run('memory_write', { fact: 'The user likes short answers.' });
-    const mr = await run('memory_read', {});
-    return { w, e, bad, rd: JSON.stringify(rd), mw, mr: JSON.stringify(mr) };
+    const w = await run('write', { file_path: '/home/notes/plan.md', content: 'one\ntwo\nthree\nfour\n' });
+    const e = await run('edit', { file_path: '/home/notes/plan.md', old_string: 'two', new_string: 'TWO' });
+    const pi = await run('edit', { path: '/home/notes/plan.md', edits: [{ oldText: 'four', newText: 'FOUR' }] });
+    const bad = await run('edit', { file_path: '/home/notes/plan.md', old_string: 'nope', new_string: 'x' });
+    const rd = await run('read', { file_path: '/home/notes/plan.md', offset: 2, limit: 2 });
+    const add1 = await run('memory', { action: 'add', content: 'The user likes short answers.' });
+    const add2 = await run('memory', { action: 'add', target: 'user', content: 'The user deploys on Fridays.' });
+    const both = await run('memory', { action: 'remove', old_text: 'The user' });
+    const repl = await run('memory', { action: 'replace', old_text: 'fridays', content: 'The user deploys on Mondays.' });
+    const gone = await run('memory', { action: 'remove', old_text: 'short answers' });
+    const mem = await import('/src/memory.js');
+    return { w, e, pi, bad, rd: JSON.stringify(rd), add1, add2, both, repl, gone, facts: mem.all().map(f => mem.factText(f)) };
   });
-  assert.ok(!r.w.error && !r.e.error, JSON.stringify(r));
-  assert.match(r.bad.error, /oldText/, 'errors use the common argument names');
-  assert.doesNotMatch(r.bad.error, /old_text|edit_file/);
+  assert.ok(!r.w.error && !r.e.error && !r.pi.error, JSON.stringify(r));
+  assert.match(r.bad.error, /old_string/, 'errors use the arguments the model was given');
+  assert.doesNotMatch(r.bad.error, /old_text|edit_file|read_file/);
   assert.match(r.rd, /TWO/); assert.match(r.rd, /three/); assert.doesNotMatch(r.rd, /FOUR/);
-  assert.match(r.mr, /short answers/);
+  // Hermes's memory tool: an entry found by a piece of its text; "forget that…" removes it.
+  assert.ok(r.add1.ok && r.add2.ok, JSON.stringify(r));
+  assert.match(r.both.error, /in 2 entries/);
+  assert.match(r.repl.replaced, /Fridays/);
+  assert.match(r.gone.removed, /short answers/);
+  assert.deepEqual(r.facts.filter(f => /deploys|short answers/.test(f)), ['The user deploys on Mondays.']);
   await D.ctx.close();
 });
 

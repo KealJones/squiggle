@@ -129,7 +129,9 @@ export async function respond(conv, input, { onText } = {}) {
     const refs = (input[0].content[0].response || {}).tool_references || [];
     return refs.includes('session_search') ? call('session_search', { query: 'eiffel' }) : say(`Looked through your past chats. Found for files: ${refs.join(', ') || 'nothing'}.`, onText);
   }
-  if (Array.isArray(input) && input[0] && input[0].content[0].name === 'session_search') return call('search_tools', { query: 'edit a file' });
+  // Then read, never looked up, with a made-up argument: it doesn't run, its definition comes back (blindCall).
+  if (Array.isArray(input) && input[0] && input[0].content[0].name === 'session_search') return call('read', { filename: '/home/notes/plan.md' });
+  if (Array.isArray(input) && input[0] && input[0].content[0].name === 'read') return call('search_tools', { query: 'edit a file' });
   const scripted = stepScript(conv, input, onText);
   if (scripted) return scripted;
   if (typeof input === 'string') {

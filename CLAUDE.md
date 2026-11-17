@@ -65,7 +65,7 @@ app/                    static app, plain ES modules, no build step
       index.js          registers the built-ins in a fixed order (the order is prompt text for small models)
       workspace.js      /home, /repos and /web path mapping shared by the tools
       files.js notes.js git.js web.js memory.js compute.js   the tools by area (compute.js hosts the run_js sandbox)
-      common.js         read/write/edit/web_fetch/memory_read/memory_write/session_search: the common harness names and schemas (Pi, OpenClaw) on the bash surface, wrapping the tools above
+      common.js         read/write/edit/web_fetch/memory/session_search: the common harness names and schemas (Pi, OpenClaw) on the bash surface, wrapping the tools above
       bash.js           `bash` (lab, settings.toolSurface 'bash'): just-bash (app/vendor/just-bash.js) on the workspace through WorkspaceFs (/home via storage.js so it syncs, /repos and /web via LightningFS, everything else in memory); custom commands git, gh, curl, search, wiki, node, bc call the tools above (approvals and URL rules kept); `man` / `--help` document them
       gitcli.js ghcli.js diff.js   bash's `git` and `gh`, behaving like the real ones (2026-11-12; models know them): real staging (add, then commit; -a), git's own output formats (status, diff, log, show, branch, …), most subcommands and their usual options (`git --help`, `gh --help` list them); runs on isomorphic-git with everything injected, so tests/gitcli.test.js runs it on real repos in Node. Status re-hashes files Squiggle wrote and "racy" ones (changed no earlier than the index), since a size-and-seconds check misses same-size edits. Pushes, pulls and clones still go through git_push/git_pull/git_clone (push policy, never forced; `git push origin <other branch>` passes `pushBranch` in the call context, not as a model-facing parameter). gh: pr/issue/repo/run/workflow/release/search/api/auth with --json/--jq (jq via just-bash's ctx.exec); `gh pr merge`, deleting a branch on GitHub and any `gh api` that isn't a read ask the user (approval card kind 'action'); the storage repo is refused by name (owner/name, -R, search, graphql) and /repositories/<id>. diff.js: Myers line diff in git's unified format (matches `git diff --diff-algorithm=myers` on 275 of 282 random cases; the rest differ only in where a repeated line is shown) and --stat
       tty.js            a just-bash transform plugin: gives each `gh` whose stdout reaches the terminal (not piped, redirected or in $(…)) GH_FORCE_TTY=true, real gh's own switch, since just-bash never tells a command where its output goes; ghcli prints gh's terminal formats only then (`gh repo list`: header and a table cut to 80 columns, gh's fallback width when it can't measure a terminal; GH_FORCE_TTY=<n> sets it, as in gh)
@@ -125,12 +125,12 @@ docs/                   harness.md (the agent loop contract), failures.md (caseb
   holds the branch's lock ("failed to update ref") is retried like a non-fast-forward, after a random wait that grows
   (2026-11-16: it used to throw, which was CI's flaky e2e for weeks; tests/e2e "six devices sync at the same moment").
 - The bash surface (`agent.bashSurface()`): the model gets `bash` (every custom command kept) plus the common harness
-  tools beside it (tools/common.js, 2026-11-17: `read`, `write`, `edit`, `web_search`, `web_fetch`, `memory_read`,
-  `memory_write`, `session_search`, named and described like Pi/OpenClaw/Hermes, each running the Squiggle tool it wraps) and the harness tools,
-  instead of the separate file, web, git and maths tools. LFM3 gets only bash, web_search, web_fetch and search_tools
-  up front; the rest (files, memory, `session_search`, plan, ask_user…) are deferred (`defer_loading`), named by name
+  tools beside it (tools/common.js, 2026-11-17: `read`, `write`, `edit`, `web_search`, `web_fetch`, Hermes's `memory`
+  (add/replace/remove by a piece of the text) and `session_search`, snake_case names and arguments, each running the Squiggle tool it wraps) and the harness tools,
+  instead of the separate file, web, git and maths tools. LFM3 gets only bash, web_search, web_fetch, memory and search_tools
+  up front; the rest (files, `session_search`, plan, ask_user…) are deferred (`defer_loading`), named by name
   at the end of its prompt, and found with `search_tools`, answered as `tool_reference` parts its template expands
-  (docs/harness.md "Deferred tools"). Commands that reach the network, GitHub or the sandbox go through `runTool` with the
+  (docs/harness.md "Deferred tools"); one called blind with arguments that don't fit gets its definition back instead of running. Commands that reach the network, GitHub or the sandbox go through `runTool` with the
   agent's context, so a push still needs the approval card and curl fetches any URL (the allowed-URL check stays on fetch_url for the two fine-tunes); the whole output is
   wrapped as untrusted; `.git` stays unreachable (`guard.resolveAgentPath`).
 - No tool cuts its output (Keal, 2026-11-15): bash, curl, read_file, grep, git log, run_js, wiki and the rest return

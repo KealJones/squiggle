@@ -1,24 +1,32 @@
-// The tools every agent harness LFM3 was trained in gives a model, under their usual names and schemas (Keal,
-// 2026-11-17): Pi's read / write / edit (OpenClaw uses Pi's), OpenClaw's web_fetch (web_search already has the
-// common name and schema, web.js), memory_read / memory_write, and Hermes's session_search. They sit next to bash on the bash surface
-// (agent.js BASH_SURFACE); bash keeps its own commands for all of it too. Each one runs the Squiggle tool that
-// already does the job, so approvals, path rules and untrusted wrapping are unchanged; the fine-tunes keep the
-// old names (read_file, write_file, edit_file, fetch_url, remember, recall) they were trained on.
+// The tools the agent harnesses LFM3 was benched in give a model, under their usual names (Keal, 2026-11-17): read,
+// write, edit, web_fetch, Hermes's memory and session_search (web_search already has the common name and schema,
+// web.js). They sit next to bash on the bash surface (agent.js BASH_SURFACE); bash keeps its own commands for all of
+// it too. Each one runs the Squiggle tool that already does the job, so approvals, path rules and untrusted wrapping
+// are unchanged; the fine-tunes keep the old names (read_file, write_file, edit_file, fetch_url, remember, recall,
+// search_history) they were trained on.
 //
-// Descriptions are Pi's and OpenClaw's own words, minus their output caps: no Squiggle tool cuts its output
-// (Keal, 2026-11-15), so "use offset/limit" stays as advice rather than a limit.
-import { defineTool, params, str, num, oneOf } from './registry.js';
+// One convention: snake_case names and arguments (Keal, 2026-11-17), as Hermes and Claude's tools write them
+// (file_path, old_string, new_string, replace_all, old_text). The other harnesses' spellings of the same argument
+// (path, filePath, oldString, oldText, maxChars…) are accepted too, since a model brings the habits of the one it
+// knows; the schemas name only ours. No tool cuts its output (Keal, 2026-11-15).
+import { defineTool, params, str, num, bool, oneOf } from './registry.js';
 import { readFile, writeFile, editFile } from './files.js';
 import { fetchUrl } from './web.js';
-import { remember, recall, searchHistory } from './memory.js';
+import { remember, searchHistory } from './memory.js';
 import * as memory from '../memory.js';
 
 // What each common tool runs (and is enabled by: a device that switched read_file off has read off too).
-export const COMMON_FROM = { read: 'read_file', write: 'write_file', edit: 'edit_file', web_fetch: 'fetch_url', memory_read: 'recall', memory_write: 'remember', session_search: 'search_history' };
+export const COMMON_FROM = { read: 'read_file', write: 'write_file', edit: 'edit_file', web_fetch: 'fetch_url', memory: 'remember', session_search: 'search_history' };
+
+// The first of these arguments the call has (other harnesses' spellings of the same thing).
+const pick = (args, ...names) => { for (const n of names) if (args[n] !== undefined && args[n] !== null) return args[n]; return undefined; };
+const PATH = ['file_path', 'path', 'filePath', 'file'];
+const PATHS = { path: 'file_path', filePath: 'file_path', file: 'file_path' };
+const EDITS = { ...PATHS, oldString: 'old_string', oldText: 'old_string', old_text: 'old_string', newString: 'new_string', newText: 'new_string', new_text: 'new_string', replaceAll: 'replace_all' };
 
 // The wrapped tools' messages name the old tools and arguments; the model on this surface knows the new ones.
 const RENAMES = [[/\bread_file\b/g, 'read'], [/\bwrite_file\b/g, 'write'], [/\bedit_file\b/g, 'edit'], [/\bfetch_url\b/g, 'web_fetch'],
-  [/, or set replace_all: true\./g, '.'], [/\bold_text\b/g, 'oldText'], [/\bnew_text\b/g, 'newText'], [/\bstart_line\b/g, 'offset'], [/\bend_line\b/g, 'limit']];
+  [/\bold_text\b/g, 'old_string'], [/\bnew_text\b/g, 'new_string'], [/\bstart_line\b/g, 'offset'], [/\bend_line\b/g, 'limit']];
 const renamed = (v) => {
   if (typeof v === 'string') return RENAMES.reduce((s, [a, b]) => s.replace(a, b), v);
   if (Array.isArray(v)) return v.map(renamed);
@@ -30,61 +38,59 @@ const relabel = (r) => (r && r.model ? { ...r, model: renamed(r.model) } : r);
 export const read = defineTool({
   name: 'read',
   group: 'files',
-  description: 'Read the contents of a file. Use offset/limit for large files: read the part you need, then continue with offset.',
+  description: 'Read a file. Lines are numbered from 1; for a large file read the part you need with offset and limit, then continue from where it stopped.',
   parameters: params({
-    path: str('Path to the file to read (relative or absolute)'),
-    offset: num('Line number to start reading from (1-indexed)'),
-    limit: num('Maximum number of lines to read'),
-  }, ['path']),
-  async run({ path, offset, limit }, ctx = {}) {
-    const start = Math.max(1, Number(offset) || 1);
-    const end = Number(limit) > 0 ? start + Number(limit) - 1 : undefined;
-    return relabel(await readFile.run({ path, start_line: start, end_line: end }, ctx));
+    file_path: str('Path to the file, e.g. /home/notes/todo.md'),
+    offset: num('Line to start reading from (1 = the first line)'),
+    limit: num('How many lines to read'),
+  }, ['file_path']),
+  aliases: { ...PATHS, lines: 'limit' },
+  async run(args, ctx = {}) {
+    const start = Math.max(1, Number(args.offset) || 1);
+    const limit = Number(pick(args, 'limit', 'lines'));
+    return relabel(await readFile.run({ path: pick(args, ...PATH), start_line: start, end_line: limit > 0 ? start + limit - 1 : undefined }, ctx));
   },
 });
 
 export const write = defineTool({
   name: 'write',
   group: 'files',
-  description: 'Write content to a file. Creates the file if it doesn\'t exist, overwrites if it does. Automatically creates parent directories.',
+  description: 'Write a file: creates it, or replaces it if it exists, making any folders it needs. To change part of a file, use edit.',
   parameters: params({
-    path: str('Path to the file to write (relative or absolute)'),
-    content: str('Content to write to the file'),
-  }, ['path', 'content']),
-  async run({ path, content }, ctx = {}) {
-    return relabel(await writeFile.run({ path, content, overwrite: true }, ctx));
+    file_path: str('Path to the file, e.g. /home/notes/todo.md'),
+    content: str('The whole content of the file'),
+  }, ['file_path', 'content']),
+  aliases: { ...PATHS, text: 'content' },
+  async run(args, ctx = {}) {
+    return relabel(await writeFile.run({ path: pick(args, ...PATH), content: pick(args, 'content', 'text'), overwrite: true }, ctx));
   },
 });
 
 export const edit = defineTool({
   name: 'edit',
   group: 'files',
-  description: 'Edit a single file using exact text replacement. Every edits[].oldText must match a unique, non-overlapping region of the original file. If two changes affect the same block or nearby lines, merge them into one edit instead of emitting overlapping edits. Do not include large unchanged regions just to connect distant changes.',
+  description: 'Replace text in a file. old_string must match the file exactly, spaces and line breaks included, and only once (add surrounding lines to make it unique), unless replace_all is true. Read the part you change first.',
   parameters: params({
-    path: str('Path to the file to edit (relative or absolute)'),
-    edits: {
-      type: 'array',
-      description: 'One or more targeted replacements. Each edit is matched against the original file, not incrementally. Do not include overlapping or nested edits. If two changes touch the same block or nearby lines, merge them into one edit instead.',
-      items: {
-        type: 'object',
-        properties: {
-          oldText: str('Exact text for one targeted replacement. It must be unique in the original file and must not overlap with any other edits[].oldText in the same call.'),
-          newText: str('Replacement text for this targeted edit.'),
-        },
-        required: ['oldText', 'newText'],
-      },
-    },
-  }, ['path', 'edits']),
-  async run({ path, edits, oldText, newText }, ctx = {}) {
-    // The older single-edit shape (Pi before edits[]) is accepted too.
-    const list = Array.isArray(edits) ? edits : oldText != null ? [{ oldText, newText }] : [];
-    if (!list.length) return { model: { error: 'Give edits: [{ oldText, newText }], with oldText copied exactly from the file.' } };
+    file_path: str('Path to the file, e.g. /home/notes/todo.md'),
+    old_string: str('The exact text to replace'),
+    new_string: str('What to put in its place'),
+    replace_all: bool('Replace every match instead of exactly one'),
+  }, ['file_path', 'old_string', 'new_string']),
+  aliases: EDITS,
+  // Pi's edits[{oldText, newText}] list: its first edit fills the two required arguments; run applies the whole list.
+  prepare: (a) => (Array.isArray(a.edits) && a.edits[0] && a.old_string === undefined
+    ? { ...a, old_string: pick(a.edits[0], 'old_string', 'oldString', 'oldText', 'old_text'), new_string: pick(a.edits[0], 'new_string', 'newString', 'newText', 'new_text') ?? '' } : a),
+  async run(args, ctx = {}) {
+    const path = pick(args, ...PATH);
+    // Pi's edits[{oldText, newText}] list works too, applied in order.
+    const list = Array.isArray(args.edits) ? args.edits.map(e => e || {})
+      : [{ old_string: pick(args, 'old_string', 'oldString', 'oldText', 'old_text'), new_string: pick(args, 'new_string', 'newString', 'newText', 'new_text') }];
     let last = null;
     for (const [i, e] of list.entries()) {
-      const r = relabel(await editFile.run({ path, old_text: e && e.oldText, new_text: (e && e.newText) || '' }, ctx));
-      if (r.model && r.model.error) {
-        return { ...r, model: { error: list.length > 1 ? `edits[${i}]: ${r.model.error}${i ? ` (edits before it were applied)` : ''}` : r.model.error } };
-      }
+      const from = pick(e, 'old_string', 'oldString', 'oldText', 'old_text');
+      if (from === undefined) return { model: { error: 'Give old_string (the exact text to replace) and new_string.' } };
+      const r = relabel(await editFile.run({ path, old_text: from, new_text: pick(e, 'new_string', 'newString', 'newText', 'new_text') || '', replace_all: Boolean(pick(args, 'replace_all', 'replaceAll')) }, ctx));
+      if (r.model && r.model.error) return { ...r, model: { error: list.length > 1 ? `edits[${i}]: ${r.model.error}${i ? ' (the edits before it were applied)' : ''}` : r.model.error } };
       last = r;
     }
     return list.length > 1 ? { ...last, model: { ...last.model, edits: list.length }, label: `${last.label} (${list.length} edits)` } : last;
@@ -94,16 +100,17 @@ export const edit = defineTool({
 export const webFetch = defineTool({
   name: 'web_fetch',
   group: 'web',
-  description: 'Fetch and extract readable content from a URL (HTML → markdown/text).',
+  description: 'Fetch a web page and give back its readable text (HTML turned into markdown or plain text).',
   parameters: params({
-    url: str('HTTP or HTTPS URL to fetch'),
-    extractMode: oneOf(['markdown', 'text'], 'Extraction mode ("markdown" or "text")'),
-    maxChars: num('Maximum characters to return'),
+    url: str('The http or https URL'),
+    extract_mode: oneOf(['markdown', 'text'], 'markdown (default) or text'),
+    max_chars: num('Give back at most this many characters'),
   }, ['url']),
-  async run({ url, maxChars }, ctx = {}) {
-    const r = relabel(await fetchUrl.run({ url }, ctx));
+  aliases: { extractMode: 'extract_mode', maxChars: 'max_chars' },
+  async run(args, ctx = {}) {
+    const r = relabel(await fetchUrl.run({ url: args.url }, ctx));
     // The model asked for less: its own cut, not Squiggle's.
-    const n = Number(maxChars);
+    const n = Number(pick(args, 'max_chars', 'maxChars'));
     if (n > 0 && r.model) {
       const t = r.model.text;
       const m = typeof t === 'string' && t.match(/^(\s*<untrusted[^>]*>\n?)([\s\S]*?)(\n?<\/untrusted>\s*)$/);
@@ -114,26 +121,42 @@ export const webFetch = defineTool({
   },
 });
 
-export const memoryRead = defineTool({
-  name: 'memory_read',
+// Hermes's memory tool (Keal, 2026-11-17): one tool, add / replace / remove, an entry found by a piece of its text.
+// No read: what's relevant is already in the prompt (the memory section). Its two targets (the user's profile, the
+// agent's own notes) both live in memory/facts.jsonl here, kept for every chat. "Forget that…" is a remove, so a
+// model never has to save the opposite instead (LFM3 1.7B did, on the CPU, 2026-11-17).
+const matching = (old) => {
+  const q = String(old || '').trim().toLowerCase();
+  return q ? memory.all().filter(f => memory.factText(f).toLowerCase().includes(q)) : [];
+};
+const listed = (facts) => facts.slice(0, 12).map(f => memory.factText(f));
+export const memoryTool = defineTool({
+  name: 'memory',
   group: 'memory',
-  description: 'Read what you have saved about the user and their projects: the facts matching query, or the most recent ones without a query. Check it before answering anything about their preferences, decisions, people or work.',
-  parameters: params({ query: str('What to look for, e.g. "git preferences"') }),
-  async run({ query }, ctx = {}) {
-    const q = String(query || '').trim();
-    if (q) return relabel(await recall.run({ query: q }, ctx));
-    const recent = memory.all().slice(-12).reverse();
-    return { model: { facts: recent.map(f => ({ id: f.id, fact: memory.factText(f) })) }, label: 'read memory (most recent)' };
-  },
-});
-
-export const memoryWrite = defineTool({
-  name: 'memory_write',
-  group: 'memory',
-  description: 'Save something to remember, in one sentence about the user ("The user likes short answers", not "I like…"): a fact about them or their projects (preferences, decisions, names, how things work). "everywhere" (the default) keeps it for every chat; "this chat" keeps it only here.',
-  parameters: params({ fact: str('What to remember, e.g. "Keal prefers short answers"'), scope: oneOf(['everywhere', 'this chat'], 'everywhere (default) or this chat') }, ['fact']),
+  description: 'Save what lasts across chats: the user\'s preferences, corrections, names, decisions, how their things work. Not task progress or what happened in a chat (session_search finds those). add saves a new entry, one sentence about the user ("The user likes short answers"). replace changes the entry containing old_text; remove deletes it, for when the user says it is wrong or asks you to forget it. old_text only needs to be a short piece of the entry that matches just that one.',
+  parameters: params({
+    action: oneOf(['add', 'replace', 'remove'], 'add, replace or remove'),
+    target: oneOf(['user', 'memory'], 'user: about the user (default); memory: your notes on their setup and projects'),
+    content: str('The entry to save (add and replace)'),
+    old_text: str('A short piece of the entry to change or remove (replace and remove)'),
+  }, ['action']),
+  aliases: { oldText: 'old_text', old_string: 'old_text', fact: 'content', text: 'content' },
   async run(args, ctx = {}) {
-    return remember.run(args, ctx);
+    const action = String(args.action || (args.old_text ? 'replace' : 'add')).toLowerCase();
+    const content = pick(args, 'content', 'fact', 'text');
+    if (action === 'add') return remember.run({ fact: content }, ctx);
+    if (action !== 'replace' && action !== 'remove') return { model: { error: `action is add, replace or remove, not "${action}".` } };
+    const old = pick(args, 'old_text', 'oldText', 'old_string');
+    if (!old) return { model: { error: `Give old_text: a short piece of the entry to ${action}.` } };
+    const hits = matching(old);
+    if (!hits.length) return { model: { error: `No saved entry contains "${old}".`, entries: listed(memory.all()) } };
+    if (hits.length > 1) return { model: { error: `"${old}" is in ${hits.length} entries; give a piece that matches only one.`, matches: listed(hits) } };
+    const was = memory.factText(hits[0]);
+    if (action === 'remove') { memory.remove(hits[0].id); return { model: { ok: true, removed: was }, label: `forgot: ${was.slice(0, 60)}` }; }
+    if (!content) return { model: { error: 'Give content: the entry as it should read now.' } };
+    memory.remove(hits[0].id);
+    const r = await remember.run({ fact: content }, ctx);
+    return r.model && r.model.ok ? { ...r, model: { ...r.model, replaced: was }, label: `changed a memory: ${String(content).slice(0, 60)}` } : r;
   },
 });
 
@@ -143,9 +166,10 @@ export const sessionSearch = defineTool({
   group: 'memory',
   description: 'Search the user\'s past conversations (every chat, and files attached to them) for something discussed before: decisions, plans, names, what was said. Use it when the user refers to an earlier chat, or one may hold the answer, before asking them to repeat themselves.',
   parameters: params({ query: str('Words to look for, e.g. "eiffel tower trip"') }, ['query']),
-  async run({ query }, ctx = {}) {
-    return searchHistory.run({ query }, ctx);
+  aliases: { q: 'query' },
+  async run(args, ctx = {}) {
+    return searchHistory.run({ query: pick(args, 'query', 'q') }, ctx);
   },
 });
 
-export const COMMON = [read, write, edit, webFetch, memoryRead, memoryWrite, sessionSearch];
+export const COMMON = [read, write, edit, webFetch, memoryTool, sessionSearch];

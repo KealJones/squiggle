@@ -128,7 +128,18 @@ test('case 21: "what do you remember about me" finds the facts; LFM3\'s prompt s
   assert.deepEqual(rankFacts(live, 'me').map(r => r.fact.id), ['f']);
   const src = readFileSync(new URL('../app/src/agent.js', import.meta.url), 'utf8');
   assert.match(src, /LITE_SYSTEM_BASH = \[[^\]]*MEMORY_LINE,/);
-  assert.match(src, /const MEMORY_LINE = 'When the user tells you something lasting about themselves or their work, save it with memory_write; check memory_read before/);
+  assert.match(src, /const MEMORY_LINE = 'When the user tells you something lasting about themselves or their work, save it with the memory tool \(add\); when it changes, or they ask you to forget it, replace or remove that entry\./);
   const mem = readFileSync(new URL('../app/src/tools/memory.js', import.meta.url), 'utf8');
   assert.match(mem, /The user says: \$\{text\}/);
+});
+
+test('case 22: "forget that I like short answers" saved the opposite; LFM3 gets Hermes\'s memory tool, and a blind call gets the definition', async () => {
+  const { memoryTool, COMMON_FROM } = await import('../app/src/tools/common.js');
+  const p = memoryTool.spec.parameters;
+  assert.deepEqual(p.properties.action.enum, ['add', 'replace', 'remove'], 'forgetting is an action of the same tool, not a separate one to find');
+  assert.ok(p.properties.old_text && p.properties.content && p.properties.target, 'Hermes\'s argument names');
+  assert.equal(COMMON_FROM.memory, 'remember');
+  const src = readFileSync(new URL('../app/src/agent.js', import.meta.url), 'utf8');
+  assert.match(src, /const LOADED = new Set\(\[[^\]]*'memory'/, 'memory is loaded up front, never called from its name alone');
+  assert.match(src, /if \(blind\) return \{ response: blind \};/, 'a deferred tool called with arguments that don\'t fit doesn\'t run');
 });
