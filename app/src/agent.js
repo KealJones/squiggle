@@ -24,6 +24,7 @@ import { report } from './incidents.js';
 import { Checkpoint, decide as resumeDecide, repeatKey } from './resume.js';
 import { parseJsonl } from './merge.js';
 import { attachmentPrompt, saveAttachments, toRecord } from './attachments.js';
+import { fillPrompt, toTemplate, ownPrompt, ownTools, toolOff, withPrefs, LOCKED } from './prompt.js';
 
 export const settings = {
   model: 'E2B',
@@ -162,8 +163,24 @@ function toolNamesLine(phase, known = []) {
     groups.size ? `Other tools, by area: ${[...groups].map(([g, names]) => `${g}: ${names.join(', ')}`).join('; ')}. To use one, first call tool_info(names) with every one you expect to need.` : ''].filter(Boolean).join('\n');
 }
 
+// A chat with its own system prompt (prompt.js, edited in the chat details) gets that text in every phase instead
+// of the one built below; an empty one means no prompt from Squiggle. Chat-only models still get none.
 function systemPrompt(threadId, session, phase = 'chat', known = []) {
-  if (plain() || noPrompt()) return '';
+  if (plain()) return '';
+  const own = ownPrompt(session);
+  if (own != null) return fillPrompt(own, { names: toolNamesLine(phase, known) });
+  return builtPrompt(threadId, session, phase, known);
+}
+
+// The editor's starting text: the prompt this chat would get from Squiggle right now (its model and context type),
+// with the tool-names line and the date as placeholders.
+export function promptTemplate(session) {
+  if (plain()) return '';
+  return withChat(session, () => toTemplate(builtPrompt(null, session, 'chat', []), { names: toolNamesLine('chat', []) }));
+}
+
+function builtPrompt(threadId, session, phase = 'chat', known = []) {
+  if (noPrompt()) return '';
   const names = toolNamesLine(phase, known);
   if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : bashSurface() ? (storage.isLocal() ? LITE_SYSTEM_BASH.replace(GITHUB_LINE + '\n', '') : LITE_SYSTEM_BASH) : LITE_SYSTEM_NATIVE}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
   const thread = threadId && session.threads[threadId];
@@ -232,7 +249,10 @@ const BASH_SURFACE = new Set(['bash', 'remember']);
 const onSurface = (name) => (bashSurface() ? BASH_SURFACE.has(name) : name !== 'bash');
 // Demo mode (storage.isLocal: no GitHub sign-in) leaves out the tools that need one: git and GitHub.
 const NEEDS_GITHUB = new Set(listTools().filter(t => t.group === 'git and GitHub').map(t => t.spec.name));
-const modelTools = () => toolSpecs(settings.tools).filter(t => onSurface(t.name) && !(lite() && BIG_ONLY.includes(t.name)) && !(storage.isLocal() && NEEDS_GITHUB.has(t.name)));
+// The open chat's own tool choices (prompt.js ownTools), set at the start of each turn like its model and context type.
+let chatTools = null;
+const isOff = (name) => toolOff(chatTools, name);
+const modelTools = () => withPrefs(chatTools, toolSpecs(settings.tools)).filter(t => onSurface(t.name) && !(lite() && BIG_ONLY.includes(t.name)) && !(storage.isLocal() && NEEDS_GITHUB.has(t.name)));
 
 function phaseTools(step) {
   if (plain()) return [];
@@ -240,8 +260,27 @@ function phaseTools(step) {
   const h = tasks.HARNESS_SPECS;
   const info = gated() ? [tasks.TOOL_INFO_SPEC] : [];
   const ask = h[askName()];
-  if (managed()) return [...base, tasks.MANAGED_SPECS.plan, ...(step ? [h.done] : []), ask, h.find, ...info, tasks.MANAGED_SPECS.checkpoint];
-  return [...base, h.plan, ...(step ? [h.done] : []), ask, h.find, ...info];
+  if (managed()) return withPrefs(chatTools, [...base, tasks.MANAGED_SPECS.plan, ...(step ? [h.done] : []), ask, h.find, ...info, tasks.MANAGED_SPECS.checkpoint]);
+  return withPrefs(chatTools, [...base, h.plan, ...(step ? [h.done] : []), ask, h.find, ...info]);
+}
+
+// Runs fn with a chat's tool choices in effect, then puts back the ones before (the editor reads another chat's).
+function withChat(session, fn) {
+  const before = chatTools;
+  chatTools = ownTools(session);
+  try { return fn(); } finally { chatTools = before; }
+}
+
+// The editor's tool list: every tool this chat's model gets in a reply right now, with Squiggle's description, the
+// chat's own (if edited) and whether it's on. done and checkpoint come with plan and AI-managed context, so they
+// aren't listed on their own.
+export function chatToolList(session) {
+  const prefs = ownTools(session);
+  return withChat(null, () => phaseTools(false)).filter(t => !LOCKED.has(t.name)).map(t => ({
+    name: t.name, description: t.description,
+    text: prefs && prefs.desc && typeof prefs.desc[t.name] === 'string' ? prefs.desc[t.name] : t.description,
+    on: !toolOff(prefs, t.name),
+  }));
 }
 
 // Tokens the tool definitions take: fenced small models see only names and looked-up one-liners (~300);
@@ -300,6 +339,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
         observe: (o) => sessions.addObservation(session, { ...o, thread: threadId }),
       }).catch(e => console.warn('attachments', e));
     }
+    chatTools = ownTools(session);   // this chat's tool choices (prompt.js), for the whole turn
     const turn = new Turn({ session, threadId, shown, attachments, ui, signal, userMsg, resume });
     ui.onStart && ui.onStart(turn.reply);
     tasks.compactOld(session);
@@ -345,7 +385,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
     turn.cp.clear();   // finished, stopped or failed: nothing left to pick up
     reply.content = scrubFakeToolNotes(turn.prefix).trim();
     // Which model wrote it (and how it ran), so a saved chat can be read against the right model.
-    reply.model = replyModel();
+    reply.model = replyModel(session);
     if (turn.thinking) reply.thinking = turn.thinking.slice(-20000); // shown in the UI only; never replayed to the model
     if (turn.task) reply.task = turn.task.id;
     if (signal?.aborted && !reply.content) reply.content = '_(stopped)_';
@@ -369,12 +409,12 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
 
 // The model behind a reply, saved on the message: its id, label and how it ran (on this device, on the GPU or
 // CPU, or on the relay). Labels are kept because MODELS entries come and go.
-function replyModel() {
+function replyModel(session) {
   const id = settings.model;
   const m = engine.MODELS[id] || {};
   const info = engine.smallInfo && engine.smallInfo();
   const how = m.runtime === 'cloud' ? 'relay' : m.runtime === 'litert' ? 'webgpu' : info ? (info.webllm ? 'webllm' : info.gpu ? 'wllama-gpu' : `wllama-cpu${info.threads > 1 ? `-${info.threads}` : ''}`) : m.runtime || '';
-  return { id, label: m.label || id, how, ...(smallModeSwitchable(id) ? { smallMode: smallMode(id) } : {}), ...(noPrompt(id) ? { noPrompt: true } : {}), contextSize: settings.contextSize, contextMode: settings.contextMode };
+  return { id, label: m.label || id, how, ...(smallModeSwitchable(id) ? { smallMode: smallMode(id) } : {}), ...(noPrompt(id) ? { noPrompt: true } : {}), ...(ownPrompt(session) != null ? { ownPrompt: true } : {}), ...(ownTools(session) ? { ownTools: true } : {}), contextSize: settings.contextSize, contextMode: settings.contextMode };
 }
 
 // One turn's state: the reply being written, counters, and the phases.
@@ -626,7 +666,7 @@ class Turn {
         return null;
       }
       // A plan switches to step mode (anything else in the same reply waits for its step).
-      const planCall = r.toolCalls.find(c => c.function && c.function.name === 'plan');
+      const planCall = !isOff('plan') && r.toolCalls.find(c => c.function && c.function.name === 'plan');
       if (planCall) return this.startPlan(planCall.function.arguments);
       // A checkpoint in the chat phase turns the turn into a task, so its summary survives like a step result.
       const cp = managed() && r.toolCalls.find(c => c.function && c.function.name === 'checkpoint');
@@ -1102,6 +1142,11 @@ class Turn {
     const args = (call.function && call.function.arguments) || {};
     this.calls++;
     this.ui.onTool && this.ui.onTool({ name, running: true });
+    // Turned off in this chat (prompt.js): not offered, so a call is refused like an unknown tool.
+    if (isOff(name)) {
+      this.toolEvent({ name, label: `${name} is turned off in this chat`, ok: false, args });
+      return { response: { error: `Unknown tool "${name}".` } };
+    }
     if (name === 'find' || ASKING.has(name)) {
       const asking = ASKING.has(name);
       const query = String(args.query || args.question || args.what || args.q || '').trim();

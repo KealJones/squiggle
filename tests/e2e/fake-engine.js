@@ -61,7 +61,7 @@ export const foreground = (fn) => lock(fn);
 export const background = (fn) => lock(fn);
 
 export async function conversation(cfg) {
-  log.push({ type: 'conversation', system: cfg.system, messages: cfg.messages, tools: cfg.tools.map(t => t.name), known: cfg.known || [] });
+  log.push({ type: 'conversation', system: cfg.system, messages: cfg.messages, tools: cfg.tools.map(t => t.name), toolDesc: Object.fromEntries(cfg.tools.map(t => [t.name, t.description])), known: cfg.known || [] });
   return { cfg, delete: async () => {}, cancel() {}, replaceResult(msg, response) { log.push({ type: 'replace', name: msg.content[0].name, response }); return true; } };
 }
 
