@@ -12,7 +12,7 @@ import * as tasks from './tasks.js';
 import { find as findAll, renderFind, nothingFor, NOTHING, PAST_CHAT, PUSHBACK, checkQuery, rerankWeb, urlLedger, rankTools } from './find.js';
 import * as prefetchLib from './prefetch.js';
 import { buildEntities, resolve as resolveRefs, renderRefs } from './refs.js';
-import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes, chunk, resultGist } from './context.js';
+import { assembleContext, CONTEXT_MODES, summaryBacklog, messageText, scrubFakeToolNotes, chunk, resultGist } from './context.js';
 export { scrubFakeToolNotes };
 import { toolSpecs, listTools, runTool } from './tools.js';
 import { UNTRUSTED_RULES, wrapUntrusted } from './untrusted.js';
@@ -90,6 +90,7 @@ export const LITE_SYSTEM_BASH = [
   'the custom commands. find(query) searches recipes, memory and past chats; ask_user(question) asks the user something only they know and waits.',
   GITHUB_LINE,
   MEMORY_LINE,
+  '`squiggle` tells you about yourself, this chat and their other chats (with links), and renames this chat.',
   'Your context window is small: never cat a whole file or curl a whole page. Pipe into grep, head, tail, sed -n or wc,',
   'or save it to a file (> /tmp/page.txt) and work on the file in small pieces.',
   'Plan only when the request takes more than one step: plan(goal, steps), then done(result) after each step.',
@@ -180,7 +181,7 @@ function systemPrompt(threadId, session, phase = 'chat', known = []) {
       ? `Don't guess. For current information or anything you're unsure of: search WORDS, then curl the best links (pipe into grep for the part you need), and say which sites you used. Maths: echo "…" | bc -l. find(query) searches recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`
       : `Don't guess. For current information or anything you're unsure of: web_search, then fetch_url the best results, and say which sites you used. Maths goes through calculate. find(query) searches your tools, recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`,
     bashSurface()
-      ? `Save lasting facts about the user or their projects (preferences, decisions, names) with remember (scope "this chat" for what only matters here). Your context window is only ${settings.contextSize} tokens and every result says how much is left, so be careful with anything that could be long (files, web pages, command output): never cat a whole file or curl a whole page into your view. Pipe it through grep, head, tail, sed -n, wc or jq, or save it to a file (curl URL > /tmp/page.txt) and work on that file in small pieces.`
+      ? `Save lasting facts about the user or their projects (preferences, decisions, names) with remember (scope "this chat" for what only matters here). \`squiggle\` tells you about yourself, this chat and the user's other chats (with links to them), and renames this chat. Your context window is only ${settings.contextSize} tokens and every result says how much is left, so be careful with anything that could be long (files, web pages, command output): never cat a whole file or curl a whole page into your view. Pipe it through grep, head, tail, sed -n, wc or jq, or save it to a file (curl URL > /tmp/page.txt) and work on that file in small pieces.`
       : `Save lasting facts about the user or their projects (preferences, decisions, names) with remember (scope "this chat" for what only matters here); search_history finds past conversations. Your context window is ${settings.contextSize} tokens and every tool result says how much is left: prefer grep and read_file line ranges, and keep notes with note on longer work without a plan.`,
     managed() ? UPFRONT : '',
     names,
@@ -375,6 +376,23 @@ function replyModel() {
   const info = engine.smallInfo && engine.smallInfo();
   const how = m.runtime === 'cloud' ? 'relay' : m.runtime === 'litert' ? 'webgpu' : info ? (info.webllm ? 'webllm' : info.gpu ? 'wllama-gpu' : `wllama-cpu${info.threads > 1 ? `-${info.threads}` : ''}`) : m.runtime || '';
   return { id, label: m.label || id, how, ...(smallModeSwitchable(id) ? { smallMode: smallMode(id) } : {}), ...(noPrompt(id) ? { noPrompt: true } : {}), contextSize: settings.contextSize, contextMode: settings.contextMode };
+}
+
+// What the agent knows about its own run, for the `squiggle` bash command (tools/self.js): read at call time.
+export function selfInfo() {
+  const id = settings.model;
+  const m = engine.MODELS[id] || {};
+  const cfg = storage.storageConfig && storage.storageConfig();
+  const mode = CONTEXT_MODES[settings.contextMode];
+  return {
+    model: m.label || id, how: engine.runnerLabel ? engine.runnerLabel(id) : '',
+    contextMode: settings.contextMode, contextSize: settings.contextSize, contextHint: mode && mode.hint ? mode.hint.split(/(?<=\.) /)[0] : '',
+    tools: phaseTools(false).map(t => t.name).join(', '),
+    storage: storage.isLocal() ? 'this browser only (demo mode, no GitHub account connected)'
+      : cfg ? `chats, memory and /home sync to the user's private GitHub repo ${cfg.owner}/${cfg.name}` : '',
+    contextModes: CONTEXT_MODES,
+    modelLabel: (x) => (engine.MODELS[x] && engine.MODELS[x].label) || x,
+  };
 }
 
 // One turn's state: the reply being written, counters, and the phases.
@@ -1143,7 +1161,7 @@ class Turn {
       this.toolEvent({ name, label: `${earlier.label} (already ran: same result)`, ok: true, args }, earlier.response);
       return { response: { ...earlier.response, note: 'You already ran this exact call in this task; this is its result from then. Use it; don\'t run it again.' } };
     }
-    const res = await runTool(call, { session: this.session, threadId: this.threadId, room, pageCards: lite() && !plain(), approve: (req) => askApproval(req, this.ui, this.signal),
+    const res = await runTool(call, { session: this.session, threadId: this.threadId, room, pageCards: lite() && !plain(), approve: (req) => askApproval(req, this.ui, this.signal), self: selfInfo(),
       ...(lite() ? { allowUrl: (u) => this.allowUrl(u) } : {}) });
     this.noteUrls(res);
     this.toolEvent({ name: res.name, label: res.label, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
