@@ -17,7 +17,7 @@
 // last assistant turn's (kept as written, inside <think>…</think>). The prompt is rendered here and sent as a raw completion (WebLLM's chat API has no
 // tool turn for this model); the shim adds <|startoftext|> (`bos`). The template puts "<think>\n" at the end
 // of the generation prompt with thinking on; the model's own thinking opens that way too.
-import { splitRaw, fnOf, argsOf } from './text.js';
+import { splitRaw, fnOf, argsOf, heldBack } from './text.js';
 import { parseQwenCalls } from './qwen.js';
 import { pyJson } from './lfm2.js';
 
@@ -133,5 +133,15 @@ export const lfm3Omni = {
   id: 'lfm3-omni',
   thinkStart: OMNI_THINK_START,
   prompt: (history, tools, { thinking, names } = {}) => lfm3Prompt(history, tools, { thinking: thinking !== false, names, thinkStart: OMNI_THINK_START }),
-  split: (raw, ctx) => (openThinking(ctx.prompt) === OMNI_THINK_START ? splitRaw(OMNI_THINK_START + raw, true) : lfm3.split(raw, ctx)),
+  split: (raw, ctx) => (openThinking(ctx.prompt) === OMNI_THINK_START ? omniSplit(OMNI_THINK_START + raw) : lfm3.split(raw, ctx)),
 };
+
+// Started this way Omni often goes from its thinking straight into a tool call without closing </think> (llama.cpp,
+// 2026-11-17: three of four first turns). A <tool_call> in open thinking ends the thinking there, so the call is made.
+function omniSplit(full) {
+  const s = splitRaw(full, true);
+  if (!s.pending) return s;
+  const at = full.indexOf('<tool_call>');
+  if (at >= 0) return { thinking: full.slice(0, at).replace(/^\n+/, '').replace(/\s+$/, ''), text: full.slice(at) };
+  return { ...s, thinking: s.thinking.slice(0, s.thinking.length - heldBack(s.thinking, '<tool_call>')) };
+}

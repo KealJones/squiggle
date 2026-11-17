@@ -291,7 +291,7 @@ once). A model can have several builds (`engine.GROUPS`, `group` on each MODELS 
 shader-f16, Liquid's QAD Q4_0 GGUF, 2026-11-17), then `WLF3QAD` (WebLLM, q4f16 with a q4f32 twin), then `LF3` (GGUF on
 wllama, CPU). LFM3 Omni 2B (`KOMNI`, Keptsam, the default where it runs) is listed beside it as its own model; its
 group falls back to the 1.7B builds. Omni closes an open `<think>` at once (its branch skipped the 1.7B's MOPD and
-agentic RL), so its format (`lfm3-omni`) starts the thinking with "We need to" and shows those words as thinking. The user picks the model; `engine.forDevice` picks the first build
+agentic RL), so its format (`lfm3-omni`) starts the thinking with "We need to" and shows those words as thinking; it often goes from that thinking straight into a tool call without `</think>`, so a `<tool_call>` there ends the thinking. The user picks the model; `engine.forDevice` picks the first build
 that runs here (`runsHere`: WebGPU for GPU builds, shader-f16 for f16-only ones after `probeGpu`, not in
 `settings.avoidBuilds`), and that one build is the only one listed. `initModel` resolves the saved model to it,
 `sessionModel` resolves a chat saved on another device to it, and `cleanupStorage` frees the other build's download.

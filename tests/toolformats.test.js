@@ -188,6 +188,10 @@ test('lfm3-omni starts Omni\'s thinking with the 1.7B\'s own words and shows the
   // The thinking budget writes its own text after <think> (engine-webllm.js takes the started words off first).
   assert.deepEqual(lfm3Omni.split('5 cents.', { prompt: on.slice(0, -OMNI_THINK_START.length) + 'Enough: 5 cents.</think>' }), { thinking: '', text: '5 cents.' });
   assert.equal(lfm3Omni.thinkStart, OMNI_THINK_START);
+  // It often calls a tool without closing its thinking: the call still counts (llama.cpp, 3 of 4 first turns).
+  const call = '<tool_call>\n<function=web_search>\n<parameter=query>\nAda Lovelace Wikipedia\n</parameter>\n</function>\n</tool_call>';
+  assert.deepEqual(lfm3Omni.split(' find her birth date. Use web_search.' + call, { prompt: on }), { thinking: 'We need to find her birth date. Use web_search.', text: call });
+  assert.equal(lfm3Omni.split(' look it up.<tool_', { prompt: on }).thinking, 'We need to look it up.', 'a call starting is held back from the thinking');
 });
 
 test('search_tools results reach LFM3 as tool_reference parts, or as the same text where llama.cpp renders the template', () => {
