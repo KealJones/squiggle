@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseQwenCalls, toWebLLMMessages, toolSystem, splitRaw, createShim, paceGpu, webkitGpu, pacedGpu, routeSelfCopies, selfCopies, reuseWanted } from '../app/src/engine-webllm.js';
+import { parseQwenCalls, toWebLLMMessages, toolSystem, splitRaw, createShim, paceGpu, nextPieces, webkitGpu, pacedGpu, routeSelfCopies, selfCopies, reuseWanted } from '../app/src/engine-webllm.js';
 import { NativeConversation, Conversation } from '../app/src/engine-wllama.js';
 
 const TOOLS = [
@@ -272,6 +272,58 @@ test('paceGpu: a frame-long gap after each prompt piece (Android), none after a 
   t = performance.now();
   await pipe.embedAndForward([[7]], 1);
   assert.ok(performance.now() - t < 30, 'a decoded token does not');
+});
+
+test('paceGpu: a prompt piece that takes too long makes the next ones smaller (a slower or throttled GPU)', async () => {
+  let syncMs = 0;
+  const pipe = { prefillChunkSize: 256, async embedAndForward() { return 'logits'; }, async sync() { await new Promise(r => setTimeout(r, syncMs)); } };
+  const slow = { slowMs: 40, min: 16 };
+  const engine = { loadedModelIdToPipeline: new Map([['m', pipe]]) };
+  paceGpu(engine, 128, 0, slow);
+  const reply = async (...pieces) => { nextPieces(engine); for (const n of pieces) await pipe.embedAndForward([[1]], n); };
+  await reply(128);
+  nextPieces(engine);
+  assert.equal(pipe.prefillChunkSize, 128, 'a fast piece changes nothing');
+  syncMs = 60;
+  await reply(128);
+  assert.equal(pipe.prefillChunkSize, 128, 'not in the middle of a reply: its prompt is already cut at 128 (WebLLM refuses bigger pieces)');
+  await pipe.embedAndForward([[1]], 128);
+  nextPieces(engine);
+  assert.equal(pipe.prefillChunkSize, 64, 'a slow one halves it, from the next reply (two slow pieces in one reply halve it once)');
+  await pipe.embedAndForward([[7]], 1);
+  nextPieces(engine);
+  assert.equal(pipe.prefillChunkSize, 64, 'a generated token is never counted, however slow');
+  await reply(40);
+  nextPieces(engine);
+  assert.equal(pipe.prefillChunkSize, 20, 'a short last piece that was still slow: half of that');
+  await reply(20); await reply(16);
+  nextPieces(engine);
+  assert.equal(pipe.prefillChunkSize, 16, 'never below the minimum');
+  // Timed while the page was hidden (Safari pauses the GPU): says nothing about the GPU's speed.
+  const doc = globalThis.document;
+  globalThis.document = { visibilityState: 'hidden' };
+  try {
+    const other = { prefillChunkSize: 256, async embedAndForward() {}, async sync() { await new Promise(r => setTimeout(r, 60)); } };
+    paceGpu({ loadedModelIdToPipeline: new Map([['o', other]]) }, 128, 0, slow);
+    await other.embedAndForward([[1]], 128);
+    assert.equal(other.prefillChunkSize, 128);
+  } finally { if (doc === undefined) delete globalThis.document; else globalThis.document = doc; }
+});
+
+test('paceGpu: a piece size that came down on a slow GPU is kept when the model is loaded again', async () => {
+  const pipeOf = (size) => ({ prefillChunkSize: size, async embedAndForward() {}, async sync() {} });
+  const dead = disposedEngine(), fresh = fakeEngine('Hi!');
+  dead.loadedModelIdToPipeline = new Map([['m', pipeOf(256)]]);
+  fresh.loadedModelIdToPipeline = new Map([['m', pipeOf(256)]]);
+  const w = await createShim('Llama-3.2-1B-Instruct-q4f16_1-MLC', 4096, () => {}, { engine: dead, makeEngine: async () => fresh, pace: true });
+  assert.equal(w.chunk, 128);
+  dead.loadedModelIdToPipeline.get('m').prefillChunkSize = 32;   // what a slow piece would have done
+  assert.equal(w.chunk, 32);
+  const conv = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 64 } });
+  for await (const x of conv.sendMessageStreaming('hi')) void x;
+  assert.equal(w.reloads, 1);
+  assert.equal(fresh.loadedModelIdToPipeline.get('m').prefillChunkSize, 32);
+  assert.equal(w.chunk, 32);
 });
 
 test('pacedGpu: phones (iPhone and Android), not computers other than Safari', () => {
