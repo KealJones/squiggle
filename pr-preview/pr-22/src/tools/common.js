@@ -1,6 +1,6 @@
 // The tools every agent harness LFM3 was trained in gives a model, under their usual names and schemas (Keal,
 // 2026-11-17): Pi's read / write / edit (OpenClaw uses Pi's), OpenClaw's web_fetch (web_search already has the
-// common name and schema, web.js), and memory_read / memory_write. They sit next to bash on the bash surface
+// common name and schema, web.js), memory_read / memory_write, and Hermes's session_search. They sit next to bash on the bash surface
 // (agent.js BASH_SURFACE); bash keeps its own commands for all of it too. Each one runs the Squiggle tool that
 // already does the job, so approvals, path rules and untrusted wrapping are unchanged; the fine-tunes keep the
 // old names (read_file, write_file, edit_file, fetch_url, remember, recall) they were trained on.
@@ -10,11 +10,11 @@
 import { defineTool, params, str, num, oneOf } from './registry.js';
 import { readFile, writeFile, editFile } from './files.js';
 import { fetchUrl } from './web.js';
-import { remember, recall } from './memory.js';
+import { remember, recall, searchHistory } from './memory.js';
 import * as memory from '../memory.js';
 
 // What each common tool runs (and is enabled by: a device that switched read_file off has read off too).
-export const COMMON_FROM = { read: 'read_file', write: 'write_file', edit: 'edit_file', web_fetch: 'fetch_url', memory_read: 'recall', memory_write: 'remember' };
+export const COMMON_FROM = { read: 'read_file', write: 'write_file', edit: 'edit_file', web_fetch: 'fetch_url', memory_read: 'recall', memory_write: 'remember', session_search: 'search_history' };
 
 // The wrapped tools' messages name the old tools and arguments; the model on this surface knows the new ones.
 const RENAMES = [[/\bread_file\b/g, 'read'], [/\bwrite_file\b/g, 'write'], [/\bedit_file\b/g, 'edit'], [/\bfetch_url\b/g, 'web_fetch'],
@@ -137,4 +137,15 @@ export const memoryWrite = defineTool({
   },
 });
 
-export const COMMON = [read, write, edit, webFetch, memoryRead, memoryWrite];
+// Past chats: Hermes calls it session_search, OpenClaw sessions_search, Claude's apps conversation_search.
+export const sessionSearch = defineTool({
+  name: 'session_search',
+  group: 'memory',
+  description: 'Search the user\'s past conversations (every chat, and files attached to them) for something discussed before: decisions, plans, names, what was said. Use it when the user refers to an earlier chat, or one may hold the answer, before asking them to repeat themselves.',
+  parameters: params({ query: str('Words to look for, e.g. "eiffel tower trip"') }, ['query']),
+  async run({ query }, ctx = {}) {
+    return searchHistory.run({ query }, ctx);
+  },
+});
+
+export const COMMON = [read, write, edit, webFetch, memoryRead, memoryWrite, sessionSearch];

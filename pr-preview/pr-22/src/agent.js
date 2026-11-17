@@ -90,8 +90,8 @@ const MEMORY_LINE = 'When the user tells you something lasting about themselves 
 export const SEARCH_TOOLS_LINE = 'If none of your current tools can handle a request, call search_tools to find one, then call the tool it returns.';
 export const LITE_SYSTEM_BASH = [
   ...LITE_SYSTEM.split('\n').slice(0, 3),
-  'Look things up with web_search and web_fetch; read, write and edit work on files. bash does all of it too, plus GitHub and maths:',
-  'search WORDS, curl URL | grep -i WORD, wiki NAME, git, gh, bc; `man` lists the custom commands. ask_user(question) asks the user something only they know and waits.',
+  'Look things up with web_search and web_fetch. bash does files, the web, GitHub and maths too:',
+  'search WORDS, curl URL | grep -i WORD, wiki NAME, git, gh, bc; `man` lists the custom commands.',
   SEARCH_TOOLS_LINE,
   GITHUB_LINE,
   MEMORY_LINE,
@@ -157,7 +157,8 @@ const plain = () => Boolean(engine.chatOnly && engine.chatOnly(settings.model));
 // prompt never leaves a usable tool unnamed: web_search was declared but never mentioned, and a model went
 // looking for it through tool_info instead of calling it.
 function toolNamesLine(phase, known = []) {
-  if (!gated() || deferring() || phase === 'final') return '';
+  if (!gated() || phase === 'final') return '';
+  if (deferring()) return deferredLine(phase, known);
   const all = phaseTools(phase === 'step').map(t => t.name);
   const ready = all.filter(n => GATE.includes(n) || known.includes(n));
   const byName = new Map(listTools().map(t => [t.spec.name, t.group || 'other']));
@@ -237,7 +238,7 @@ export const bashSurface = () => settings.toolSurface === 'bash'
 // what Pi, OpenClaw and Hermes give a model, under their names (tools/common.js). The models with the separate
 // Squiggle tools never see these names, and this surface never sees those (read_file, fetch_url, remember…).
 const COMMON_NAMES = new Set(Object.keys(COMMON_FROM));
-const BASH_SURFACE = new Set(['bash', 'read', 'write', 'edit', 'web_search', 'web_fetch', 'memory_read', 'memory_write', 'wiki_lookup', 'search_history', 'forget']);
+const BASH_SURFACE = new Set(['bash', 'read', 'write', 'edit', 'web_search', 'web_fetch', 'memory_read', 'memory_write', 'session_search', 'wiki_lookup', 'forget']);
 const onSurface = (name) => (bashSurface() ? BASH_SURFACE.has(name) : name !== 'bash' && !COMMON_NAMES.has(name));
 // A common tool is on wherever the tool it runs is (a device that switched read_file off has read off too).
 const enabledTool = (name) => !settings.tools || settings.tools.has(name) || (COMMON_FROM[name] && settings.tools.has(COMMON_FROM[name]));
@@ -246,7 +247,17 @@ const enabledTool = (name) => !settings.tools || settings.tools.has(name) || (CO
 // as tool_reference parts; the template then writes their definitions into the result (<additional_tools>).
 // Replaces tool_info for them; small native models without that training keep the gate.
 const deferring = () => gated() && bashSurface() && engine.agentTrained(settings.model);
-const LOADED = new Set(['bash', 'read', 'write', 'edit', 'web_search', 'web_fetch', 'memory_read', 'memory_write', 'search_tools', 'plan', 'done', 'need', 'ask_user', 'checkpoint']);
+// Declared from the start: the shell, the web and the finder (Keal, 2026-11-17: files, memory, plan and ask_user wait
+// to be found too; `done` and `checkpoint` only appear inside a step / in AI-managed mode, where they're needed).
+// The rest are named in the prompt (deferredLine) and found with search_tools.
+const LOADED = new Set(['bash', 'web_search', 'web_fetch', 'search_tools', 'done', 'checkpoint']);
+// Found together: asking for one brings the others (search_tools answers with several references at once).
+const BUNDLES = [['read', 'write', 'edit'], ['memory_read', 'memory_write', 'forget']];
+// The tools still to be found, by name only, in the system prompt.
+function deferredLine(phase, known = []) {
+  const names = phaseTools(phase === 'step').map(t => t.name).filter(n => !LOADED.has(n) && !known.includes(n));
+  return names.length ? `More tools, found with search_tools: ${names.join(', ')}.` : '';
+}
 const deferredMarked = (tools, known = []) => tools.map(t => (LOADED.has(t.name) || known.includes(t.name) ? t : { ...t, defer_loading: true }));
 // web_search's own description sends the model to fetch_url; on this surface the reader is web_fetch.
 const surfaceSpec = (t) => (bashSurface() && t.name === 'web_search' ? { ...t, description: t.description.replace(/pass its url to fetch_url/, 'fetch its url with web_fetch') } : t);
@@ -260,8 +271,10 @@ function phaseTools(step) {
   const h = tasks.HARNESS_SPECS;
   const info = deferring() ? [tasks.SEARCH_TOOLS_SPEC] : gated() ? [tasks.TOOL_INFO_SPEC] : [];
   const ask = h[askName()];
-  if (managed()) return [...base, tasks.MANAGED_SPECS.plan, ...(step ? [h.done] : []), ask, h.find, ...info, tasks.MANAGED_SPECS.checkpoint];
-  return [...base, h.plan, ...(step ? [h.done] : []), ask, h.find, ...info];
+  // LFM3 (deferring) gets no `find`: memory_read and session_search do its job under the common names.
+  const find = deferring() ? [] : [h.find];
+  if (managed()) return [...base, tasks.MANAGED_SPECS.plan, ...(step ? [h.done] : []), ask, ...find, ...info, tasks.MANAGED_SPECS.checkpoint];
+  return [...base, h.plan, ...(step ? [h.done] : []), ask, ...find, ...info];
 }
 
 // Tokens the tool definitions take: fenced small models see only names and looked-up one-liners (~300);
@@ -1198,7 +1211,8 @@ class Turn {
     return response;
   }
 
-  // `search_tools` (deferred tools, LFM3's format): the deferred tools that fit the query, at most five, returned
+  // `search_tools` (deferred tools, LFM3's format): the deferred tools that fit the query, at most five plus their
+  // bundles (BUNDLES: read brings write and edit), returned
   // as tool_reference parts (`tool_references`; engine-wllama.js nativeMessages turns them into content parts and
   // the template writes their definitions into the result). They count as known for the rest of the step or phase.
   searchTools(args, task, step) {
@@ -1206,7 +1220,8 @@ class Turn {
     const avail = phaseTools(Boolean(step)).filter(t => !LOADED.has(t.name));
     const named = avail.filter(t => query.toLowerCase().split(/[\s,]+/).includes(t.name));
     const ranked = query ? rankTools(query, avail, { k: 5 }).map(r => avail.find(t => t.name === r.name)).filter(Boolean) : [];
-    const found = [...new Set([...named, ...ranked].map(t => t.name))].slice(0, 5);
+    const hits = [...new Set([...named, ...ranked].map(t => t.name))].slice(0, 5);
+    const found = [...new Set(hits.flatMap(n => (BUNDLES.find(b => b.includes(n)) || [n]).filter(b => avail.some(t => t.name === b))))];
     if (task && found.length) task.tools = [...new Set([...(task.tools || []), ...found])];
     const response = found.length
       ? { text: `Found ${found.length} tool${found.length === 1 ? '' : 's'}.`, tool_references: found }
