@@ -15,7 +15,7 @@ import * as prefetchLib from './prefetch.js';
 import { buildEntities, resolve as resolveRefs, renderRefs } from './refs.js';
 import { assembleContext, summaryBacklog, messageText, scrubFakeToolNotes, chunk, resultGist } from './context.js';
 export { scrubFakeToolNotes };
-import { toolSpecs, listTools, runTool } from './tools.js';
+import { toolSpecs, listTools, runTool, getTool, unalias } from './tools.js';
 import { UNTRUSTED_RULES, wrapUntrusted } from './untrusted.js';
 import { embed, embedReady } from './embed.js';
 import { bm25, tokenize } from './search.js';
@@ -86,7 +86,7 @@ const GITHUB_LINE = "git and gh are signed in as the user: \"my repo X\" is thei
 // Just "use the tool": its description says how to word it and the scopes, and the harness handles the rest.
 // The bash surface (BASH_SURFACE): the tools LFM3 knows from Pi, OpenClaw and Hermes next to bash, and the rest
 // found with search_tools, in LFM3's own deferred-tools format (its model card's line, below). Keal, 2026-11-17.
-const MEMORY_LINE = 'When the user tells you something lasting about themselves or their work, save it with memory_write; check memory_read before answering about their preferences, people or projects.';
+const MEMORY_LINE = 'When the user tells you something lasting about themselves or their work, save it with the memory tool (add); when it changes, or they ask you to forget it, replace or remove that entry. session_search finds what was said in earlier chats.';
 export const SEARCH_TOOLS_LINE = 'If none of your current tools can handle a request, call search_tools to find one, then call the tool it returns.';
 export const LITE_SYSTEM_BASH = [
   ...LITE_SYSTEM.split('\n').slice(0, 3),
@@ -186,7 +186,7 @@ function systemPrompt(threadId, session, phase = 'chat', known = []) {
       ? `Don't guess. For current information or anything you're unsure of: web_search, then web_fetch the best links (or search WORDS and curl in bash, piping into grep for the part you need), and say which sites you used. Files: read, write, edit (or bash). Maths: echo "…" | bc -l. find(query) searches recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`
       : `Don't guess. For current information or anything you're unsure of: web_search, then fetch_url the best results, and say which sites you used. Maths goes through calculate. find(query) searches your tools, recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`,
     bashSurface()
-      ? `Save lasting facts about the user or their projects (preferences, decisions, names) with memory_write (scope "this chat" for what only matters here); memory_read reads them back. Your context window is only ${settings.contextSize} tokens and every result says how much is left, so be careful with anything that could be long (files, web pages, command output): never cat a whole file or curl a whole page into your view. Pipe it through grep, head, tail, sed -n, wc or jq, or save it to a file (curl URL > /tmp/page.txt) and work on that file in small pieces.`
+      ? `Save lasting facts about the user or their projects (preferences, decisions, names) with the memory tool (add; replace or remove when one changes or the user asks you to forget it); session_search finds what was said in earlier chats. Your context window is only ${settings.contextSize} tokens and every result says how much is left, so be careful with anything that could be long (files, web pages, command output): never cat a whole file or curl a whole page into your view. Pipe it through grep, head, tail, sed -n, wc or jq, or save it to a file (curl URL > /tmp/page.txt) and work on that file in small pieces.`
       : `Save lasting facts about the user or their projects (preferences, decisions, names) with remember (scope "this chat" for what only matters here); search_history finds past conversations. Your context window is ${settings.contextSize} tokens and every tool result says how much is left: prefer grep and read_file line ranges, and keep notes with note on longer work without a plan.`,
     managed() ? UPFRONT : '',
     names,
@@ -238,7 +238,7 @@ export const bashSurface = () => settings.toolSurface === 'bash'
 // what Pi, OpenClaw and Hermes give a model, under their names (tools/common.js). The models with the separate
 // Squiggle tools never see these names, and this surface never sees those (read_file, fetch_url, remember…).
 const COMMON_NAMES = new Set(Object.keys(COMMON_FROM));
-const BASH_SURFACE = new Set(['bash', 'read', 'write', 'edit', 'web_search', 'web_fetch', 'memory_read', 'memory_write', 'session_search', 'wiki_lookup', 'forget']);
+const BASH_SURFACE = new Set(['bash', 'read', 'write', 'edit', 'web_search', 'web_fetch', 'memory', 'session_search', 'wiki_lookup']);
 const onSurface = (name) => (bashSurface() ? BASH_SURFACE.has(name) : name !== 'bash' && !COMMON_NAMES.has(name));
 // A common tool is on wherever the tool it runs is (a device that switched read_file off has read off too).
 const enabledTool = (name) => !settings.tools || settings.tools.has(name) || (COMMON_FROM[name] && settings.tools.has(COMMON_FROM[name]));
@@ -247,12 +247,12 @@ const enabledTool = (name) => !settings.tools || settings.tools.has(name) || (CO
 // as tool_reference parts; the template then writes their definitions into the result (<additional_tools>).
 // Replaces tool_info for them; small native models without that training keep the gate.
 const deferring = () => gated() && bashSurface() && engine.agentTrained(settings.model);
-// Declared from the start: the shell, the web and the finder (Keal, 2026-11-17: files, memory, plan and ask_user wait
-// to be found too; `done` and `checkpoint` only appear inside a step / in AI-managed mode, where they're needed).
+// Declared from the start: the shell, the web, memory and the finder (Keal, 2026-11-17: files, plan and ask_user wait
+// to be found; memory stays, since a guessed memory call saved the opposite of what the user said; `done` and `checkpoint` only appear inside a step / in AI-managed mode, where they're needed).
 // The rest are named in the prompt (deferredLine) and found with search_tools.
-const LOADED = new Set(['bash', 'web_search', 'web_fetch', 'search_tools', 'done', 'checkpoint']);
+const LOADED = new Set(['bash', 'web_search', 'web_fetch', 'memory', 'search_tools', 'done', 'checkpoint']);
 // Found together: asking for one brings the others (search_tools answers with several references at once).
-const BUNDLES = [['read', 'write', 'edit'], ['memory_read', 'memory_write', 'forget']];
+const BUNDLES = [['read', 'write', 'edit']];
 // The tools still to be found, by name only, in the system prompt.
 function deferredLine(phase, known = []) {
   const names = phaseTools(phase === 'step').map(t => t.name).filter(n => !LOADED.has(n) && !known.includes(n));
@@ -271,7 +271,7 @@ function phaseTools(step) {
   const h = tasks.HARNESS_SPECS;
   const info = deferring() ? [tasks.SEARCH_TOOLS_SPEC] : gated() ? [tasks.TOOL_INFO_SPEC] : [];
   const ask = h[askName()];
-  // LFM3 (deferring) gets no `find`: memory_read and session_search do its job under the common names.
+  // LFM3 (deferring) gets no `find`: the memory section of its prompt and session_search do its job.
   const find = deferring() ? [] : [h.find];
   if (managed()) return [...base, tasks.MANAGED_SPECS.plan, ...(step ? [h.done] : []), ask, ...find, ...info, tasks.MANAGED_SPECS.checkpoint];
   return [...base, h.plan, ...(step ? [h.done] : []), ask, ...find, ...info];
@@ -419,6 +419,7 @@ class Turn {
     this.cp = new Checkpoint({ session: session.id, thread: threadId, user: userMsg.id, text: shown, phase: 'chat', tries: resume ? (resume.tries || 0) + 1 : 0, model: settings.model });
     this.carry = '';         // raw text of a half-written reply to carry on from (the next model call only)
     this.seen = new Map();   // read-only calls already made this turn → their result (resume.js repeatKey)
+    this.found = new Set();  // deferred tools whose definitions this turn has handed over (search_tools, blindCall)
     this.reply = { role: 'assistant', content: '', thread: threadId, tools: [], context: null };
     this.trace = createTrace();   // the whole context, exactly as sent (trace.js); saved with the reply
     this.pendingAdded = [];
@@ -1175,6 +1176,8 @@ class Turn {
     if (name === 'tool_info') return { response: this.toolInfo(args, task, step) };
     if (name === 'search_tools') return { response: this.searchTools(args, task, step) };
     if (name === 'done') return { response: { error: 'There is no step to finish yet. Call plan first, or just answer.' } };
+    const blind = this.blindCall(name, args, task, step);
+    if (blind) return { response: blind };
     const key = repeatKey(name, args), earlier = key && this.seen.get(key);
     if (earlier) {
       this.toolEvent({ name, label: `${earlier.label} (already ran: same result)`, ok: true, args }, earlier.response);
@@ -1211,6 +1214,28 @@ class Turn {
     return response;
   }
 
+  // A deferred tool called before its definition was handed over, with arguments that don't fit it (a required one
+  // missing, or one it doesn't take): it doesn't run; its definition comes back the way search_tools sends one, so
+  // the next call has it. On the CPU (2026-11-17) LFM3 called hidden tools from their names alone with made-up
+  // arguments: memory_write {content}, {memory_key, memory_value}. Arguments that fit just run.
+  blindCall(name, args, task, step) {
+    if (!deferring() || LOADED.has(name) || this.found.has(name) || (task && (task.tools || []).includes(name))) return null;
+    const spec = phaseTools(Boolean(step)).find(t => t.name === name);
+    if (!spec) return null;
+    args = unalias(getTool(name), args);   // another harness's spelling of an argument fits
+    const props = (spec.parameters && spec.parameters.properties) || {};
+    const given = Object.keys(args || {});
+    const missing = ((spec.parameters && spec.parameters.required) || []).filter(k => args[k] === undefined || args[k] === null || args[k] === '');
+    const unknown = given.filter(k => !(k in props));
+    if (!missing.length && !unknown.length) return null;
+    this.found.add(name);
+    if (task) task.tools = [...new Set([...(task.tools || []), name])];
+    const why = [missing.length ? `missing ${missing.join(', ')}` : '', unknown.length ? `it takes no ${unknown.join(', ')}` : ''].filter(Boolean).join('; ');
+    if (task) tasks.logCall(task, step, { name, args, ok: false, label: `${name} called without its definition (${why})` });
+    this.toolEvent({ name, label: `${name}: looked it up first (${why})`, ok: false, args });
+    return { text: `${name} didn't run: you called it without its definition (${why}). Here it is; call ${name} again with these arguments.`, tool_references: [name] };
+  }
+
   // `search_tools` (deferred tools, LFM3's format): the deferred tools that fit the query, at most five plus their
   // bundles (BUNDLES: read brings write and edit), returned
   // as tool_reference parts (`tool_references`; engine-wllama.js nativeMessages turns them into content parts and
@@ -1222,6 +1247,7 @@ class Turn {
     const ranked = query ? rankTools(query, avail, { k: 5 }).map(r => avail.find(t => t.name === r.name)).filter(Boolean) : [];
     const hits = [...new Set([...named, ...ranked].map(t => t.name))].slice(0, 5);
     const found = [...new Set(hits.flatMap(n => (BUNDLES.find(b => b.includes(n)) || [n]).filter(b => avail.some(t => t.name === b))))];
+    for (const n of found) this.found.add(n);
     if (task && found.length) task.tools = [...new Set([...(task.tools || []), ...found])];
     const response = found.length
       ? { text: `Found ${found.length} tool${found.length === 1 ? '' : 's'}.`, tool_references: found }
