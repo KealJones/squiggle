@@ -24,6 +24,7 @@ import { createTrace, openConv, addRound, takeRendered } from './trace.js';
 import { report } from './incidents.js';
 import { Checkpoint, decide as resumeDecide, repeatKey } from './resume.js';
 import { parseJsonl } from './merge.js';
+import { git as isoGit, fs as gitFs, pfs } from './git.js';
 import { attachmentPrompt, saveAttachments, toRecord } from './attachments.js';
 
 export const settings = {
@@ -86,7 +87,7 @@ const GITHUB_LINE = "git and gh are signed in as the user: \"my repo X\" is thei
 // Just "use the tool": its description says how to word it and the scopes, and the harness handles the rest.
 // The bash surface (BASH_SURFACE): the tools LFM3 knows from Pi, OpenClaw and Hermes next to bash, and the rest
 // found with search_tools, in LFM3's own deferred-tools format (its model card's line, below). Keal, 2026-11-17.
-const MEMORY_LINE = 'When the user tells you something lasting about themselves or their work, save it with the memory tool (add); when it changes, or they ask you to forget it, replace or remove that entry. session_search finds what was said in earlier chats.';
+const MEMORY_LINE = 'When the user tells you something lasting about themselves or their work, save it with the memory tool (add); when it changes, or they ask you to forget it, replace or remove that entry. session_search finds what was said in earlier chats. Notes that only matter in this chat go in target "memory".';
 export const SEARCH_TOOLS_LINE = 'If none of your current tools can handle a request, call search_tools to find one, then call the tool it returns.';
 export const LITE_SYSTEM_BASH = [
   ...LITE_SYSTEM.split('\n').slice(0, 3),
@@ -168,10 +169,30 @@ function toolNamesLine(phase, known = []) {
     groups.size ? `Other tools, by area: ${[...groups].map(([g, names]) => `${g}: ${names.join(', ')}`).join('; ')}. To use one, first call tool_info(names) with every one you expect to need.` : ''].filter(Boolean).join('\n');
 }
 
+// The repos cloned on this device, one line in the bash surface's prompt every turn (Keal, 2026-11-18). Compress
+// doesn't replay tool results, so a turn after a clone only had the model's own summary of where it went, and it
+// trusted a path it had made up (/repos/KealJones/Keptsam for /repos/Keptsam, 2026-11-17). Refreshed before each
+// prompt is built (refreshClones); the prompt itself stays synchronous.
+let clones = [];
+async function refreshClones() {
+  if (!bashSurface() || storage.isLocal()) { clones = []; return; }
+  try {
+    const names = (await pfs.readdir('/repos').catch(() => [])).sort();
+    clones = await Promise.all(names.map(async (name) => {
+      let origin = '';
+      try { origin = (await isoGit.getConfig({ fs: gitFs, dir: `/repos/${name}`, path: 'remote.origin.url' })) || ''; } catch {}
+      const m = /github\.com[/:]([^/]+\/[^/.]+)/.exec(origin);
+      return m ? `/repos/${name} (${m[1]})` : `/repos/${name}`;
+    }));
+  } catch { clones = []; }
+}
+const clonesLine = () => (bashSurface() && clones.length ? `Repos cloned here: ${clones.join(', ')}.` : '');
+
 function systemPrompt(threadId, session, phase = 'chat', known = []) {
   if (plain() || noPrompt()) return '';
   const names = toolNamesLine(phase, known);
-  if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : bashSurface() ? (storage.isLocal() ? LITE_SYSTEM_BASH.replace(GITHUB_LINE + '\n', '') : LITE_SYSTEM_BASH) : LITE_SYSTEM_NATIVE}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
+  const cloned = clonesLine();
+  if (smallMode()) return `${fencedSmall() ? LITE_SYSTEM : bashSurface() ? (storage.isLocal() ? LITE_SYSTEM_BASH.replace(GITHUB_LINE + '\n', '') : LITE_SYSTEM_BASH) : LITE_SYSTEM_NATIVE}${cloned ? '\n' + cloned : ''}${names ? '\n' + names : ''}${managed() ? '\n' + UPFRONT_SMALL : ''}\nToday is ${new Date().toDateString()}.`;
   const thread = threadId && session.threads[threadId];
   // Kept short on purpose: with every tool schema this prompt was 99% of a 4K window (2026-11-04), and
   // a phone CPU reads it at ~13 tokens/s before the first reply token.
@@ -186,9 +207,10 @@ function systemPrompt(threadId, session, phase = 'chat', known = []) {
       ? `Don't guess. For current information or anything you're unsure of: web_search, then web_fetch the best links (or search WORDS and curl in bash, piping into grep for the part you need), and say which sites you used. Files: read, write, edit (or bash). Maths: echo "…" | bc -l. find(query) searches recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`
       : `Don't guess. For current information or anything you're unsure of: web_search, then fetch_url the best results, and say which sites you used. Maths goes through calculate. find(query) searches your tools, recipes from past tasks, memory and past chats; ask_user(question) asks the user something only they know and waits for the answer. For anything that takes more than one step, call plan(goal, steps) first and work it one step at a time: each step gets a fresh view of the goal, the plan and earlier results, and ends with done(result).`,
     bashSurface()
-      ? `Save lasting facts about the user or their projects (preferences, decisions, names) with the memory tool (add; replace or remove when one changes or the user asks you to forget it); session_search finds what was said in earlier chats. Your context window is only ${settings.contextSize} tokens and every result says how much is left, so be careful with anything that could be long (files, web pages, command output): never cat a whole file or curl a whole page into your view. Pipe it through grep, head, tail, sed -n, wc or jq, or save it to a file (curl URL > /tmp/page.txt) and work on that file in small pieces.`
+      ? `Save lasting facts about the user or their projects (preferences, decisions, names) with the memory tool (add; replace or remove when one changes or the user asks you to forget it; target "memory" for notes that only matter in this chat); session_search finds what was said in earlier chats. Your context window is only ${settings.contextSize} tokens and every result says how much is left, so be careful with anything that could be long (files, web pages, command output): never cat a whole file or curl a whole page into your view. Pipe it through grep, head, tail, sed -n, wc or jq, or save it to a file (curl URL > /tmp/page.txt) and work on that file in small pieces.`
       : `Save lasting facts about the user or their projects (preferences, decisions, names) with remember (scope "this chat" for what only matters here); search_history finds past conversations. Your context window is ${settings.contextSize} tokens and every tool result says how much is left: prefer grep and read_file line ranges, and keep notes with note on longer work without a plan.`,
     managed() ? UPFRONT : '',
+    cloned,
     names,
     `Use tools when they help; answer directly when they don't. Be concise. Never invent file contents or tool results, and never say you saved, remembered, changed or pushed something unless you called the tool for it in this reply.`,
     thread ? `This is a side thread started on an earlier message ("${truncate(thread.title, 80)}"). Focus on that topic.` : '',
@@ -555,6 +577,7 @@ class Turn {
 
   async context({ line, extra, focus }, budget) {
     const { session, threadId, shown } = this;
+    await refreshClones();
     return assembleContext({
       line, session, threadId, query: shown, budget, mode: settings.contextMode,
       system: systemPrompt(threadId, session, 'chat', this.fitNames()), extra, focus,
@@ -570,6 +593,8 @@ class Turn {
       actions: !lite() || engine.agentTrained(settings.model),
       actionResults: (!lite() || engine.agentTrained(settings.model)) && !fencedSmall(),
       embed: settings.contextMode === 'smart' && settings.semantic ? embed : null,
+      // On the bash surface the notes are the memory tool's target "memory" (tools/common.js); there's no note tool.
+      ...(bashSurface() ? { notesHow: 'with the memory tool, target "memory"' } : {}),
     });
   }
 
@@ -929,6 +954,7 @@ class Turn {
   }
 
   async runStep(task, step) {
+    await refreshClones();
     const tools = phaseTools(true);
     const known = [...new Set([...preloaded(tools), ...(task.tools || []), ...fitTools(`${step.text}\n${task.goal}`, tools).map(t => t.name)])];
     const toolTokens = toolCost(tools, known);
@@ -1095,6 +1121,7 @@ class Turn {
 
   // ── Final reply from the step results ───────────────────────────────────
   async final(task) {
+    await refreshClones();
     task.status = 'done';
     tasks.touch(task);
     sessions.saveTask(this.session, task);

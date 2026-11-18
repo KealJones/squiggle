@@ -14,6 +14,7 @@ import { readFile, writeFile, editFile } from './files.js';
 import { fetchUrl } from './web.js';
 import { remember, searchHistory } from './memory.js';
 import * as memory from '../memory.js';
+import * as sessions from '../sessions.js';
 
 // What each common tool runs (and is enabled by: a device that switched read_file off has read off too).
 export const COMMON_FROM = { read: 'read_file', write: 'write_file', edit: 'edit_file', web_fetch: 'fetch_url', memory: 'remember', session_search: 'search_history' };
@@ -122,41 +123,46 @@ export const webFetch = defineTool({
 });
 
 // Hermes's memory tool (Keal, 2026-11-17): one tool, add / replace / remove, an entry found by a piece of its text.
-// No read: what's relevant is already in the prompt (the memory section). Its two targets (the user's profile, the
-// agent's own notes) both live in memory/facts.jsonl here, kept for every chat. "Forget that…" is a remove, so a
-// model never has to save the opposite instead (LFM3 1.7B did, on the CPU, 2026-11-17).
-const matching = (old) => {
-  const q = String(old || '').trim().toLowerCase();
-  return q ? memory.all().filter(f => memory.factText(f).toLowerCase().includes(q)) : [];
-};
-const listed = (facts) => facts.slice(0, 12).map(f => memory.factText(f));
+// No read: what's relevant is already in the prompt. Its two targets map onto Squiggle's two kinds of memory (Keal,
+// 2026-11-18): `user` is memory/facts.jsonl, kept for every chat; `memory` is this chat's own notes (the session's
+// notes, shown in the prompt under "Your notes for this chat"). "Forget that…" is a remove, so a model never has to
+// save the opposite instead (LFM3 1.7B did, on the CPU, 2026-11-17).
+const userEntries = () => memory.all().map(f => ({ id: f.id, text: memory.factText(f), drop: () => memory.remove(f.id) }));
+const chatEntries = (session) => (session ? sessions.liveNotes(session) : []).map(n => ({ id: n.id, text: n.text, drop: () => sessions.deleteNote(session, n.id) }));
+const listed = (entries) => entries.slice(-12).map(e => e.text);
 export const memoryTool = defineTool({
   name: 'memory',
   group: 'memory',
-  description: 'Save what lasts across chats: the user\'s preferences, corrections, names, decisions, how their things work. Not task progress or what happened in a chat (session_search finds those). add saves a new entry, one sentence about the user ("The user likes short answers"). replace changes the entry containing old_text; remove deletes it, for when the user says it is wrong or asks you to forget it. old_text only needs to be a short piece of the entry that matches just that one.',
+  description: 'Save what you should remember. target "user" (default) is kept for every chat: the user\'s preferences, corrections, names, decisions, how their things work. target "memory" is kept only in this chat: your notes on the task (findings, where things are, next steps). Both are shown to you in later turns. add saves a new entry in one sentence (for "user", about the user: "The user likes short answers"). replace changes the entry containing old_text; remove deletes it, for when it is wrong, done with, or the user asks you to forget it. old_text only needs to be a short piece of the entry that matches just that one.',
   parameters: params({
     action: oneOf(['add', 'replace', 'remove'], 'add, replace or remove'),
-    target: oneOf(['user', 'memory'], 'user: about the user (default); memory: your notes on their setup and projects'),
+    target: oneOf(['user', 'memory'], 'user: kept for every chat (default); memory: kept only in this chat'),
     content: str('The entry to save (add and replace)'),
     old_text: str('A short piece of the entry to change or remove (replace and remove)'),
   }, ['action']),
   aliases: { oldText: 'old_text', old_string: 'old_text', fact: 'content', text: 'content' },
   async run(args, ctx = {}) {
     const action = String(args.action || (args.old_text ? 'replace' : 'add')).toLowerCase();
+    const chat = String(args.target || 'user').toLowerCase() === 'memory';
+    const scope = chat ? 'this chat' : 'everywhere';
     const content = pick(args, 'content', 'fact', 'text');
-    if (action === 'add') return remember.run({ fact: content }, ctx);
+    if (chat && !ctx.session) return { model: { error: 'There is no chat to keep notes in; use target "user".' } };
+    if (action === 'add') return remember.run({ fact: content, scope }, ctx);
     if (action !== 'replace' && action !== 'remove') return { model: { error: `action is add, replace or remove, not "${action}".` } };
     const old = pick(args, 'old_text', 'oldText', 'old_string');
     if (!old) return { model: { error: `Give old_text: a short piece of the entry to ${action}.` } };
-    const hits = matching(old);
-    if (!hits.length) return { model: { error: `No saved entry contains "${old}".`, entries: listed(memory.all()) } };
+    const all = chat ? chatEntries(ctx.session) : userEntries();
+    const q = String(old).trim().toLowerCase();
+    const hits = all.filter(e => e.text.toLowerCase().includes(q));
+    const other = chat ? 'user' : 'memory';
+    if (!hits.length) return { model: { error: `No ${chat ? 'note in this chat' : 'saved entry'} contains "${old}" (target "${other}" holds the ${chat ? 'entries kept for every chat' : 'notes for this chat'}).`, entries: listed(all) } };
     if (hits.length > 1) return { model: { error: `"${old}" is in ${hits.length} entries; give a piece that matches only one.`, matches: listed(hits) } };
-    const was = memory.factText(hits[0]);
-    if (action === 'remove') { memory.remove(hits[0].id); return { model: { ok: true, removed: was }, label: `forgot: ${was.slice(0, 60)}` }; }
-    if (!content) return { model: { error: 'Give content: the entry as it should read now.' } };
-    memory.remove(hits[0].id);
-    const r = await remember.run({ fact: content }, ctx);
-    return r.model && r.model.ok ? { ...r, model: { ...r.model, replaced: was }, label: `changed a memory: ${String(content).slice(0, 60)}` } : r;
+    const was = hits[0].text;
+    if (action === 'replace' && !content) return { model: { error: 'Give content: the entry as it should read now.' } };
+    hits[0].drop();
+    if (action === 'remove') return { model: { ok: true, removed: was }, label: `forgot${chat ? ' (this chat)' : ''}: ${was.slice(0, 60)}` };
+    const r = await remember.run({ fact: content, scope }, ctx);
+    return r.model && r.model.ok ? { ...r, model: { ...r.model, replaced: was }, label: `changed a memory${chat ? ' (this chat)' : ''}: ${String(content).slice(0, 60)}` } : r;
   },
 });
 
