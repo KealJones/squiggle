@@ -25,11 +25,12 @@ away when you switch apps, and a tab that can be killed in the background. Squig
 
 - **The GPU's watchdog:** iOS Safari kills its GPU process when one command runs past ~3 s, so prompts are read
   in 128-token pieces, and a lost GPU is reloaded with the reply carrying on.
-- **The right build for the device:** WebLLM on WebGPU where there is one, llama.cpp in WebAssembly on the CPU where
-  there isn't. The device picks the build.
-- **It holds up on a phone:** today's default, a ~1 GB 1.7B model in our own WebLLM build, writes about 14 tokens a
+- **The right build for the device:** Tilde on WebGPU where it runs, then WebLLM, then llama.cpp in WebAssembly on
+  the CPU. The device picks the build.
+- **It holds up on a phone:** a ~1 GB 1.7B model in our own WebLLM build writes about 14 tokens a
   second with a 6K window on an iPhone 16 in Safari ([engine.js](app/src/engine.js)).
-- [Tilde](https://github.com/KealJones/tilde), a related project, is a browser runtime built for small models on WebGPU.
+- **[Tilde](https://github.com/KealJones/tilde)**, my own WebGPU runtime for small models, comes first where it runs,
+  loaded from its repo pinned by commit. The default model there also sees pictures and video, hears and speaks.
 
 ## How a turn works
 
@@ -71,7 +72,8 @@ AI-managed (experimental). "What the model saw" on any reply shows the exact pro
   reach it but is never replayed.
 - **Tool names up front, details on demand.** Declaring every tool schema took about 3.4K tokens of a 4K window.
   Small models now get a few schemas plus a line naming the rest, and call `tool_info(names)` for what they need
-  (about 1K tokens in all). Native deferred tools, for models trained with them, are in progress (below).
+  (about 1K tokens in all). Models trained with deferred tools get only bash, the web and `search_tools` up front;
+  the rest are named in the prompt, and `search_tools` brings back their definitions in bundles.
 - **One `bash` tool** ([tools/bash.js](app/src/tools/bash.js)). A shell over the workspace with git and gh that
   behave like the real ones, plus curl, search, wiki, node and bc. Every command that reaches the network or
   GitHub goes through the same approvals and URL rules as the standalone tools.
@@ -116,10 +118,6 @@ cases also run as an eval against a real model ([docs/evals.md](docs/evals.md)).
 
 Open pull requests, not on the live app yet. Each has a preview at `kealjones.com/squiggle/pr-preview/pr-<number>/`.
 
-- [#22](https://github.com/KealJones/squiggle/pull/22): the tool names the default model was trained with, and its native
-  deferred tools (`search_tools`).
-- [#21](https://github.com/KealJones/squiggle/pull/21): a multimodal small model (pictures, video, hearing, its own
-  voice) on Tilde.
 - [#10](https://github.com/KealJones/squiggle/pull/10): brainstorm chats, where the model talks an idea through with
   itself.
 - [#20](https://github.com/KealJones/squiggle/pull/20): `find` with several wordings in one call.
