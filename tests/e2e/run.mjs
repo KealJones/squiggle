@@ -1323,6 +1323,7 @@ await check('attachments: a text file is stored, shown as a chip, searchable, an
   assert.match(r.chips.join('|'), /budget 2026\.csv.*\|pic\.png/);
   assert.equal(r.composerChips, 0, 'composer chips clear after sending');
   assert.match(r.found, /role":"attachment".*<untrusted source=\\"attachment /);
+  assert.ok(r.found.includes(`"session_id":"${r.id}"`) && r.found.includes(`(#chat=${r.id})`), 'search_history results carry the chat id and link');
   assert.match(r.read, /<untrusted source=\\"file \/home\/attachments/);
   // It syncs as plain text to the storage repo.
   await D.page.evaluate(async () => { await (await import('/src/sessions.js')).flush({ sync: false }); await (await import('/src/storage.js')).sync(); });
