@@ -50,26 +50,31 @@ try {
   say(`Tilde says: ${mb(i.stored)} of ${mb(i.size)} stored, complete: ${i.complete} (${at()})`);
 } catch (e) { say('Tilde: ' + e.message); }
 
-// Hugging Face: one small range, then one 16 MB piece read as it streams.
+// Hugging Face redirects to its CDN. Does the Range header survive that redirect in this browser?
+// 1) through the redirect: status and where it ended up (headers only, body cancelled)
+let final = null;
 try {
-  const r = await within(fetch(URL_1_7B, { headers: { Range: 'bytes=0-15' } }), 20000, 'small range request');
-  await within(r.arrayBuffer(), 20000, 'small range body');
-  say(`small range: ${r.status}, ${r.headers.get('Content-Range')} (${at()})`);
-} catch (e) { say(`small range FAILED: ${e.name}: ${e.message} (${at()})`); }
-try {
-  const s = performance.now();
-  const r = await within(fetch(URL_1_7B, { headers: { Range: `bytes=0-${(16 << 20) - 1}` } }), 30000, '16 MB request');
-  say(`16 MB piece: headers after ${((performance.now() - s) / 1000).toFixed(1)} s, status ${r.status}`);
-  const rd = r.body.getReader();
-  let got = 0, last = 0;
-  for (;;) {
-    const { done, value } = await within(rd.read(), 20000, `stalled at ${mb(got)}`);
-    if (done) break;
-    got += value.length;
-    if (got - last > 4e6) { say(`  ${mb(got)} at ${((performance.now() - s) / 1000).toFixed(1)} s`); last = got; }
-  }
-  say(`16 MB piece: ${mb(got)} in ${((performance.now() - s) / 1000).toFixed(1)} s`);
-} catch (e) { say(`16 MB piece FAILED: ${e.name}: ${e.message} (${at()})`); }
+  const r = await within(fetch(URL_1_7B, { headers: { Range: 'bytes=0-15' } }), 20000, 'request');
+  final = r.url;
+  say(`via redirect: status ${r.status} (206 = range kept, 200 = range dropped), Content-Range ${r.headers.get('Content-Range')}, length ${r.headers.get('Content-Length')}`);
+  say(`  ended at ${new URL(r.url).host}`);
+  try { await r.body.cancel(); } catch {}
+} catch (e) { say(`via redirect FAILED: ${e.name}: ${e.message} (${at()})`); }
+// 2) straight to the CDN address it ended at
+if (final && final !== URL_1_7B) {
+  try {
+    const r = await within(fetch(final, { headers: { Range: 'bytes=0-15' } }), 20000, 'direct request');
+    const b = new Uint8Array(await within(r.arrayBuffer(), 20000, 'direct body'));
+    say(`direct to CDN: status ${r.status}, ${b.length} bytes, starts "${String.fromCharCode(...b.slice(0, 4))}" (${at()})`);
+  } catch (e) { say(`direct to CDN FAILED: ${e.name}: ${e.message} (${at()})`); }
+  try {
+    const s0 = performance.now();
+    const r = await within(fetch(final, { headers: { Range: `bytes=${16 << 20}-${(32 << 20) - 1}` } }), 20000, 'direct 16 MB');
+    const rd = r.body.getReader(); let got = 0;
+    for (;;) { const { done, value } = await within(rd.read(), 20000, `stalled at ${mb(got)}`); if (done) break; got += value.length; }
+    say(`direct 16 MB piece (2nd piece): status ${r.status}, ${mb(got)} in ${((performance.now() - s0) / 1000).toFixed(1)} s`);
+  } catch (e) { say(`direct 16 MB FAILED: ${e.name}: ${e.message} (${at()})`); }
+}
 say('done');
 </script>
 </body>
