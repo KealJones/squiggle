@@ -4,6 +4,8 @@
 
 <p align="center">Getting the most out of an AI agent in a browser, and especially in a phone's.</p>
 
+<p align="center"><a href="https://github.com/KealJones/tilde"><img src="https://img.shields.io/badge/powered%20by-%7E%20tilde-7c3aed?style=flat-square" alt="Powered by ~ Tilde"></a></p>
+
 <p align="center"><a href="https://kealjones.com/squiggle/"><b>Try it</b></a> (pick "Try it without signing in") · <a href="docs/harness.md">Harness design</a> · <a href="docs/failures.md">Failure casebook</a> · <a href="docs/evals.md">Evals</a> · <a href="docs/lab.md">Lab notebook</a> · <a href="docs/setup.md">Run your own</a></p>
 
 Squiggle is a chat agent with no backend: the app is static files, the model runs on your device, and your chats,
