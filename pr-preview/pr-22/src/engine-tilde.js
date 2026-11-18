@@ -1,4 +1,4 @@
-// Keptsam (github.com/KealJones/Keptsam): Keal's own WebGPU engine for LFM3, built for iPhone Safari's limits
+// Tilde (github.com/KealJones/tilde): Keal's own WebGPU engine for LFM3, built for iPhone Safari's limits
 // (~1.9 GB per tab shared by JS and GPU, ~3 s per GPU command buffer). It streams the GGUF tensor by tensor, splits
 // GPU work into submits sized from measured timings, needs no shader-f16, and runs LFM3 Omni: pictures, video,
 // sound in, and the model's own voice out. Encoders load only while they're needed.
@@ -6,7 +6,7 @@
 // It plugs in under engine-webllm.js's shim, posing as a WebLLM engine (completions.create with a raw prompt,
 // interruptGenerate, unload), so the tool format, thinking budget, GPU-loss reload and reply resume stay in one
 // place. What it adds:
-//   - prompt reuse: Keptsam snapshots the model's state at the shim's safe cut (prefix-cache.js snapshotPoint) and
+//   - prompt reuse: Tilde snapshots the model's state at the shim's safe cut (prefix-cache.js snapshotPoint) and
 //     goes back to it when the next prompt starts with the same tokens, so a tool round reads only what's new;
 //   - media: ⟦media:id⟧ markers in the prompt (media.js) become the picture, video or sound itself;
 //   - speak() and transcribe(), which run in a side sequence so the chat's cache survives them.
@@ -14,11 +14,11 @@ import { createShim, gpuGone } from './engine-webllm.js';
 import { snapshotPoint } from './prefix-cache.js';
 import * as media from './media.js';
 
-// Pinned to a commit: Keptsam is plain ES modules, loaded straight from jsDelivr (no build step on either side).
-export const KEPTSAM_SHA = '1a41dba78ac653772f71d8040ec938a1f44cf1d1';
-const defaultUrl = () => `https://cdn.jsdelivr.net/gh/KealJones/Keptsam@${KEPTSAM_SHA}/src/index.js`;
-// Tests and local checks can point it elsewhere (globalThis.SQUIGGLE_KEPTSAM = '/keptsam/src/index.js').
-const libUrl = () => globalThis.SQUIGGLE_KEPTSAM || defaultUrl();
+// Pinned to a commit: Tilde is plain ES modules, loaded straight from jsDelivr (no build step on either side).
+export const TILDE_SHA = 'f6d8cbac6b6c5c8cfbddd4530dd920ea52b36d49';
+const defaultUrl = () => `https://cdn.jsdelivr.net/gh/KealJones/tilde@${TILDE_SHA}/src/index.js`;
+// Tests and local checks can point it elsewhere (globalThis.SQUIGGLE_TILDE = '/tilde/src/index.js').
+const libUrl = () => globalThis.SQUIGGLE_TILDE || defaultUrl();
 let libP = null;
 export function lib() {
   if (!libP) { libP = import(/* @vite-ignore */ libUrl()); libP.catch(() => { libP = null; }); }
@@ -26,14 +26,14 @@ export function lib() {
 }
 
 // ── Files ────────────────────────────────────────────────────────────────
-// Keptsam keeps each file in Cache Storage (keptsam-v1) in 16 MB pieces under the file's URL; sw.js leaves that
+// Tilde keeps each file in Cache Storage (tilde-v1) in 16 MB pieces under the file's URL; sw.js leaves that
 // cache alone. A model is its GGUF plus, for Omni, the encoders' mmproj.
 const filesOf = (m) => [m.url, m.mmproj].filter(Boolean);
-// Each file's size as MODELS says it (fileBytes): a load caches pieces without Keptsam's size record, and with the size
+// Each file's size as MODELS says it (fileBytes): a load caches pieces without Tilde's size record, and with the size
 // they still count, and a download finishes them without asking the server first (Keal's iPhone, 2026-11-17: all 63
 // pieces of LFM3 1.7B were there and the download sat at 0% waiting on that request).
 const sizeOf = (m, i) => (m.fileBytes && m.fileBytes[i]) || 0;
-const info = (k, m, url, i) => k.cachedFileInfo(url, 'keptsam-v1', { size: sizeOf(m, i) });
+const info = (k, m, url, i) => k.cachedFileInfo(url, 'tilde-v1', { size: sizeOf(m, i) });
 
 export async function isDownloaded(m) {
   const k = await lib();
@@ -67,7 +67,7 @@ export async function removeModel(m) {
 
 // ── The engine under the shim ─────────────────────────────────────────────
 
-// What a ⟦media:id⟧ marker becomes, decoded once per file (media.decoded): Keptsam reads a picture as up to 256
+// What a ⟦media:id⟧ marker becomes, decoded once per file (media.decoded): Tilde reads a picture as up to 256
 // tokens (512×512 at most), a video at 2 frames a second in pairs of 64 tokens each (256×256, at most 30 s) with its
 // soundtrack, and sound at 12.5 tokens a second (at most 2 minutes).
 const VIDEO = { maxPixels: 256 * 256, maxFrames: 60 };
@@ -79,7 +79,7 @@ async function decodeMedia(k, it) {
   throw new Error(`can't take in a ${it.kind}`);
 }
 
-// The prompt as Keptsam's parts: text, and each kept file wrapped the way the model's template wraps media.
+// The prompt as Tilde's parts: text, and each kept file wrapped the way the model's template wraps media.
 async function promptParts(k, text) {
   if (!media.hasMarkers(text)) return [text];
   const out = [];
@@ -90,9 +90,9 @@ async function promptParts(k, text) {
   return out;
 }
 
-let current = null;   // the loaded Keptsam, for speak() and transcribe()
+let current = null;   // the loaded Tilde, for speak() and transcribe()
 
-// A WebLLM-shaped engine over a loaded Keptsam: the slice of WebLLM's API the shim calls (exported for tests).
+// A WebLLM-shaped engine over a loaded Tilde: the slice of WebLLM's API the shim calls (exported for tests).
 export function asEngine(k, llm) {
   let ctl = null;
   const tk = llm.tokenizer;
@@ -132,7 +132,7 @@ export function asEngine(k, llm) {
   };
   const stats = { reused: 0, read: 0, last: null };
   return {
-    keptsam: llm,
+    tilde: llm,
     stats,
     async resetChat() {},
     interruptGenerate() { try { ctl && ctl.abort(); } catch {} },
@@ -151,7 +151,7 @@ export function asEngine(k, llm) {
 }
 
 /**
- * The engine Squiggle loads (engine.js): the shim under engine-wllama.js's conversations, over Keptsam.
+ * The engine Squiggle loads (engine.js): the shim under engine-wllama.js's conversations, over Tilde.
  * @param {object} m the MODELS entry (url, mmproj)
  */
 export async function createEngine(m, contextSize, onStage = () => {}, { native = false, toolFormat: format = null } = {}) {
@@ -160,7 +160,7 @@ export async function createEngine(m, contextSize, onStage = () => {}, { native 
   const k = await lib();
   let first = true;
   const make = async (stage = onStage) => {
-    const llm = await k.Keptsam.load(m.url, {
+    const llm = await k.Tilde.load(m.url, {
       ctx: contextSize, chunk: 64, mmproj: m.mmproj,
       onProgress: (p) => stage(first ? `loading the model onto the GPU (${Math.round((100 * p.loaded) / p.total)}%)` : 'loading the model onto the GPU'),
     });
@@ -170,14 +170,14 @@ export async function createEngine(m, contextSize, onStage = () => {}, { native 
   };
   const w = await createShim(m.id, contextSize, onStage, { format: native ? format : null, makeEngine: make, pace: false, reuse: false });
   return {
-    info: { ...w.info, webllm: false, webllmVersion: undefined, keptsam: KEPTSAM_SHA.slice(0, 7), senses: m.senses || [] },
+    info: { ...w.info, webllm: false, webllmVersion: undefined, tilde: TILDE_SHA.slice(0, 7), senses: m.senses || [] },
     createConversation: async (cfg) => (native ? new NativeConversation(w, cfg) : new Conversation(w, cfg)),
     delete: async () => { try { await w.exit(); } catch {} },
   };
 }
 
 // ── The model's own voice and hearing (Omni) ──────────────────────────────
-// Both run in Keptsam's side sequence, so the chat's prompt stays read. Callers go through engine.js, which holds
+// Both run in Tilde's side sequence, so the chat's prompt stays read. Callers go through engine.js, which holds
 // the one-generation-at-a-time lock (the GPU's scratch buffers are shared).
 
 /** Says `text` in the model's own voice, streaming 24 kHz mono PCM chunks to onAudio. Resolves to the whole clip. */
@@ -194,5 +194,5 @@ export async function transcribe(pcm, opts = {}) {
 
 export const SPEECH_RATE = 24000;
 export const decodeAudio = async (blob) => (await lib()).decodeAudio(blob);
-/** GPU memory Keptsam holds right now and its peak ({ totalMB, peakMB, byTag, … }), or null when nothing is loaded. */
+/** GPU memory Tilde holds right now and its peak ({ totalMB, peakMB, byTag, … }), or null when nothing is loaded. */
 export const stats = () => (current ? current.stats() : null);
