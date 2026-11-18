@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Squiggle download check</title>
+<style>
+  body { font: 15px/1.45 -apple-system, system-ui, sans-serif; background: #171b2e; color: #e6e8f2; margin: 0; padding: 16px; }
+  h1 { font-size: 19px; margin: 0 0 12px; }
+  pre { white-space: pre-wrap; word-break: break-word; background: #20263d; padding: 12px; border-radius: 10px; font: 13px/1.4 ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+<h1>Download check (LFM3 1.7B)</h1>
+<p>Takes up to 2 minutes. Screenshot it when it says done.</p>
+<pre id="out">starting…</pre>
+<script type="module">
+const SHA = 'f6d8cbac6b6c5c8cfbddd4530dd920ea52b36d49';
+const URL_1_7B = 'https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-QAD-Q4_0.gguf';
+const SIZE = 1049615680;
+const out = document.getElementById('out');
+const lines = [];
+const say = (s) => { lines.push(s); out.textContent = lines.join('\n'); };
+const mb = (n) => `${(n / 1e6).toFixed(1)} MB`;
+const t0 = performance.now();
+const at = () => `${((performance.now() - t0) / 1000).toFixed(1)} s`;
+const within = (p, ms, what) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(`${what}: no answer after ${ms / 1000} s`)), ms))]);
+
+say(`Tilde pinned at ${SHA.slice(0, 7)}; ${navigator.onLine ? 'online' : 'OFFLINE'}; ${navigator.connection ? navigator.connection.effectiveType : ''}`);
+try { const e = await navigator.storage.estimate(); say(`storage ${mb(e.usage)} used of ${mb(e.quota)}`); } catch (e) { say('estimate: ' + e.message); }
+
+// What the cache holds for the 1.7B file, counted directly.
+say(`caches: ${(await caches.keys()).join(', ')}`);
+for (const name of ['tilde-v1', 'keptsam-v1']) {
+  try {
+    if (!(await caches.has(name))) { say(`${name}: not there`); continue; }
+    const c = await caches.open(name);
+    const all = (await c.keys()).map(r => r.url);
+    const keys = all.filter(u => u.includes('LFM3-1.7B-QAD'));
+    const pieces = keys.filter(u => /\/\d+$/.test(u)).length;
+    say(`${name}: ${all.length} entries; LFM3 1.7B ${pieces} of 63 pieces, size record ${keys.some(u => u.endsWith('/size')) ? 'yes' : 'no'} (${at()})`);
+  } catch (e) { say(`${name}: ${e.message}`); }
+}
+
+// What Squiggle's download code sees (the same call the banner uses).
+try {
+  const k = await within(import(`https://cdn.jsdelivr.net/gh/KealJones/tilde@${SHA}/src/index.js`), 30000, 'loading Tilde');
+  say(`Tilde loaded (${at()})`);
+  const i = await within(k.cachedFileInfo(URL_1_7B, 'tilde-v1', { size: SIZE }), 30000, 'cachedFileInfo');
+  say(`Tilde says: ${mb(i.stored)} of ${mb(i.size)} stored, complete: ${i.complete} (${at()})`);
+} catch (e) { say('Tilde: ' + e.message); }
+
+// Hugging Face: one small range, then one 16 MB piece read as it streams.
+try {
+  const r = await within(fetch(URL_1_7B, { headers: { Range: 'bytes=0-15' } }), 20000, 'small range request');
+  await within(r.arrayBuffer(), 20000, 'small range body');
+  say(`small range: ${r.status}, ${r.headers.get('Content-Range')} (${at()})`);
+} catch (e) { say(`small range FAILED: ${e.name}: ${e.message} (${at()})`); }
+try {
+  const s = performance.now();
+  const r = await within(fetch(URL_1_7B, { headers: { Range: `bytes=0-${(16 << 20) - 1}` } }), 30000, '16 MB request');
+  say(`16 MB piece: headers after ${((performance.now() - s) / 1000).toFixed(1)} s, status ${r.status}`);
+  const rd = r.body.getReader();
+  let got = 0, last = 0;
+  for (;;) {
+    const { done, value } = await within(rd.read(), 20000, `stalled at ${mb(got)}`);
+    if (done) break;
+    got += value.length;
+    if (got - last > 4e6) { say(`  ${mb(got)} at ${((performance.now() - s) / 1000).toFixed(1)} s`); last = got; }
+  }
+  say(`16 MB piece: ${mb(got)} in ${((performance.now() - s) / 1000).toFixed(1)} s`);
+} catch (e) { say(`16 MB piece FAILED: ${e.name}: ${e.message} (${at()})`); }
+say('done');
+</script>
+</body>
+</html>
