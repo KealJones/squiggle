@@ -1,11 +1,11 @@
-// LFM3 Omni on Keptsam: pictures, video and sound reach the model itself (media.js, attachments.js), the engine
-// swaps markers for them and snapshots at the shim's safe cut (engine-keptsam.js), and its own voice plays a
+// LFM3 Omni on Tilde: pictures, video and sound reach the model itself (media.js, attachments.js), the engine
+// swaps markers for them and snapshots at the shim's safe cut (engine-tilde.js), and its own voice plays a
 // sentence once it's made (omni-voice.js).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as media from '../app/src/media.js';
 import { readAttachment, attachmentPrompt, replayNote, toRecord, setOcr, setSees, checkFiles, MAX_BYTES } from '../app/src/attachments.js';
-import { asEngine } from '../app/src/engine-keptsam.js';
+import { asEngine } from '../app/src/engine-tilde.js';
 import { omniSpeaker } from '../app/src/omni-voice.js';
 
 test('media: a kept file splits out of prompt text at its marker, and decodes once to the same object', async () => {
@@ -18,7 +18,7 @@ test('media: a kept file splits out of prompt text at its marker, and decodes on
   let n = 0;
   const dec = () => Promise.resolve({ image: { n: ++n } });
   const a = await media.decoded(id, dec), b = await media.decoded(id, dec);
-  assert.equal(a, b, 'Keptsam compares media by identity, so prompt reuse needs the same object');
+  assert.equal(a, b, 'Tilde compares media by identity, so prompt reuse needs the same object');
   assert.equal(n, 1);
   assert.equal(media.kindOfMedia('video/mp4', 'x'), 'video');
   assert.equal(media.kindOfMedia('', 'note.m4a'), 'audio');
@@ -58,7 +58,7 @@ test('attachments: a model that sees gets the picture itself, no OCR; one that d
   } finally { setSees(() => false); setOcr(async () => ({ text: '' })); }
 });
 
-// A fake Keptsam: tokens are characters, so snapshot points can be checked by eye.
+// A fake Tilde: tokens are characters, so snapshot points can be checked by eye.
 function fakeLlm(reply) {
   const tk = { encode: (s) => [...s].map((c) => c.charCodeAt(0)) };
   const calls = [];
@@ -77,7 +77,7 @@ function fakeLlm(reply) {
   };
 }
 
-test('engine-keptsam: streams Keptsam\'s tokens as WebLLM chunks, snapshots at the safe cut, swaps markers for files', async () => {
+test('engine-tilde: streams Tilde\'s tokens as WebLLM chunks, snapshots at the safe cut, swaps markers for files', async () => {
   const llm = fakeLlm(['Hel', 'lo']);
   const k = { readVideo: async () => ({ frames: [] }), decodeAudio: async () => new Float32Array(16000) };
   const eng = asEngine(k, llm);
@@ -108,7 +108,7 @@ test('engine-keptsam: streams Keptsam\'s tokens as WebLLM chunks, snapshots at t
   assert.ok(got.length < 4);
 });
 
-test('engine-keptsam: a lost GPU is reported in words the shim reloads on; a full window says what to do', async () => {
+test('engine-tilde: a lost GPU is reported in words the shim reloads on; a full window says what to do', async () => {
   const llm = fakeLlm([]);
   llm.generate = async () => { llm.gpu.lost = { reason: 'destroyed' }; throw new Error('GPU lost: destroyed'); };
   const eng = asEngine({}, llm);

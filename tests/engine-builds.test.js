@@ -1,5 +1,5 @@
-// Two LFM3 models, each with builds the device picks from (engine.forDevice): LFM3 1.7B on Keptsam with WebGPU
-// (2026-11-17), then the WebLLM build if that one crashed here, then the GGUF on the CPU; LFM3 Omni 2B on Keptsam,
+// Two LFM3 models, each with builds the device picks from (engine.forDevice): LFM3 1.7B on Tilde with WebGPU
+// (2026-11-17), then the WebLLM build if that one crashed here, then the GGUF on the CPU; LFM3 Omni 2B on Tilde,
 // and where it can't run, a chat saved with it opens on the best LFM3 1.7B build.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,11 +14,11 @@ function device({ ua = MAC, gpu = true, f16 = true } = {}) {
 device();
 const engine = await import('../app/src/engine.js');
 
-test('LFM3 1.7B: the Keptsam build with WebGPU, the CPU build without; Omni stays the default where it runs', () => {
+test('LFM3 1.7B: the Tilde build with WebGPU, the CPU build without; Omni stays the default where it runs', () => {
   device({ gpu: true });
   assert.equal(engine.deviceModel(), 'KOMNI');
   assert.equal(engine.forDevice('LF3'), 'KLF3', 'a chat saved on a CPU device opens on the GPU build here');
-  assert.equal(engine.forDevice('WLF3QAD'), 'KLF3', 'a chat saved with the WebLLM build opens on Keptsam');
+  assert.equal(engine.forDevice('WLF3QAD'), 'KLF3', 'a chat saved with the WebLLM build opens on Tilde');
   assert.equal(engine.forDevice('KOMNI'), 'KOMNI');
   device({ gpu: false });
   assert.equal(engine.deviceModel(), 'LF3');
@@ -35,19 +35,19 @@ test('LFM3 1.7B and LFM3 Omni 2B are listed side by side, each once', () => {
   assert.deepEqual(listed.sort(), ['KLF3', 'KOMNI', 'SQ', 'TG4A', 'cloud'], 'the two LFM3s, Keal\'s two small models, the cloud model');
   assert.equal(engine.MODELS.KLF3.label, 'LFM3 1.7B');
   assert.equal(engine.MODELS.WLF3QAD.label, engine.MODELS.LF3.label);
-  assert.equal(engine.MODELS.KLF3.url, engine.MODELS.LF3.url, 'Keptsam reads the same QAD GGUF as llama.cpp');
+  assert.equal(engine.MODELS.KLF3.url, engine.MODELS.LF3.url, 'Tilde reads the same QAD GGUF as llama.cpp');
   assert.equal(engine.MODELS.KLF3.toolFormat, 'lfm3', 'LFM3 1.7B thinks on its own: no started thinking');
   assert.equal(engine.MODELS.KOMNI.toolFormat, 'lfm3-omni');
   device({ gpu: false });
   assert.deepEqual(engine.listedModels({}).filter(id => engine.groupOf(id)), ['LF3'], 'without WebGPU: LFM3 1.7B on the CPU, no Omni');
 });
 
-test('a GPU without 16-bit floats keeps the Keptsam builds (no shader-f16 needed); a build that crashed here takes the next one', async () => {
+test('a GPU without 16-bit floats keeps the Tilde builds (no shader-f16 needed); a build that crashed here takes the next one', async () => {
   device({ gpu: true, f16: false });
   assert.equal(await engine.probeGpu(), false);
-  assert.equal(engine.forDevice('WLF3QAD'), 'KLF3', 'Keptsam stores halves in u32: no shader-f16 needed');
-  assert.match(engine.runnerLabel('KOMNI'), /GPU.*Keptsam/);
-  assert.match(engine.runnerLabel('KLF3'), /GPU.*Keptsam/);
+  assert.equal(engine.forDevice('WLF3QAD'), 'KLF3', 'Tilde stores halves in u32: no shader-f16 needed');
+  assert.match(engine.runnerLabel('KOMNI'), /GPU.*Tilde/);
+  assert.match(engine.runnerLabel('KLF3'), /GPU.*Tilde/);
   assert.deepEqual(engine.MODELS.KOMNI.senses, ['image', 'video', 'audio', 'voice']);
   assert.ok(!engine.MODELS.KLF3.senses);
   engine.setAvoided(['KOMNI']);

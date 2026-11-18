@@ -1,10 +1,10 @@
-// Pictures, videos and sound the model takes in directly (LFM3 Omni on Keptsam), instead of the text read from them.
+// Pictures, videos and sound the model takes in directly (LFM3 Omni on Tilde), instead of the text read from them.
 //
 // Storage only holds text (attachments.js), so the files themselves live here, in memory, for as long as the page
 // is open: an attachment the model can take in is kept under an id, and the prompt carries a marker for it where the
-// user's message lists it. The engine (engine-keptsam.js) swaps each marker for the file itself when it reads the
+// user's message lists it. The engine (engine-tilde.js) swaps each marker for the file itself when it reads the
 // prompt. Each file is decoded once and the same object is handed over every time, so the engine can tell a prompt
-// it has already read (Keptsam compares media by identity) and doesn't read it again. After a reload the files are
+// it has already read (Tilde compares media by identity) and doesn't read it again. After a reload the files are
 // gone and the markers aren't written: the model gets the attachment's text as before.
 
 const kept = new Map();   // id → { kind, file, name, decoded?: Promise }
@@ -49,10 +49,10 @@ export function decoded(id, decode) {
   return it.decoded;
 }
 
-/** Rough prompt tokens a file takes once the model reads it (for the context window): what Keptsam reads it as. */
+/** Rough prompt tokens a file takes once the model reads it (for the context window): what Tilde reads it as. */
 export function tokensFor(kind, { seconds = 10 } = {}) {
   if (kind === 'image') return 260;                        // up to 256 picture tokens + its markers
-  if (kind === 'audio') return Math.ceil(Math.min(seconds, 120) * 12.5) + 2;   // engine-keptsam.js reads at most 2 minutes
+  if (kind === 'audio') return Math.ceil(Math.min(seconds, 120) * 12.5) + 2;   // engine-tilde.js reads at most 2 minutes
   if (kind === 'video') return Math.ceil(Math.min(seconds, 30)) * (64 + 12 + 8) + 2;   // and 30 s of video   // a frame pair a second (64 at low detail) + its timestamp + its sound
   return 0;
 }

@@ -1,9 +1,9 @@
-// LFM3 Omni's own voice and hearing (engine.speak / engine.transcribe, on Keptsam), for read aloud, voice calls and
+// LFM3 Omni's own voice and hearing (engine.speak / engine.transcribe, on Tilde), for read aloud, voice calls and
 // the composer's microphone. Both run on the GPU between replies, in a side sequence of the model, so the chat's
 // prompt stays read.
 //
 //   omniSpeaker   the speaker interface voice.js uses (prime, prepare, play, cancel), in the model's own voice.
-//                 Speech is made slower than real time for now (~0.3× on an iPhone 16, Keptsam 2026-11-16), so a
+//                 Speech is made slower than real time for now (~0.3× on an iPhone 16, Tilde 2026-11-16), so a
 //                 sentence plays once it's all made, while the next one is being made: pauses between sentences
 //                 instead of stutters inside them.
 //   OmniRecognition  a stand-in for the Web Speech API's SpeechRecognition (what voice.js createCall drives): the

@@ -426,7 +426,7 @@ export function resultText(response) {
 // inside a tool round, where the thinking that led to the call stays while its results are answered. So an
 // assistant turn keeps its `reasoning_content` only while it is the last one and every message after it is
 // a tool result (the templates read that field; a template without it ignores it).
-// refs: the runtime renders tool_reference parts itself (WebLLM/Keptsam with LFM3's format); llama.cpp's own
+// refs: the runtime renders tool_reference parts itself (WebLLM/Tilde with LFM3's format); llama.cpp's own
 // template path takes text parts only, so there the whole <tool_response> goes as text, which LFM3's template
 // passes through as it is (the same text: toolformats/lfm3.js toolResponse).
 export function nativeMessages(messages, { refs = true, tools = [] } = {}) {

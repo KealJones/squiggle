@@ -1,6 +1,6 @@
 # Squiggle — notes for engineers and coding agents
 
-A browser-only agent: LFM3 on Keal's own WebGPU engine, Keptsam (LFM3 Omni 2B: it also sees pictures and video, hears
+A browser-only agent: LFM3 on Keal's own WebGPU engine, Tilde (LFM3 Omni 2B: it also sees pictures and video, hears
 sound and speaks; 2026-11-16; LFM3 1.7B beside it since 2026-11-17), on phones and computers, or LFM3 1.7B's GGUF on the CPU (wllama) without WebGPU
 (`engine.DEFAULTS`); the WebLLM build (our own MLC build) is the GPU fallback; optionally Gemma 4 26B on the relay's Workers AI. Keal's
 own Squiggle Small and Tiny Gemma 4 stay as experimental options; every other model was removed (2026-11-10), the
@@ -48,9 +48,9 @@ app/                    static app, plain ES modules, no build step
     recall.js           smart mode's recalled block: earlier messages (this chat + other chats) and memory, quoted after the request; time phrases, size caps
     search.js           BM25 (light stemmer: -ing/-ies/-ed/-s and a trailing e) + blend with optional embeddings (embed.js, MiniLM on CPU in embed-worker.js, terminated after 15 s idle on phones / 3 min on computers so its memory is freed)
     engine-webllm.js    WebLLM (MLC on WebGPU) under engine-wllama.js's conversations; per-model WebLLM version (`webllm`); streams any tool format
-    engine-keptsam.js   Keptsam (github.com/KealJones/Keptsam, pinned by commit, from jsDelivr) posing as a WebLLM engine under that shim: raw
+    engine-tilde.js   Tilde (github.com/KealJones/tilde, pinned by commit, from jsDelivr) posing as a WebLLM engine under that shim: raw
                         completions, prompt reuse by snapshot at the shim's safe cut (prefix-cache.js snapshotPoint), ⟦media:id⟧ markers → the
-                        file itself, speak()/transcribe() in a side sequence (the chat's cache survives them); files in Cache Storage keptsam-v1
+                        file itself, speak()/transcribe() in a side sequence (the chat's cache survives them); files in Cache Storage tilde-v1
     media.js            files the model takes in itself (Omni): kept in memory for the page under an id, a marker in the prompt, decoded once
     omni-voice.js       Omni's own voice (a voice.js speaker: a sentence plays once made, the next made meanwhile), a SpeechRecognition stand-in
                         (mic + loudness check, each utterance transcribed by the model) for calls, recordOnce for the composer's microphone
@@ -289,9 +289,9 @@ stubs the Web Speech API; real-model behaviour needs a WebGPU device and is chec
 iOS Safari kills tabs that load Gemma 4 E2B/E4B, and smaller ONNX models (tried and removed:
 Gemma 3, SmolLM, a QAT E2B build on onnxruntime-web) failed on WebGPU readback. The defaults are `engine.DEFAULTS`
 (one place to change): LFM3 everywhere since 2026-11-10 (settings.js `lfm3Default` moves devices on an old default
-once). A model can have several builds (`engine.GROUPS`, `group` on each MODELS entry): LFM3 1.7B is `KLF3` (Keptsam, WebGPU without
+once). A model can have several builds (`engine.GROUPS`, `group` on each MODELS entry): LFM3 1.7B is `KLF3` (Tilde, WebGPU without
 shader-f16, Liquid's QAD Q4_0 GGUF, 2026-11-17), then `WLF3QAD` (WebLLM, q4f16 with a q4f32 twin), then `LF3` (GGUF on
-wllama, CPU). LFM3 Omni 2B (`KOMNI`, Keptsam, the default where it runs) is listed beside it as its own model; its
+wllama, CPU). LFM3 Omni 2B (`KOMNI`, Tilde, the default where it runs) is listed beside it as its own model; its
 group falls back to the 1.7B builds. Omni closes an open `<think>` at once (its branch skipped the 1.7B's MOPD and
 agentic RL), so its format (`lfm3-omni`) starts the thinking with "We need to" and shows those words as thinking; it often goes from that thinking straight into a tool call without `</think>`, so a `<tool_call>` there ends the thinking. The user picks the model; `engine.forDevice` picks the first build
 that runs here (`runsHere`: WebGPU for GPU builds, shader-f16 for f16-only ones after `probeGpu`, not in
