@@ -1776,7 +1776,14 @@ await check('LFM3 gets bash, the web and search_tools up front, the rest named a
     const repl = await run('memory', { action: 'replace', old_text: 'fridays', content: 'The user deploys on Mondays.' });
     const gone = await run('memory', { action: 'remove', old_text: 'short answers' });
     const mem = await import('/src/memory.js');
-    return { w, e, pi, bad, rd: JSON.stringify(rd), add1, add2, both, repl, gone, facts: mem.all().map(f => mem.factText(f)) };
+    // target "memory": this chat's notes, not the facts kept for every chat.
+    const note = await run('memory', { action: 'add', target: 'memory', content: 'The config lives in /home/notes/plan.md.' });
+    const notes1 = (await import('/src/sessions.js')).liveNotes(session).map(n => n.text);
+    const noteGone = await run('memory', { action: 'remove', target: 'memory', old_text: 'config lives' });
+    const notes2 = (await import('/src/sessions.js')).liveNotes(session).map(n => n.text);
+    // A directory link (ln -s): writes through it land in the place it points to.
+    const sh = await run('bash', { command: 'mkdir -p /home/linked && ln -s /home/linked /tmp/lk && echo hi > /tmp/lk/a.txt && cd /tmp/lk && pwd && cat /home/linked/a.txt' });
+    return { w, e, pi, bad, rd: JSON.stringify(rd), add1, add2, both, repl, gone, facts: mem.all().map(f => mem.factText(f)), note, notes1, noteGone, notes2, sh: JSON.stringify(sh) };
   });
   assert.ok(!r.w.error && !r.e.error && !r.pi.error, JSON.stringify(r));
   assert.match(r.bad.error, /old_string/, 'errors use the arguments the model was given');
@@ -1788,6 +1795,11 @@ await check('LFM3 gets bash, the web and search_tools up front, the rest named a
   assert.match(r.repl.replaced, /Fridays/);
   assert.match(r.gone.removed, /short answers/);
   assert.deepEqual(r.facts.filter(f => /deploys on|short answers/.test(f)), ['The user deploys on Mondays.']);
+  assert.ok(r.note.ok && r.notes1.includes('The config lives in /home/notes/plan.md.'), JSON.stringify(r.note));
+  assert.ok(!r.facts.some(f => /config lives/.test(f)), 'a chat note is not a fact for every chat');
+  assert.match(r.noteGone.removed, /config lives/);
+  assert.ok(!r.notes2.some(n => /config lives/.test(n)));
+  assert.match(r.sh, /\/tmp\/lk/); assert.match(r.sh, /hi/);
   await D.ctx.close();
 });
 

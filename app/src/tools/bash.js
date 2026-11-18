@@ -52,6 +52,16 @@ const err = (code, op, path) => Object.assign(new Error(`${code}: ${{ ENOENT: 'n
 // Where a shell path lives: { kind: 'root' | 'home' | 'fs' | 'web' | 'tmp' | 'denied', real?, rel? }. 'tmp' is
 // the in-memory filesystem: /tmp, and the /bin, /usr/bin, /dev and /proc just-bash puts there for itself (it looks
 // commands up as /usr/bin/<name>).
+// A path through the chat's directory links (`ln -s`, or `git clone URL /tmp/x`, which clones into /repos and links
+// /tmp/x there: LFM3 cloned into /tmp, never found its files in /repos and made a path up, 2026-11-17).
+export function followLinks(path, links) {
+  const p = normalize(path);
+  if (!links || !links.size) return p;
+  for (const [from, to] of links) if (p === from || p.startsWith(from + '/')) return to + p.slice(from.length);
+  return p;
+}
+export const linksOf = (ctx = {}) => (ctx.session ? (ctx.session.__bashLinks = ctx.session.__bashLinks || new Map()) : (ctx.__bashLinks = ctx.__bashLinks || new Map()));
+
 function locate(path) {
   const p = normalize(path);
   if (p === '/') return { kind: 'root', p };
@@ -75,7 +85,10 @@ const text = (c) => (typeof c === 'string' ? c : new TextDecoder().decode(c));
 /** just-bash's IFileSystem over Squiggle's workspace (see the top of this file). `tmp` is an in-memory
  *  filesystem for /tmp (just-bash's InMemoryFs). */
 export class WorkspaceFs {
-  constructor(tmp) { this.tmp = tmp; this.index = ['/', '/home', '/repos']; }
+  /** @param {Map<string,string>} [links] directory links (ln -s, git clone URL /tmp/x): path → where it points */
+  constructor(tmp, links = new Map()) { this.tmp = tmp; this.links = links; this.index = ['/', '/home', '/repos']; }
+
+  at(path) { return locate(followLinks(path, this.links)); }
 
   async refreshIndex(cap = 4000) {
     const out = ['/', '/home', '/repos'];
@@ -93,7 +106,7 @@ export class WorkspaceFs {
   getAllPaths() { return [...new Set([...this.index, ...(this.tmp && this.tmp.getAllPaths ? this.tmp.getAllPaths() : [])])]; }
 
   async readFile(path, options) {
-    const at = locate(path);
+    const at = this.at(path);
     if (at.kind === 'tmp') return this.tmp.readFile(at.p, options);
     if (at.kind === 'web') { const t = await readAgentFile(at.p); if (t == null) throw err('ENOENT', 'open', path); return t; }
     if (at.kind === 'home' || at.kind === 'fs') {
@@ -107,21 +120,21 @@ export class WorkspaceFs {
   }
   // cat and friends use readFileBytes when the filesystem has it ("binary" strings, one char per byte).
   async readFileBytes(path) {
-    const at = locate(path);
+    const at = this.at(path);
     if (at.kind === 'tmp' && this.tmp.readFileBytes) return this.tmp.readFileBytes(at.p);
     const buf = await this.readFileBuffer(path);
     let out = ''; for (let i = 0; i < buf.length; i += 8192) out += String.fromCharCode.apply(null, buf.subarray(i, i + 8192));
     return out;
   }
   async readFileBuffer(path) {
-    const at = locate(path);
+    const at = this.at(path);
     if (at.kind === 'tmp') return this.tmp.readFileBuffer(at.p);
     if (at.kind === 'home' || at.kind === 'fs') { try { return await pfs.readFile(at.real); } catch { throw err('ENOENT', 'open', path); } }
     return new TextEncoder().encode(await this.readFile(path));
   }
 
   async writeFile(path, content, options) {
-    const at = locate(path);
+    const at = this.at(path);
     if (at.kind === 'tmp') return this.tmp.writeFile(at.p, content, options);
     // A "binary" string is one character per byte (just-bash writes redirects that way): back to bytes, so UTF-8
     // text lands as UTF-8.
@@ -136,7 +149,7 @@ export class WorkspaceFs {
     throw err(at.kind === 'web' ? 'EROFS' : at.kind === 'denied' ? 'EACCES' : 'ENOENT', 'write', path);
   }
   async appendFile(path, content, options) {
-    const at = locate(path);
+    const at = this.at(path);
     if (at.kind === 'tmp') return this.tmp.appendFile(at.p, content, options);
     const enc = typeof options === 'string' ? options : options && options.encoding;
     if (typeof content === 'string' && (enc === 'binary' || enc === 'latin1')) content = Uint8Array.from(content, (c) => c.charCodeAt(0) & 255);
@@ -154,7 +167,7 @@ export class WorkspaceFs {
   }
   async exists(path) { try { await this.stat(path); return true; } catch { return false; } }
   async stat(path) {
-    const at = locate(path);
+    const at = this.at(path);
     if (at.kind === 'tmp') return this.tmp.stat(at.p);
     if (at.kind === 'root' || (at.kind === 'fs' && !at.repo) || (at.kind === 'web' && !at.rel)) return DIR_STAT(at.p);
     if (at.kind === 'web') { const t = await readAgentFile(at.p); if (t == null) throw err('ENOENT', 'stat', path); return { ...DIR_STAT(at.p), isFile: true, isDirectory: false, mode: 0o444, size: t.length }; }
@@ -169,7 +182,7 @@ export class WorkspaceFs {
   lstat(path) { return this.stat(path); }
 
   async mkdir(path, options = {}) {
-    const at = locate(path);
+    const at = this.at(path);
     if (at.kind === 'tmp') return this.tmp.mkdir(at.p, options);
     if (at.kind === 'home' || (at.kind === 'fs' && at.repo)) {
       if (await this.exists(path)) { if (options.recursive) return; throw Object.assign(new Error(`EEXIST: file already exists, mkdir '${path}'`), { code: 'EEXIST' }); }
@@ -179,7 +192,7 @@ export class WorkspaceFs {
   }
 
   async readdir(path) {
-    const at = locate(path);
+    const at = this.at(path);
     if (at.kind === 'tmp') return this.tmp.readdir(at.p);
     if (at.kind === 'root') {
       const mem = await this.tmp.readdir('/').catch(() => []);
@@ -197,7 +210,7 @@ export class WorkspaceFs {
   }
 
   async rm(path, options = {}) {
-    const at = locate(path);
+    const at = this.at(path);
     if (at.kind === 'tmp') return this.tmp.rm(at.p, options);
     if (!(await this.exists(path))) { if (options.force) return; throw err('ENOENT', 'rm', path); }
     const dir = await this.isDir(at);
@@ -225,14 +238,14 @@ export class WorkspaceFs {
   async mv(src, dest) { await this.cp(src, dest, { recursive: true }); await this.rm(src, { recursive: true }); }
   // realpath and utimes aren't in the interface's listing but ls, cd, touch and others call them.
   async realpath(path) {
-    const at = locate(path);
+    const at = this.at(path);
     if (at.kind === 'tmp') return this.tmp.realpath ? this.tmp.realpath(at.p) : at.p;
     await this.stat(path);
     return at.p;
   }
-  async utimes(path) { if (locate(path).kind === 'tmp' && this.tmp.utimes) return this.tmp.utimes(locate(path).p, new Date(), new Date()); }
+  async utimes(path) { if (this.at(path).kind === 'tmp' && this.tmp.utimes) return this.tmp.utimes(this.at(path).p, new Date(), new Date()); }
   async readdirWithFileTypes(path) {
-    const at = locate(path);
+    const at = this.at(path);
     if (at.kind === 'tmp' && this.tmp.readdirWithFileTypes) return this.tmp.readdirWithFileTypes(at.p);
     const base = normalize(path);
     return Promise.all((await this.readdir(path)).map(async (name) => {
@@ -242,9 +255,16 @@ export class WorkspaceFs {
     }));
   }
   async chmod() {}
-  async symlink(t, p) { throw err('ENOTSUP', 'symlink', p); }
+  // Directory links only (ln -s DIR LINK): kept for the chat like /tmp, followed by every path through at().
+  async symlink(t, p) {
+    const link = normalize(p), target = normalize(resolve(link.replace(/\/[^/]*$/, '') || '/', t));
+    if (!(await this.isDirPath(target))) throw err('ENOTSUP', 'symlink', p);
+    if (await this.exists(link)) throw err('EEXIST', 'symlink', p);
+    this.links.set(link, followLinks(target, this.links));
+  }
   async link(e, p) { throw err('ENOTSUP', 'link', p); }
-  async readlink(p) { throw err('ENOTSUP', 'readlink', p); }
+  async readlink(p) { const t = this.links.get(normalize(p)); if (!t) throw err('EINVAL', 'readlink', p); return t; }
+  async isDirPath(p) { try { return (await this.stat(p)).isDirectory; } catch { return false; } }
 
   note(p) { if (!this.index.includes(p)) this.index.push(p); }
 }
@@ -286,8 +306,8 @@ export function flags(args, withValue = []) {
 }
 
 // The repo a git command means: `-C dir`, else the folder under /repos the shell is in.
-function repoFrom(cwd, explicit) {
-  const p = normalize(explicit ? resolve(cwd, explicit) : cwd);
+function repoFrom(cwd, explicit, links) {
+  const p = followLinks(explicit ? resolve(cwd, explicit) : cwd, links);
   const m = /^\/repos\/([^/]+)/.exec(p);
   return m ? m[1] : null;
 }
@@ -316,18 +336,26 @@ export function commands(defineCommand, toolCtx, seen) {
       written: () => (dir ? writtenIn(dir) : []), noteWritten, agentBranchName,
       call: (n, a, extra) => call(n, a, extra), stdin: ctx.stdin || '', help: HELP.git,
       initDir: (arg) => { const p = normalize(resolve(ctx.cwd, arg || '.')); const m = /^\/repos\/([^/]+)$/.exec(p); return m ? { dir: `${REPOS}/${m[1]}`, path: p } : null; },
+      // `git clone URL DEST`: clones live in /repos/<name>; a DEST elsewhere becomes a link to it, as if cloned there.
+      linkClone: (dest, repoPath) => {
+        const p = normalize(resolve(ctx.cwd, dest));
+        if (p === repoPath || /^\/repos(\/|$)/.test(p)) return p === repoPath ? p : null;
+        if (/^\/(home|web)(\/|$)/.test(p)) return null;
+        linksOf(toolCtx).set(p, repoPath);
+        return p;
+      },
     };
   };
   const git = defineCommand('git', helped(HELP.git, async (argv, ctx) => {
     let args = [...argv], dir = null;
     while (args[0] === '-C' && args.length > 1) { dir = args[1]; args = args.slice(2); }
-    const name = repoFrom(ctx.cwd, dir);
+    const name = repoFrom(ctx.cwd, dir, linksOf(toolCtx));
     const env = await gitEnv(dir ? { ...ctx, cwd: normalize(resolve(ctx.cwd, dir)) } : ctx, name);
     return runGit(args, env);
   }));
 
   const gh = defineCommand('gh', helped(HELP.gh, async (argv, ctx) => {
-    const name = repoFrom(ctx.cwd);
+    const name = repoFrom(ctx.cwd, null, linksOf(toolCtx));
     const genv = await gitEnv(ctx, name);
     let repo = null, branch = null;
     if (genv.dir) {
@@ -484,7 +512,7 @@ export const bash = defineTool({
     try { L = await load(ctx.bashLib); } catch (e) { return { model: { error: `The shell couldn't load: ${e.message || e}` }, label: 'bash (not loaded)' }; }
     const tmp = ctx.bashTmp || (ctx.session ? (ctx.session.__bashTmp = ctx.session.__bashTmp || new L.InMemoryFs()) : new L.InMemoryFs());
     try { await tmp.mkdir('/tmp', { recursive: true }); } catch {}
-    const fs = new WorkspaceFs(tmp);
+    const fs = new WorkspaceFs(tmp, linksOf(ctx));
     await fs.refreshIndex();
     const seen = [];
     const shell = new L.Bash({

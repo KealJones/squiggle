@@ -126,11 +126,11 @@ docs/                   harness.md (the agent loop contract), failures.md (caseb
   (2026-11-16: it used to throw, which was CI's flaky e2e for weeks; tests/e2e "six devices sync at the same moment").
 - The bash surface (`agent.bashSurface()`): the model gets `bash` (every custom command kept) plus the common harness
   tools beside it (tools/common.js, 2026-11-17: `read`, `write`, `edit`, `web_search`, `web_fetch`, Hermes's `memory`
-  (add/replace/remove by a piece of the text) and `session_search`, snake_case names and arguments, each running the Squiggle tool it wraps) and the harness tools,
+  (add/replace/remove by a piece of the text; target `user` = facts for every chat, `memory` = this chat's notes) and `session_search`, snake_case names and arguments, each running the Squiggle tool it wraps) and the harness tools,
   instead of the separate file, web, git and maths tools. LFM3 gets only bash, web_search, web_fetch, memory and search_tools
   up front; the rest (files, `session_search`, plan, ask_user…) are deferred (`defer_loading`), named by name
   at the end of its prompt, and found with `search_tools`, answered as `tool_reference` parts its template expands
-  (docs/harness.md "Deferred tools"); one called blind with arguments that don't fit gets its definition back instead of running. Commands that reach the network, GitHub or the sandbox go through `runTool` with the
+  (docs/harness.md "Deferred tools"); one called blind with arguments that don't fit gets its definition back instead of running. The prompt lists the repos cloned here every turn (`refreshClones`). Bash has directory links (`ln -s`, kept for the chat like /tmp); `git clone URL /tmp/x` clones into /repos/<name> and links /tmp/x to it. Commands that reach the network, GitHub or the sandbox go through `runTool` with the
   agent's context, so a push still needs the approval card and curl fetches any URL (the allowed-URL check stays on fetch_url for the two fine-tunes); the whole output is
   wrapped as untrusted; `.git` stays unreachable (`guard.resolveAgentPath`).
 - No tool cuts its output (Keal, 2026-11-15): bash, curl, read_file, grep, git log, run_js, wiki and the rest return
