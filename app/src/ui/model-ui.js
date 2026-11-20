@@ -85,7 +85,7 @@ function setCrashMarker(v) {
 // Not every leftover marker is a crash. Refreshing, closing the tab, or iOS discarding it in the background all end
 // the page mid-load too, but those fire pagehide or "hidden" first; a tab killed for memory gets no warning. So
 // leaving while a marker is set notes it (LEFT_KEY), coming back clears the note, and a marker found next to a
-// note means the page was left, not crashed: it loads again quietly (Keal, 2026-11-10: "a clean try again would
+// note means the page was left, not crashed: it loads again quietly (2026-11-10: "a clean try again would
 // work sometimes").
 const LEFT_KEY = 'squiggle-page-left';
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {

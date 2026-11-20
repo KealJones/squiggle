@@ -1,4 +1,4 @@
-// Prompt-prefix reuse for raw completions on WebLLM (Keal, 2026-11-11: "not meeting the cache every turn").
+// Prompt-prefix reuse for raw completions on WebLLM (2026-11-11: "not meeting the cache every turn").
 //
 // WebLLM empties the model's cache before every raw completion (preparePrefillInput calls resetChat, and
 // getInputData refuses a text completion unless the cache is empty), so each call re-read the whole prompt:

@@ -28,7 +28,7 @@ export function samplingOptions(sampling, { greedy = false, retry = false } = {}
 }
 
 // The budget note shown in the thinking view (and sent back to the model where it can continue).
-// What a native model's thinking ends with when it reaches its budget (Keal's idea, 2026-11-11): a decision, not a stop.
+// What a native model's thinking ends with when it reaches its budget (idea, 2026-11-11): a decision, not a stop.
 export const ENOUGH_THINKING = 'I\'ve weighed enough options. I\'ll go with the best one now, or ask the user if I\'m really unsure.';
 export const thinkBudgetNote = (n) => `[Squiggle stopped the thinking at its ${n}-token budget and asked for the answer.]`;
 

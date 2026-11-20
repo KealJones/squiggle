@@ -14,7 +14,7 @@ export const remember = defineTool({
   // The two fine-tunes learned the old subject/relation/object call; it still works.
   async run({ fact, scope, subject, relation, object, note }, ctx = {}) {
     let text = String(fact || [subject, relation, object].filter(Boolean).join(' ')).trim();
-    // Models copy the user's "I like…" (Keal's iPhone, 2026-11-16); read in another chat, "I" would be the assistant.
+    // Models copy the user's "I like…" (an iPhone, 2026-11-16); read in another chat, "I" would be the assistant.
     if (fact && /^(i|i'm|i've|i'd|my|me)\b/i.test(text)) text = `The user says: ${text}`;
     if (!text) return { model: { error: 'Give the fact to remember, in one sentence.' } };
     if (scope === 'this chat') {

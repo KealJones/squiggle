@@ -28,7 +28,7 @@ test('only the build this device runs is listed, under one name', () => {
   device({ gpu: true });
   const listed = engine.listedModels({ cloudOffered: true });
   assert.ok(listed.includes('WLF3QAD') && !listed.includes('LF3'), listed.join());
-  assert.deepEqual(listed.sort(), ['SQ', 'TG4A', 'WLF3QAD', 'cloud'], 'LFM3 once, Keal\'s two small models, the cloud model');
+  assert.deepEqual(listed.sort(), ['SQ', 'TG4A', 'WLF3QAD', 'cloud'], 'LFM3 once, the two small fine-tunes, the cloud model');
   assert.equal(engine.MODELS.WLF3QAD.label, engine.MODELS.LF3.label);
   device({ gpu: false });
   assert.ok(engine.listedModels({}).includes('LF3') && !engine.listedModels({}).includes('WLF3QAD'));

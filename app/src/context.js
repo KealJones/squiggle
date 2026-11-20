@@ -241,7 +241,7 @@ export async function assembleContext(o) {
   }
 
   // 4. Memory facts (all modes; they're small and about the person). Small models get them in Smart's recalled
-  // block; in the other modes LFM3 got none at all, so a Git question never saw the saved Git preference (Keal,
+  // block; in the other modes LFM3 got none at all, so a Git question never saw the saved Git preference (
   // 2026-11-16): it gets at most 3 here, above Fresh's small-model bar. Squiggle Small's prompt is frozen.
   const smallFacts = o.small && !o.frozen && !M.retrieve;
   if (o.recall && (!o.small || smallFacts) && !M.fresh) {

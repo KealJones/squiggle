@@ -203,7 +203,7 @@ thought too tight for it alongside the model.
 
 ### One bash tool in place of the file, web, git and maths tools — lab
 
-**Idea.** Keal, 2026-11-09: small models are bad at picking among ~20 tool schemas, and the schemas fill the
+**Idea.** 2026-11-09: small models are bad at picking among ~20 tool schemas, and the schemas fill the
 window. A shell is one tool every model has seen millions of times. `bash` (vercel-labs' just-bash) runs on the
 same workspace the other tools use (/home syncs through storage.js, /repos and /web through LightningFS), with
 git, gh, curl, search, wiki, node and bc as custom commands that call the existing tools, so approvals and URL
@@ -234,7 +234,7 @@ off (the crash-loop guard). The WebLLM models made the GPU switch moot for phone
 
 ### Resume a reply after the tab loses focus — built, untested on a device
 
-**Idea.** Keal, 2026-11-15: "make Squiggle focus-resilient". Leaving the Safari tab on an iPhone either takes the
+**Idea.** 2026-11-15: "make Squiggle focus-resilient". Leaving the Safari tab on an iPhone either takes the
 GPU (the tab lives, `revive` reloads the model, but a reply with text already shown ended in "send the message
 again") or kills the tab (Safari reloads the page; the turn in progress vanished).
 
@@ -283,7 +283,7 @@ engines.
 
 ### Reuse the prompt already in the cache — reverted, then shipped on by default
 
-**Idea.** Keal, 2026-11-11, on hearing every turn re-reads the whole prompt: "I'm more concerned about not meeting the
+**Idea.** 2026-11-11, on hearing every turn re-reads the whole prompt: "I'm more concerned about not meeting the
 cache every turn." On an iPhone 16 the prompt is read at roughly 100 tokens a second, so a reply with five tool
 steps over a 3K prompt spent most of its time re-reading the same 3K.
 
@@ -292,7 +292,7 @@ pure KV caches; LFM3's conv layers keep a running state that can't be rewound. F
 on both kinds of state. `prefix-cache.js` keeps a snapshot in a second sequence and starts each call from it when
 it's an exact token prefix; in a scripted tool loop (tests/prefix-cache.test.js) the prompt tokens read drop by
 about half. Shipped 2026-11-11 15:19 without ever running on a real GPU (SwiftShader can't run LFM3), and reverted
-at 19:38 the same day (02bb766, no reason in the message). The reason is in the incident log: 19:35 on Keal's
+at 19:38 the same day (02bb766, no reason in the message). The reason is in the incident log: 19:35 on the test
 iPhone, `gpu-lost`, first GPU error "GPUCommandEncoder.copyBufferToBuffer: source equals destination not valid",
 device destroyed, no GPU back after five tries. It's the only time that error appears. WebGPU refuses a copy from a
 buffer to itself, and a fork copies a state inside its own storage. It landed the same day as the iOS 27 watchdog
@@ -304,14 +304,14 @@ raised. The composer note says "prompt reuse on"; a GPU lost with it on turns it
 writes the reuse counts on the `gpu-lost` line. Whether the copy was the whole problem is what the trial is for:
 not yet run on a phone.
 
-**Result (2026-11-15).** On Keal's iPhone (Safari 27.2, LFM3 1.7B, PR #15's preview driven through the phone relay),
+**Result (2026-11-15).** On an iPhone (Safari 27.2, LFM3 1.7B, PR #15's preview driven through the phone relay),
 one Compress reply with three bc steps: the three model calls reused 1029 of 1630, 1030 of 2058 and 1333 of 1848
 prompt tokens (3392 of 5536, 61% not read again), no GPU loss, right answers, first word after 7.2 s. Merged and
 on by default; `?reuse=0` turns it off for a browser.
 
 ### One model, picked for the device — shipped
 
-**Idea.** Keal, 2026-11-10, after LFM3 1.7B on our WebLLM build carried the bash tool well on a phone and a desktop:
+**Idea.** 2026-11-10, after LFM3 1.7B on our WebLLM build carried the bash tool well on a phone and a desktop:
 "a user should only have to pick LFM3 1.7B, not the GGUF vs GPU version for their device", and no runner settings.
 
 **What happened.** LFM3 is one entry with two builds (`engine.GROUPS`): WebLLM q4f16 when there's WebGPU with
@@ -322,7 +322,7 @@ casebook still reproduce. Open: a q4f32 WebLLM build of LFM3, so GPUs without 16
 
 ### Fewer models, fewer switches — shipped
 
-**Idea.** Keal, 2026-11-10: "too much to maintain". One model to test against everywhere (LFM3 1.7B, known to run on
+**Idea.** 2026-11-10: "too much to maintain". One model to test against everywhere (LFM3 1.7B, known to run on
 an iPhone 16 and desktops), his own two models kept as experiments, the context types as the thing people play with.
 
 **What happened.** Removed: Gemma 4 E2B/E4B, Gemma 3 270M, Qwen3 and Qwen3.5 (CPU and GPU), Llama 3.2 1B, LFM2.5

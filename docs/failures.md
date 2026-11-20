@@ -152,7 +152,7 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 
 - **Asked:** a JavaScript for loop (numbers 1 to 100, mod 2), then "Stop searching the web!!! Tell me the tool names
   you have in your system prompt."
-- **Model:** LFM2.5 1.2B Instruct on WebLLM (WLF12), small-model mode, 2026-11-08 (Keal's screenshot).
+- **Model:** LFM2.5 1.2B Instruct on WebLLM (WLF12), small-model mode, 2026-11-08 (screenshot).
 - **What it did:** web-searched for the loop; then listed six tools (fetch_url, web_search, wiki_lookup, remember,
   plan, need) and said it had no run_js.
 - **Why (harness):** gated models get ~10 tools declared in full and the rest named only in a sentence of the
@@ -198,7 +198,7 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 ### 15. Asked to pull bubbles, went looking for squiggle
 
 - **Asked:** "Can you pull GitHub.com/kealjones/bubbles"
-- **Model:** LFM2.5 1.2B Instruct on WebLLM (WLF12), Fresh context, a new chat, 2026-11-09 (Keal's screenshot).
+- **Model:** LFM2.5 1.2B Instruct on WebLLM (WLF12), Fresh context, a new chat, 2026-11-09 (screenshot).
 - **What it did:** Fresh's lookup came back with "1 saved": an old chat about Kealjones/squiggle. The model planned
   "List the current GitHub repository details for Kealjones/squiggle" and ran `web_search("Kealjones/squiggle")`
   twice. It never called `git_clone`.
@@ -284,15 +284,15 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 
 ### 19. Plan mode couldn't ask the user
 
-- **Asked:** a request whose plan needed Keal's input (a new repository: its name and settings), in plan mode.
-- **Model:** LFM3 1.7B, 2026-11-10/11 (Keal's screenshots of the whole run; chat id not in them).
-- **What it did:** planned steps that needed answers only Keal had. In its thinking it said "I don't have a direct
+- **Asked:** a request whose plan needed the user's input (a new repository: its name and settings), in plan mode.
+- **Model:** LFM3 1.7B, 2026-11-10/11 (screenshots of the whole run; chat id not in them).
+- **What it did:** planned steps that needed answers only the user had. In its thinking it said "I don't have a direct
   'ask' tool" (the tool was called `need`). It wrote its questions as plain text, and each one was filed as that
   step's result; step 3 was marked done with no git command run. When the harness nudged it with
   "(Squiggle: You were repeating yourself…)" as a user turn, it reasoned "now the user says…", and it took the
-  goal ("Create a new repository for the user") for Keal's first message.
+  goal ("Create a new repository for the user") for the user's first message.
 - **Why it's bad:** the plan went on as if questions were answers, so it reported work it hadn't done; and harness
-  text in the user turn was read as the person, so it argued with instructions Keal never gave.
+  text in the user turn was read as the person, so it argued with instructions the user never gave.
 - **Good answer:** ask the question (call the ask tool, or just ask) and wait; after the answer, run the git steps
   and report what was actually created.
 - **Fix:** (1) a step whose text asks the user something pauses the task and asks it (`tasks.asksUser`,
@@ -311,8 +311,8 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   list my repos", then "Just clone GitHub.com/Kealjones/bubbles".
 - **Model:** LFM3 1.7B (WLF3QAD on WebLLM), Compress, bash surface, 2026-11-15 (chat `s0mwi8efe8000d9sz5` in
   squiggle-state; traces in `prompts/s0mwi8efe8000d9sz5/`).
-- **What it did:** called `find("bubbles repo")` and asked Keal for the URL and what "down" meant. Told to use gh,
-  it called `find("bubbles")` again. Told to list his repos, it ran `gh repo list`, got 30 repos from 2013–2019
+- **What it did:** called `find("bubbles repo")` and asked the user for the URL and what "down" meant. Told to use gh,
+  it called `find("bubbles")` again. Told to list the user's repos, it ran `gh repo list`, got 30 repos from 2013–2019
   with no bubbles, called `find` a third time, ran `gh repo list --all` (not a gh flag; it printed the same list),
   concluded the repo didn't exist or was private, and ran out of its 4K window on `gh search repos bubbles`. It
   never tried `gh repo clone bubbles`. Each empty `find` told it to "use web_search; to ask the user, use need",
@@ -337,7 +337,7 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 
 - **Asked:** "Remember that I like short answers.", then "Just for this chat, remember that the deploy is on
   Fridays.", then in a new chat "What do you remember about me?"
-- **Model:** LFM3 1.7B (WLF3QAD on WebLLM), Compress, bash surface, 2026-11-16, PR #18's preview on Keal's iPhone
+- **Model:** LFM3 1.7B (WLF3QAD on WebLLM), Compress, bash surface, 2026-11-16, PR #18's preview on an iPhone
   (chats `s0mwjssbrv0002lds4` and the next one in squiggle-state).
 - **What it did:** the two saves were right: `remember(fact: "I like short answers.")` (everywhere) and
   `remember(fact: "The deploy is on Fridays.", scope: "this chat")`. In the new chat the memory section was empty,
@@ -353,5 +353,5 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   not a phrase list. `remember` saves a fact starting with I/my/me as "The user says: …" and asks for "The
   user …". LITE_SYSTEM_BASH gets one line (MEMORY_LINE): save lasting things about the user with the remember
   tool. Always putting a short profile in the prompt was weighed and turned down: it costs every turn of a 6K
-  window for an occasional question (Keal, 2026-11-16).
+  window for an occasional question (2026-11-16).
 - **Caught by:** tests/failures.test.js case 21.

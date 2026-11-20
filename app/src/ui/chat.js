@@ -119,7 +119,7 @@ function emptyState() {
     h('div', { class: 'suggestions' }, ideas.map(t => h('button', { onclick: () => { $('#input').value = t; $('#input').focus(); } }, t))));
 }
 
-// A new chat's settings, before its first message: which model and how its context is built (Keal, 2026-11-10:
+// A new chat's settings, before its first message: which model and how its context is built (2026-11-10:
 // "a little setting button before the first message, that after it's started is gone"). The context type stays for
 // the chat's life (the sidebar shows it); the model can still switch in the chat details.
 function newChatSettings() {

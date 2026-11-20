@@ -64,7 +64,7 @@ test('render labels everything as looked up, never as the user, and is empty whe
   assert.match(render({ query: 'q', web: { error: 'HTTP 503', items: [] } }), /The web search failed: HTTP 503/);
 });
 
-// Keal's messages from 2026-11-09 (LFM2.5 1.2B, Fresh context): Fresh looked up "Sick, Sick, Sick" and the actress
+// Messages from 2026-11-09 (LFM2.5 1.2B, Fresh context): Fresh looked up "Sick, Sick, Sick" and the actress
 // Uhm Ji-won for them, then the model planned around the junk; and "that console.log" lost the script it meant.
 const SICK = 'Sick I only asked if you could run js which you did immediately so idk why you took so long to explain it, but anyway. can you help me write a generator js for loop function that like returns every mod 2 of 1 to 100.';
 const UHM = 'Uhm thank you for that! Can run that console.log of the generator script using run_js and share the output?';

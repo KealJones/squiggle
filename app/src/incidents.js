@@ -1,5 +1,5 @@
 // Problems worth looking at later, so they can be read from the storage repo instead of described from screenshots
-// (Keal, 2026-11-11): a GPU lost (and whether it came back), a reply that ended in an error, a tab killed mid-reply,
+// (2026-11-11): a GPU lost (and whether it came back), a reply that ended in an error, a tab killed mid-reply,
 // a model that failed to load. Code anywhere reports; app.js saves them (debug/incidents.jsonl). Reports made before
 // that wait here.
 let sink = null;

@@ -78,7 +78,7 @@ export const LITE_SYSTEM_NATIVE = [
 ].join('\n');
 
 // The same for the bash surface (tools/bash.js): the lookups are commands in the shell. The GitHub line is there
-// because LFM3, told "clone my repo bubbles", searched memory three times and asked Keal for the URL: nothing said
+// because LFM3, told "clone my repo bubbles", searched memory three times and asked the user for the URL: nothing said
 // git and gh are already signed in as him (failures.md case 20). Left out in demo mode (no account).
 const GITHUB_LINE = "git and gh are signed in as the user: \"my repo X\" is theirs, so gh repo clone X (it lands in /repos/X).";
 // LFM3's prompt had nothing on memory (only the big prompt did): case 21.
@@ -223,7 +223,7 @@ const GATE = ['plan', 'done', 'need', 'ask_user', 'find', 'checkpoint', 'tool_in
 const BIG_ONLY = ['wikidata_query'];
 // The bash surface (settings.toolSurface 'bash', lab): the shell does files, the web, git and maths through commands
 // it already knows (tools/bash.js); memory keeps its own tool. Otherwise the shell isn't offered.
-// One bash tool in place of the file, web, git and maths tools, for the models that can take it (Keal, 2026-11-10:
+// One bash tool in place of the file, web, git and maths tools, for the models that can take it (2026-11-10:
 // "we don't need those tools anymore"): LFM3, trained for agent harnesses, and the cloud model. Squiggle Small and
 // Tiny Gemma 4 keep the separate tools: those, and Squiggle Small's fenced prompt, are what they were trained on.
 export const bashSurface = () => settings.toolSurface === 'bash'
@@ -634,7 +634,7 @@ class Turn {
       if (full) {
         // Full, told so ("Not run: … answer now or call plan"), and it reached for another tool anyway: carry on by
         // itself in a fresh context (a one-step task that starts from what this reply found) instead of stopping and
-        // waiting for "continue" (Keal, 2026-11-10; stopping threw away three good lookups by LFM3 1.7B). Squiggle
+        // waiting for "continue" (2026-11-10; stopping threw away three good lookups by LFM3 1.7B). Squiggle
         // Small keeps the stop: its prompts are its training text.
         if (!fencedSmall()) return this.carryOn(r.toolCalls);
         this.prefix += '\n\n_(Stopped: the context filled up. Ask again and I\'ll make a plan for what\'s left.)_';
@@ -856,7 +856,7 @@ class Turn {
   // Gated models: a call to an undeclared tool, or a find/tool_info result naming tools, declares them from the
   // next request on (NativeConversation does the same). Returns their schema tokens, which also go on the
   // window's tool definitions.
-  // Repeating a call is allowed (Keal, 2026-11-12): the same command can rightly give a new answer (date, ls
+  // Repeating a call is allowed (2026-11-12): the same command can rightly give a new answer (date, ls
   // after a write, git status), and blocking it left models stuck. Runaway lookups are still bounded by the call
   // caps (maxChatCalls per turn, STEP_SOFT_CAP per step).
 

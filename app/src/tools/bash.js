@@ -297,7 +297,7 @@ function repoFrom(cwd, explicit) {
  *  "pages saved in this chat" see them). */
 export function commands(defineCommand, toolCtx, seen) {
   // `<cmd> --help` (or -h, or `man <cmd>`): the details live here, not in the tool description, so they cost
-  // context only when the model asks (Keal's idea: name the custom commands, let --help teach them).
+  // context only when the model asks (the idea: name the custom commands, let --help teach them).
   const helped = (text, run) => async (argv, ctx) => (argv.some(a => a === '--help' || a === '-h') && !(argv[0] === 'commit' || argv[0] === 'log') ? { stdout: text.trim() + '\n', stderr: '', exitCode: 0 } : run(argv, ctx));
   const call = async (name, args, extra = {}) => {
     const res = await runTool({ function: { name, arguments: args } }, { ...toolCtx, pageCards: false, ...extra });
@@ -356,9 +356,9 @@ export function commands(defineCommand, toolCtx, seen) {
     const url = f._.find(a => /^(https?:\/\/|[\w-]+\.[\w.-]+)/i.test(a));
     if (!url) return fail('curl: give a URL');
     if (f.X || f.request || f.d || f.data) return fail('curl here only reads pages (GET)');
-    // Any URL is fetched, not only ones a search or the user gave (Keal, 2026-11-10): the allowed-URL check was for
+    // Any URL is fetched, not only ones a search or the user gave (2026-11-10): the allowed-URL check was for
     // models that made URLs up all the time; a model that knows a real URL may use it, and a made-up one fails on its
-    // own (404, no such host). The separate fetch_url tool keeps the check for Keal's two small models.
+    // own (404, no such host). The separate fetch_url tool keeps the check for the two small fine-tunes.
     const res = await call('fetch_url', { url }, { allowUrl: undefined });
     if (res.model && res.model.error) return asOutput(res);
     const page = res.page != null ? res.page : String(res.model.text || '').replace(STRIP, '');
@@ -495,7 +495,7 @@ export const bash = defineTool({
     shell.registerTransformPlugin(ttyPlugin);
     let r;
     try { r = await shell.exec(script, { signal: ctx.signal }); } catch (e) { r = { stdout: '', stderr: String(e.message || e), exitCode: 1 }; }
-    // The whole output, always (Keal, 2026-11-15): no tool cuts what the model asked for. The prompt tells it the
+    // The whole output, always (2026-11-15): no tool cuts what the model asked for. The prompt tells it the
     // window is small, so keeping output short (grep, head, tail, sed -n, > /tmp/file) is its job, not ours.
     const out = String(r.stdout || ''), errText = String(r.stderr || '');
     const model = { exit_code: r.exitCode };
