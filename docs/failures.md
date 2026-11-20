@@ -378,3 +378,27 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 - **Caught by:** tests/failures.test.js case 22; tests/e2e "LFM3 gets bash, the web and search_tools up front…"
   (remove and replace by a piece of the text, the blind read).
 
+
+### 23. Olivia Rodrigo "starring alongside Zac Efron and Demi Lovato"
+
+- **Asked:** "can you tell me who olivia rodrigo is?"
+- **Model:** from Keal's screenshot, 2026-11-20 (the model and chat id aren't shown in it). Tool calls:
+  `web_search("Olivia Rodrigo who is she")` (6 results via LangSearch), `fetch_url` on
+  biography.com/musicians/a90349688/olivia-rodrigo (saved as /web/1.txt), `cat /web/1.txt | head -n 200`.
+- **What it did:** a bio that was right almost everywhere (birth, parents, Bizaardvark, Drivers License at No. 1,
+  three Grammys), plus "Nini Salazar-Roberts on High School Musical: The Musical: The Series at age 15, starring
+  alongside Zac Efron and Demi Lovato", and the third album, out in June 2026, called "upcoming" in November.
+- **Why it's bad:** neither of them is in the series, and no sentence on the page says so. Both names are only links
+  in the page's "Other Famous Disney Stars" list, right by the High School Musical section. `pageText` took the
+  whole body's text, so the list reached the model as loose lines of names beside that paragraph, and the model
+  bound them to the nearest claim. The model's part: it joined names to a sentence they weren't in. "Upcoming" is
+  the article's tense (updated April 2026), copied without checking it against the date.
+- **Good answer:** "…played Nini Salazar-Roberts in High School Musical: The Musical: The Series", no co-stars
+  named, and "her third album, You Seem Pretty Sad for a Girl So in Love, came out in June 2026."
+- **Fix:** `webpage.js pageText` reads the page the way the accessibility tree does: the main landmark (`<main>`,
+  role=main, else a lone `<article>`) is the content when it holds a real share of the text; banner, navigation,
+  complementary, contentinfo, search, menus and dialogs are dropped (explicit roles, or the tag's implicit one;
+  an article's own header and footer stay, as in HTML-AAM), never one wrapped around the content. Pages without
+  that markup: a list of 3+ items that are each only a link, and its heading, are dropped. The tense is not fixed
+  here.
+- **Caught by:** tests/webpage.test.js (the `pageText` tests); tests/failures.test.js case 23.

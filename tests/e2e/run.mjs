@@ -333,6 +333,17 @@ await check('fetch_url wraps page text as untrusted and strips scripts', async (
   assert.ok(r.obs.text.includes('assets directory'));
 });
 
+await check('fetch_url reads the main landmark: no site nav, sidebar, link-only list or footer (failures case 23)', async () => {
+  const r = await A.page.evaluate(async (url) => {
+    const res = await T.tools.runTool({ function: { name: 'fetch_url', arguments: { url } } }, { session: T.sessions.list()[0] });
+    return res.model.text;
+  }, appUrl + '/test-pages/bio.html');
+  assert.match(r, /Updated: Apr 06, 2026/);
+  assert.match(r, /at age 15\./);
+  assert.match(r, /debuted at No\. 1/);
+  for (const junk of ['Musicians', 'Zac Efron', 'Demi Lovato', 'Other Famous', 'Trending now', 'unrelated story', 'Privacy Notice']) assert.ok(!r.includes(junk), junk + ' leaked: ' + r);
+});
+
 await check('web_search goes through the relay and comes back labeled as outside content', async () => {
   const r = await A.page.evaluate(async () => {
     const res = await T.tools.runTool({ function: { name: 'web_search', arguments: { query: 'squiggle relay' } } }, { session: T.sessions.list()[0] });

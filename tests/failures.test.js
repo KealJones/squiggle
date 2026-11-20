@@ -143,3 +143,22 @@ test('case 22: "forget that I like short answers" saved the opposite; LFM3 gets 
   assert.match(src, /const LOADED = new Set\(\[[^\]]*'memory'/, 'memory is loaded up front, never called from its name alone');
   assert.match(src, /if \(blind\) return \{ response: blind \};/, 'a deferred tool called with arguments that don\'t fit doesn\'t run');
 });
+
+test('case 23 (Zac Efron in High School Musical: The Series): sidebars and link-only lists never reach the page text', async () => {
+  const { DOMParser } = await import('linkedom');
+  const { pageText } = await import('../app/src/webpage.js');
+  const doc = new DOMParser().parseFromString(`<!doctype html><html><body>
+    <header><nav><a href="/">Home</a></nav></header>
+    <main><article><h1>Olivia Rodrigo</h1>
+      <p>Rodrigo rose to fame on Disney Channel, landing a starring role in the TV series High School Musical: The Musical: The Series at age 15.</p>
+      <h2>Other Famous Disney Stars</h2>
+      <ul><li><a href="/zac-efron">Zac Efron</a></li><li><a href="/demi-lovato">Demi Lovato</a></li><li><a href="/miley-cyrus">Miley Cyrus</a></li></ul>
+      <aside><a href="/taylor-swift">Taylor Swift</a></aside>
+      <p>The breakup ballad debuted at No. 1 on the Billboard Hot 100.</p>
+    </article></main>
+    <footer>Privacy</footer></body></html>`, 'text/html');
+  const t = pageText(doc);
+  assert.match(t, /at age 15\./);
+  assert.match(t, /debuted at No\. 1/);
+  assert.doesNotMatch(t, /Zac Efron|Demi Lovato|Miley Cyrus|Other Famous|Taylor Swift|Privacy|Home/);
+});
