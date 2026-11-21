@@ -116,14 +116,19 @@ const lastReply = () => page.evaluate(() => {
 // How many times the model was asked for a reply (every phase, every round), from the trace the app saves for
 // each reply (trace.js, Settings → Lab, on by default). `calls` from --llm only counts the native server's
 // completions, so it is null on a real runtime; a round is the thing a phone pays for, so it is counted here.
+// agent.js writes the trace without waiting for it (storage.write(...).catch), so the file can land a moment
+// after the turn ends: it is given ~3 s to appear.
 const roundsOf = (trace) => (trace ? page.evaluate(async (path) => {
   try {
     const st = await import('/src/storage.js');
-    const file = JSON.parse(await st.read(path));
+    let text = null;
+    for (let i = 0; i < 15 && text == null; i++) { text = await st.read(path); if (text == null) await new Promise(r => setTimeout(r, 200)); }
+    if (text == null) return { error: `trace ${path} never arrived` };
+    const file = JSON.parse(text);
     const convs = file.convs || [];
     return { rounds: convs.reduce((n, c) => n + (c.rounds || []).length, 0), convs: convs.length,
       think: convs.reduce((n, c) => n + (c.rounds || []).reduce((m, r) => m + ((r.output && r.output.thinking) || '').length, 0), 0) };
-  } catch { return null; }
+  } catch (e) { return { error: String((e && e.message) || e) }; }
 }, trace) : Promise.resolve(null));
 
 async function send(text) {
@@ -209,7 +214,8 @@ for (const c of cases) {
     last = r;
   }
   const trace = last && last.reply && last.reply.trace ? await roundsOf(last.reply.trace) : null;
-  const rounds = trace ? trace.rounds : (last && last.reply && last.reply.llm && last.reply.llm.length) || null;
+  const rounds = trace && trace.rounds != null ? trace.rounds : (last && last.reply && last.reply.llm && last.reply.llm.length) || null;
+  if (trace && trace.error) console.log(`       (no round count: ${trace.error})`);
   const problems = last && last.timedOut ? ['timed out'] : grade(c, last && last.reply, { rounds });
   if (c.file && !(last && last.timedOut)) {
     const got = await page.evaluate(async (p) => (await import('/src/tools/workspace.js')).readAgentFile(p), c.file[0]).catch(() => null);

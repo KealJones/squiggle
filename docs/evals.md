@@ -95,7 +95,10 @@ Squiggle with the same model and reports both arms side by side: score, rounds, 
 the mean of the case means. It is how a harness change is shown to help rather than argued about — one run of a
 small model is noise, and a change that makes replies 30 seconds faster and answers wrong is not an improvement.
 
-An arm is a checkout, because the app the harness serves comes from the checkout it runs in:
+An arm is a checkout whose `app/` is served to the browser (`SQUIGGLE_APP_DIR`); the graders, the cases and the
+runner all come from the checkout you run `ab.mjs` in, so both arms are scored by one copy of the harness and a
+branch can't flatter itself by editing its own cases. An arm does not swap `worker/` (the relay) or `tests/`, so
+a change to either isn't what this measures:
 
 ```bash
 git worktree add /tmp/ab-base origin/main
@@ -115,7 +118,8 @@ The design is adapted from Hermes Agent's `evals/core_tool_deferral` harness
 runs two pinned checkouts over a task battery and grades accuracy, API turns, tokens and wall per cell. Kept:
 
 - **Two arms from real checkouts**, not a mocked switch. A flag flipped inside one build doesn't catch what a
-  changed prompt or a changed tool list does to the model.
+  changed prompt or a changed tool list does to the model. (Hermes imports each arm's agent into one harness;
+  here the browser loads each arm's app into one harness, which comes to the same thing.)
 - **Repetitions per cell, and contested cells.** When the arms differ on a case at three repetitions, the report
   prints the command to re-run *those cases* at six. Below that, a difference is not a result.
 - **Partial credit.** A case's score is the fraction of its checks that held, so one wrong claim in an otherwise

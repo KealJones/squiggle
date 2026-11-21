@@ -3,9 +3,12 @@
 // (github.com/NousResearch/hermes-agent, MIT), which runs two pinned checkouts over a task battery and grades
 // accuracy, turns, tokens and wall per cell. What is kept from it: two arms from real checkouts, repetitions per
 // cell, partial credit per case, efficiency reported beside accuracy, and the discipline below. What is
-// different: Squiggle's "agent" is the browser app, so an arm is a worktree that tests/eval/run.mjs is run inside
-// (the app it serves comes from that checkout); the model is local, so cells run one at a time and the budget is
-// wall-clock, not dollars.
+// different: Squiggle's "agent" is the browser app, so an arm is a checkout whose `app/` is served to the browser
+// (SQUIGGLE_APP_DIR) while the graders, the cases and this runner all come from the checkout ab.mjs runs in —
+// both arms are therefore scored by exactly one copy of the harness, and a branch cannot flatter itself by
+// editing its own cases. What an arm does *not* swap: worker/ (the relay) and tests/ itself, so a change there
+// isn't what ab.mjs measures. The model is local, so cells run one at a time and the budget is wall-clock, not
+// dollars.
 //
 //   node tests/eval/ab.mjs --base <dir> --pr <dir> [--model KLF3] [--reps 3] [--set cases.json]
 //        [--cases 1,2] [--mode compact] [--timeout 300] [--results docs/evals/ab-<date>] [--fresh] [--fake]
@@ -33,7 +36,7 @@ const REPS = Number(arg('--reps', 3));
 const CASES = arg('--cases', '');
 const RESULTS = resolve(arg('--results', `docs/evals/ab-${new Date().toISOString().slice(0, 10)}-${MODEL}`));
 if (!BASE || !PR) { console.error('--base <dir> and --pr <dir> are both needed (two checkouts; `git worktree add` makes one)'); process.exit(2); }
-for (const dir of [BASE, PR]) if (!existsSync(join(dir, 'tests/eval/run.mjs'))) { console.error(`${dir} is not a Squiggle checkout`); process.exit(2); }
+for (const dir of [BASE, PR]) if (!existsSync(join(dir, 'app/index.html'))) { console.error(`${dir} is not a Squiggle checkout (no app/index.html)`); process.exit(2); }
 
 const sha = (dir) => (spawnSync('git', ['-C', dir, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).stdout || '').trim();
 const ARMS = [['base', BASE], ['pr', PR]];
@@ -49,8 +52,8 @@ for (let rep = 1; rep <= REPS; rep++) {
     if (CASES) args.push('--cases', CASES);
     if (has('--fake')) args.push('--fake');
     if (has('--no-live')) args.push('--no-live');
-    console.log(`\n── ${arm} rep${rep} ──`);
-    const r = spawnSync(process.execPath, args, { cwd: dir, stdio: 'inherit' });
+    console.log(`\n── ${arm} rep${rep} (app from ${dir}) ──`);
+    const r = spawnSync(process.execPath, args, { stdio: 'inherit', env: { ...process.env, SQUIGGLE_APP_DIR: join(dir, 'app') } });
     // Exit 2 is "the model never loaded": an infra failure, never scored (Hermes's exit-3 rule).
     if (r.status === 2 || !existsSync(out)) { console.error(`\n${arm} rep${rep}: no result (model not ready?). Fix that before reading any numbers.`); process.exit(3); }
   }
