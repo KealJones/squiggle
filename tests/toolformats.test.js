@@ -5,15 +5,15 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { toolFormat, toolFormats, registerToolFormat, PLAIN } from '../app/src/toolformats/index.js';
 import { lfm2Prompt, parseLfmCalls, pyJson } from '../app/src/toolformats/lfm2.js';
-import { lfm3Prompt, lfm3 } from '../app/src/toolformats/lfm3.js';
+import { lfm3Prompt, lfm3, lfm3Omni, OMNI_THINK_START, toolResponse } from '../app/src/toolformats/lfm3.js';
 import { createShim, setVersion, versionFor, DEFAULT_VERSION } from '../app/src/engine-webllm.js';
-import { NativeConversation } from '../app/src/engine-wllama.js';
+import { NativeConversation, nativeMessages } from '../app/src/engine-wllama.js';
 
 const LFM = JSON.parse(readFileSync(new URL('./fixtures/lfm2-template.json', import.meta.url), 'utf8'));
 const LFM3 = JSON.parse(readFileSync(new URL('./fixtures/lfm3-template.json', import.meta.url), 'utf8'));
 
 test('the registry has every built-in format, each with the parts the shim needs', () => {
-  assert.deepEqual(toolFormats().sort(), ['gemma4', 'lfm2', 'lfm3', 'qwen3', 'qwen35']);
+  assert.deepEqual(toolFormats().sort(), ['gemma4', 'lfm2', 'lfm3', 'lfm3-omni', 'qwen3', 'qwen35']);
   for (const id of toolFormats()) {
     const f = toolFormat(id);
     assert.ok(f.mode === 'chat' ? typeof f.messages === 'function' : typeof f.prompt === 'function' && Array.isArray(f.stop), id);
@@ -173,6 +173,39 @@ test('lfm3Prompt matches LFM3\'s own chat template exactly, thinking off and on 
     const s = asSquiggle(c);
     assert.equal(lfm3Prompt(s.messages, s.tools, opts), c.expected, `${mode}: ${name} (Squiggle shapes)`);
   }
+});
+
+test('lfm3-omni starts Omni\'s thinking with the 1.7B\'s own words and shows them as its thinking; thinking off is untouched', () => {
+  const msgs = [{ role: 'user', content: 'A bat and a ball cost $1.10…' }];
+  const on = lfm3Omni.prompt(msgs, [], { thinking: true });
+  assert.equal(on, lfm3.prompt(msgs, [], { thinking: true }) + OMNI_THINK_START);
+  assert.ok(on.endsWith('<|im_start|>assistant\n<think>We need to'));
+  assert.deepEqual(lfm3Omni.split(' find the ball.</think>5 cents.', { prompt: on }), { thinking: 'We need to find the ball.', text: '5 cents.' });
+  assert.equal(lfm3Omni.split(' find', { prompt: on }).pending, true);
+  const off = lfm3Omni.prompt(msgs, [], { thinking: false });
+  assert.equal(off, lfm3.prompt(msgs, [], { thinking: false }));
+  assert.deepEqual(lfm3Omni.split('5 cents.', { prompt: off }), { thinking: '', text: '5 cents.' });
+  // The thinking budget writes its own text after <think> (engine-webllm.js takes the started words off first).
+  assert.deepEqual(lfm3Omni.split('5 cents.', { prompt: on.slice(0, -OMNI_THINK_START.length) + 'Enough: 5 cents.</think>' }), { thinking: '', text: '5 cents.' });
+  assert.equal(lfm3Omni.thinkStart, OMNI_THINK_START);
+  // It often calls a tool without closing its thinking: the call still counts (llama.cpp, 3 of 4 first turns).
+  const call = '<tool_call>\n<function=web_search>\n<parameter=query>\nAda Lovelace Wikipedia\n</parameter>\n</function>\n</tool_call>';
+  assert.deepEqual(lfm3Omni.split(' find her birth date. Use web_search.' + call, { prompt: on }), { thinking: 'We need to find her birth date. Use web_search.', text: call });
+  assert.equal(lfm3Omni.split(' look it up.<tool_', { prompt: on }).thinking, 'We need to look it up.', 'a call starting is held back from the thinking');
+});
+
+test('search_tools results reach LFM3 as tool_reference parts, or as the same text where llama.cpp renders the template', () => {
+  const C = LFM3.on['search_tools answers with tool_reference parts: <additional_tools>'];
+  const tools = asSquiggle(C).tools;
+  const conv = [{ role: 'user', content: 'how tall is the eiffel tower in feet?' },
+    { role: 'assistant', content: '', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'search_tools', arguments: '{"query":"facts about a landmark"}' } }] },
+    { role: 'tool', content: [{ name: 'search_tools', response: { text: 'Found 2 tools.', tool_references: ['wiki_lookup', 'calculate'] } }] }];
+  const parts = nativeMessages(conv);
+  assert.deepEqual(parts[parts.length - 1].content, [{ type: 'text', text: 'Found 2 tools.' }, { type: 'tool_reference', name: 'wiki_lookup' }, { type: 'tool_reference', name: 'calculate' }]);
+  const text = nativeMessages(conv, { refs: false, tools })[parts.length - 1].content;
+  assert.equal(text, toolResponse(parts[parts.length - 1].content, tools));
+  assert.ok(C.expected.includes('<|im_start|>tool\n' + text + '<|im_end|>'), 'the text is what the template writes for those parts');
+  assert.throws(() => toolResponse([{ type: 'tool_reference', name: 'nope' }], tools), /must be in `tools` on every request/);
 });
 
 test('lfm3: gated tools go in the <tools> block by name; calls read back through the Qwen3.5 parser; the reply starts inside <think> when thinking is on', () => {

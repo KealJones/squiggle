@@ -1355,7 +1355,17 @@ export async function runGit(argv, env) {
     if (!o._[0]) return fail('usage: git clone <repo>', 129);
     const res = await env.call('git_clone', { repo: o._[0], ...(o.b || o.branch ? { branch: o.b || o.branch } : {}) });
     if (res.model && res.model.error) return fatal(res.model.error);
-    return { stdout: res.model && res.model.note ? res.model.note + '\n' : '', stderr: `${res.model && res.model.already_cloned ? 'Already cloned; pulled into' : 'Cloning into'} '${res.model ? res.model.path : o._[0]}'...\n`, exitCode: 0 };
+    const path = res.model ? res.model.path : o._[0];
+    // Clones live in /repos/<name>. A destination elsewhere (git clone URL /tmp/x) becomes a link to the clone, so
+    // the path the model chose works; one we can't link is said out loud, on stdout (LFM3 read past stderr's
+    // "Cloning into '/repos/Keptsam'" four times and kept using /tmp/keptsam, 2026-11-17).
+    const dest = o._[1];
+    const linked = dest && env.linkClone ? env.linkClone(dest, path) : null;
+    const note = res.model && res.model.note ? res.model.note + '\n' : '';
+    if (dest && !linked) return { stdout: `${note}Cloned into ${path}, not ${dest}: clones live in /repos here. Use ${path}.\n`, stderr: '', exitCode: 0 };
+    const shown = linked || path;
+    const where = linked && linked !== path ? ` (${shown} links to ${path}, where clones live)` : '';
+    return { stdout: note + (where ? `Cloned${where}.\n` : ''), stderr: `${res.model && res.model.already_cloned ? 'Already cloned; pulled into' : 'Cloning into'} '${shown}'...\n`, exitCode: 0 };
   }
   if (sub === 'init') {
     if (!env.initDir) return fatal('git init works in /repos/<name> here');

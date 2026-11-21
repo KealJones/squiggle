@@ -23,7 +23,7 @@ import { splitRaw } from './text.js';
 import { toWebLLMMessages, qwen3, qwen35 } from './qwen.js';
 import { gemma4 } from './gemma4.js';
 import { lfm2 } from './lfm2.js';
-import { lfm3 } from './lfm3.js';
+import { lfm3, lfm3Omni } from './lfm3.js';
 
 const formats = new Map();
 
@@ -50,4 +50,4 @@ export const PLAIN = {
   split: (raw, { thinking }) => splitRaw(raw, thinking === true),
 };
 
-for (const f of [qwen3, qwen35, gemma4, lfm2, lfm3]) registerToolFormat(f);
+for (const f of [qwen3, qwen35, gemma4, lfm2, lfm3, lfm3Omni]) registerToolFormat(f);

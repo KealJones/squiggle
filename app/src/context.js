@@ -133,7 +133,7 @@ export function chunk(text, maxTokens = CHUNK_TOKENS) {
  * @param {boolean} [o.actions]    false leaves out the recap of earlier tool calls (small models)
  */
 export async function assembleContext(o) {
-  const { line, session, threadId = null, query, budget, mode = 'smart', system } = o;
+  const { line, session, threadId = null, query, budget, mode = 'smart', system, notesHow = 'with the note tool' } = o;
   const M = contextMode(mode);
   const report = { mode, budget, items: [] };
   let used = estTokens(system) + estTokens(query) + 40;
@@ -235,7 +235,7 @@ export async function assembleContext(o) {
       report.items.push({ kind: 'note', id: n.id, label: n.text.slice(0, 80), tokens: lt });
     }
     if (lines.length) {
-      sections.push(`## Your notes for this chat (update or delete with the note tool when they stop being relevant)\n${lines.join('\n')}${lines.length < notes.length ? `\n(${notes.length - lines.length} older notes not shown; delete ones you no longer need)` : ''}`);
+      sections.push(`## Your notes for this chat (update or delete ${notesHow} when they stop being relevant)\n${lines.join('\n')}${lines.length < notes.length ? `\n(${notes.length - lines.length} older notes not shown; delete ones you no longer need)` : ''}`);
       used += t;
     }
   }

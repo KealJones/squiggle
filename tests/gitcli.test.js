@@ -241,3 +241,20 @@ test('diff: every edit script turns one side into the other, and unified hunks c
   const d = unifiedDiff({ path: 'f', before: 'a\nb\nc\n', after: 'a\nB\nc' });
   assert.match(d, /@@ -1,3 \+1,3 @@\n a\n-b\n-c\n\+B\n\+c\n\\ No newline at end of file\n$/);
 });
+
+test('git clone URL /tmp/x: clones into /repos/<name> and links /tmp/x there; a destination it can\'t link is said on stdout', async () => {
+  const { env } = await repo();
+  const links = new Map();
+  env.cwd = '/home';
+  env.call = async () => ({ model: { ok: true, path: '/repos/Keptsam' } });
+  env.linkClone = (dest, repoPath) => { const p = dest.startsWith('/') ? dest : `/home/${dest}`; if (/^\/(repos|home|web)(\/|$)/.test(p)) return p === repoPath ? p : null; links.set(p, repoPath); return p; };
+  let r = await runGit(['clone', 'https://github.com/KealJones/Keptsam.git', '/tmp/keptsam'], env);
+  assert.equal(r.exitCode, 0);
+  assert.equal(r.stderr, "Cloning into '/tmp/keptsam'...\n");
+  assert.match(r.stdout, /\/tmp\/keptsam links to \/repos\/Keptsam/);
+  assert.equal(links.get('/tmp/keptsam'), '/repos/Keptsam');
+  r = await runGit(['clone', 'https://github.com/KealJones/Keptsam.git', '/repos/KealJones/Keptsam'], env);
+  assert.match(r.stdout, /Cloned into \/repos\/Keptsam, not \/repos\/KealJones\/Keptsam: clones live in \/repos here\. Use \/repos\/Keptsam\./);
+  r = await runGit(['clone', 'https://github.com/KealJones/Keptsam.git'], env);
+  assert.equal(r.stderr, "Cloning into '/repos/Keptsam'...\n");
+});
