@@ -425,12 +425,15 @@ export function resultText(response) {
 // Thinking: the Qwen3 / Qwen3.5 / Gemma 4 cards all say past turns' thinking leaves the history, except
 // inside a tool round, where the thinking that led to the call stays while its results are answered. So an
 // assistant turn keeps its `reasoning_content` only while it is the last one and every message after it is
-// a tool result (the templates read that field; a template without it ignores it).
+// a tool result (the templates read that field; a template without it ignores it). One more: a turn the person cut
+// off with their next message (`thinking` on a history message, context.js steeredThinking) keeps its thinking while
+// it's the latest assistant turn, like LFM3's preserve_thinking for that one turn (docs/harness.md "Steering").
 // refs: the runtime renders tool_reference parts itself (WebLLM/Tilde with LFM3's format); llama.cpp's own
 // template path takes text parts only, so there the whole <tool_response> goes as text, which LFM3's template
 // passes through as it is (the same text: toolformats/lfm3.js toolResponse).
 export function nativeMessages(messages, { refs = true, tools = [] } = {}) {
   const out = [];
+  const steered = new Set();                              // turns cut off by the next message, keeping their thinking
   let pending = [];                                       // calls of the last assistant turn not yet answered
   for (const m of messages) {
     if (m.role === 'tool') {
@@ -450,18 +453,21 @@ export function nativeMessages(messages, { refs = true, tools = [] } = {}) {
     const role = m.role === 'model' ? 'assistant' : m.role;
     if (!['system', 'user', 'assistant'].includes(role)) continue;
     const msg = { role, content: textOf(m.content) };
+    // A steered turn's thinking (context.js steeredThinking) stays with it, even with no words said yet.
+    const kept = role === 'assistant' && m.thinking && !(m.tool_calls && m.tool_calls.length) ? String(m.thinking) : '';
+    if (kept) { msg.reasoning_content = kept; steered.add(msg); }
     if (role === 'assistant' && m.tool_calls && m.tool_calls.length) {
       msg.tool_calls = m.tool_calls;
       if (m.reasoning_content) msg.reasoning_content = m.reasoning_content;
       pending = [...m.tool_calls];
       if (!msg.content) msg.content = null;
-    } else if (!msg.content.trim()) continue;
+    } else if (!msg.content.trim() && !kept) continue;
     out.push(msg);
   }
   // Only the tool round being answered now keeps its thinking.
   const lastAssistant = out.map((m, i) => (m.role === 'assistant' ? i : -1)).filter(i => i >= 0).pop();
   out.forEach((m, i) => {
-    if (m.reasoning_content === undefined) return;
+    if (m.reasoning_content === undefined || (steered.has(m) && i === lastAssistant)) return;
     const live = i === lastAssistant && out.slice(i + 1).every(x => x.role === 'tool') && i < out.length - 1;
     if (!live) delete m.reasoning_content;
   });
