@@ -162,3 +162,11 @@ test('case 23 (Zac Efron in High School Musical: The Series): sidebars and link-
   assert.match(t, /debuted at No\. 1/);
   assert.doesNotMatch(t, /Zac Efron|Demi Lovato|Miley Cyrus|Other Famous|Taylor Swift|Privacy|Home/);
 });
+
+test('case 25 (a correct URL refused): the allowed-URL check is only for the two fine-tunes', () => {
+  // agent.js needs the browser to import; the condition is pinned in its source, like case 9.
+  const src = readFileSync(new URL('../app/src/agent.js', import.meta.url), 'utf8');
+  assert.match(src, /\.\.\.\(lite\(\) && !bashSurface\(\) \? \{ allowUrl:/);
+  // bash's own curl stays ungated, so the two tools on that surface agree.
+  assert.match(readFileSync(new URL('../app/src/tools/bash.js', import.meta.url), 'utf8'), /fetch_url'.*allowUrl: undefined/);
+});

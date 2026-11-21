@@ -89,7 +89,7 @@ app/                    static app, plain ES modules, no build step
 worker/index.js         relay + static assets (wrangler.toml); cloud model route + AiBudget Durable Object
 tests/*.test.js         unit tests (node --test)
 tests/e2e/              Chromium end-to-end: real git server, real Worker code, scripted model
-tests/eval/             retrieval.mjs: memory-recall benchmark (no model); run.mjs + cases.json: the failure casebook against a real model (docs/evals.md)
+tests/eval/             retrieval.mjs: memory-recall benchmark (no model); run.mjs + cases.json: the failure casebook against a real model; ab.mjs: the same cases on two checkouts, one model, with repetitions; cases-deliberation.json: how long an answer takes (rounds, words, repeated calls) (docs/evals.md)
 docs/                   harness.md (the agent loop contract), failures.md (casebook), evals.md, lab.md (experiments notebook), setup.md, extending.md, measurements-*.md
 ```
 
@@ -131,7 +131,7 @@ docs/                   harness.md (the agent loop contract), failures.md (caseb
   up front; the rest (files, `session_search`, plan, ask_user…) are deferred (`defer_loading`), named by name
   at the end of its prompt, and found with `search_tools`, answered as `tool_reference` parts its template expands
   (docs/harness.md "Deferred tools"); one called blind with arguments that don't fit gets its definition back instead of running. The prompt lists the repos cloned here every turn (`refreshClones`). Bash has directory links (`ln -s`, kept for the chat like /tmp); `git clone URL /tmp/x` clones into /repos/<name> and links /tmp/x to it. Commands that reach the network, GitHub or the sandbox go through `runTool` with the
-  agent's context, so a push still needs the approval card and curl fetches any URL (the allowed-URL check stays on fetch_url for the two fine-tunes); the whole output is
+  agent's context, so a push still needs the approval card and curl fetches any URL (the allowed-URL check is passed only for the two fine-tunes, `lite() && !bashSurface()`, which is what this line always said; until 2026-11-21 the code gated every lite model and refused LFM3 a Wikipedia URL it had guessed right, docs/failures.md case 25); the whole output is
   wrapped as untrusted; `.git` stays unreachable (`guard.resolveAgentPath`).
 - No tool cuts its output (Keal, 2026-11-15): bash, curl, read_file, grep, git log, run_js, wiki and the rest return
   everything asked for. The prompts say the window is small; keeping output short (grep, head, tail, a line range,
@@ -335,7 +335,7 @@ never turns thinking on for it. Native-tool models (`native: true`: wllama with 
 template, or WebLLM with a `toolFormat`) get gated tools (`agent.js gated()`, docs/harness.md "Tool names up front"):
 a few declared up front, the rest by name until `tool_info(names)` or `find` asks. Small models always get the short
 small-model prompt (`LITE_SYSTEM_NATIVE`, or `LITE_SYSTEM_BASH` on the bash surface; Squiggle Small its fenced v2
-text) and a thinking budget (400 reasoning tokens, `engine.generationFor`). At the budget a native model's thinking is kept and closed with a decision in its own words (`ENOUGH_THINKING`, passed as `think_prefill` to runtimes whose `info.closesThinking`: WebLLM raw formats with `thinkOpen`/`thinkClose`, i.e. LFM3); runtimes that can't continue a turn still re-ask with thinking off. Before 2026-11-11 LFM3 always re-asked cold and re-argued its thinking in the reply. The small-model prompts also say to stop after three options or attempts. The removed models (Gemma 4 E2B/E4B,
+text) and a thinking budget (400 reasoning tokens, `engine.generationFor`). At the budget a native model's thinking is kept and closed with a decision in its own words (`ENOUGH_THINKING`, passed as `think_prefill` to runtimes whose `info.closesThinking`: WebLLM raw formats with `thinkOpen`/`thinkClose`, i.e. LFM3); runtimes that can't continue a turn still re-ask with thinking off. The budget is for the whole reply, not each round (`thinkUsed`/`spentThinking`, 2026-11-21): a conversation is one phase of one turn, so a round after a tool result spends what is left, and once it is gone that round asks with thinking off (native) or carries on from an already-closed think block (fenced), with `thinkSpentNote` said once. Per round it never added up to a stop — LFM3 1.7B read the "weighed enough options" line twice in one reply and went on weighing (docs/failures.md case 24). Before 2026-11-11 LFM3 always re-asked cold and re-argued its thinking in the reply. The small-model prompts also say to stop after three options or attempts. The removed models (Gemma 4 E2B/E4B,
 Gemma 3 270M, Qwen3/Qwen3.5, Llama 3.2, LFM2.5 1.2B, LFM3's test builds) and what was learned from them are in
 docs/lab.md and docs/measurements-*.md. `node tests/e2e/wllama-bench.mjs [--model SQ]` loads a
 real model in headless Chromium: one thread vs all cores vs WebGPU.

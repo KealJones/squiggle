@@ -1211,7 +1211,11 @@ class Turn {
       return { response: { ...earlier.response, note: 'You already ran this exact call in this task; this is its result from then. Use it; don\'t run it again.' } };
     }
     const res = await runTool(call, { session: this.session, threadId: this.threadId, room, pageCards: lite() && !plain(), approve: (req) => askApproval(req, this.ui, this.signal),
-      ...(lite() ? { allowUrl: (u) => this.allowUrl(u) } : {}) });
+      // The allowed-URL check is for the two fine-tunes, which were trained on it (they invent URLs). On the bash
+      // surface it contradicted `curl`, which fetches any URL (Keal, 2026-11-10): LFM3 1.7B guessed Wikipedia's
+      // real URL for a person, had it refused, and spent a round searching to be handed back the same link
+      // (chat s0mwqy0afi, 2026-11-21). A made-up URL just 404s, and case 4 keeps made-up links out of replies.
+      ...(lite() && !bashSurface() ? { allowUrl: (u) => this.allowUrl(u) } : {}) });
     this.noteUrls(res);
     this.toolEvent({ name: res.name, label: res.label, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
     if (res.observation) sessions.addObservation(this.session, { ...res.observation, thread: this.threadId });
