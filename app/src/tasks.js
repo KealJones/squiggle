@@ -51,7 +51,11 @@ export const MANAGED_SPECS = {
 // up front"). A tool stays declared for the rest of the step or chat phase.
 export const TOOL_INFO_SPEC = { name: 'tool_info', description: 'Get how to call tools from the "other tools" list; they are ready to call after this. Ask for all you expect to need at once.',
   parameters: S({ names: { type: 'array', items: { type: 'string' }, description: 'Tool names from the list' } }, ['names']) };
-export const HARNESS = new Set([...Object.keys(HARNESS_SPECS), 'checkpoint', 'tool_info']);
+// Deferred tools (LFM3's own format): search_tools returns the tools that fit as tool_reference parts and the chat
+// template writes their definitions into the result. The query is in words, as in LFM3's model card.
+export const SEARCH_TOOLS_SPEC = { name: 'search_tools', description: 'Search a catalog of more tools. Returns the ones that fit, ready to call.',
+  parameters: S({ query: str('What you need a tool for, e.g. "wikipedia facts" or "past conversations"') }, ['query']) };
+export const HARNESS = new Set([...Object.keys(HARNESS_SPECS), 'checkpoint', 'tool_info', 'search_tools']);
 export const MAX_CHECKPOINTS = 4;   // per turn; then the person is asked whether to go on
 
 const cleanText = (t) => String(t ?? '').replace(/^\s*(?:\d+[.)]|[-*•])\s*/, '').replace(/\s+/g, ' ').trim();
@@ -393,7 +397,7 @@ export function worked(task) {
   const steps = (task && task.steps) || [];
   if (!steps.length || steps.some(s => s.status !== 'done')) return false;
   if (steps.some(s => !s.result || NO_RESULT.test(s.result) || toolCallText(s.result) || GAVE_UP.test(s.result) || JUNK.test(s.result))) return false;
-  return ((task.log) || []).some(l => l.ok !== false && !['plan', 'done', 'need', 'ask_user', 'checkpoint', 'tool_info'].includes(l.name));
+  return ((task.log) || []).some(l => l.ok !== false && !['plan', 'done', 'need', 'ask_user', 'checkpoint', 'tool_info', 'search_tools'].includes(l.name));
 }
 
 export function junkCheck(thinking) {
