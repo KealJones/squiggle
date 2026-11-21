@@ -8,6 +8,8 @@
 // replayed), calls a tool with a ```tool_call fenced JSON block (hidden from
 // the reply and parsed into a call), and gets results back as a user turn
 // "Result of <tool>:\n<json>". Bad calls come back to it as tool errors.
+import { toolResponse } from './toolformats/lfm3.js';
+
 const VERSION = '3.13.0';   // 2026-11-08; adds LFM3, audio/realtime (unused); the API Squiggle uses is unchanged from 3.8.1
 const LIB = `https://cdn.jsdelivr.net/npm/@wllama/wllama@${VERSION}/esm/index.min.js`;
 const WASM = `https://cdn.jsdelivr.net/npm/@wllama/wllama@${VERSION}/esm/wasm/wllama.wasm`;
@@ -424,7 +426,10 @@ export function resultText(response) {
 // inside a tool round, where the thinking that led to the call stays while its results are answered. So an
 // assistant turn keeps its `reasoning_content` only while it is the last one and every message after it is
 // a tool result (the templates read that field; a template without it ignores it).
-export function nativeMessages(messages) {
+// refs: the runtime renders tool_reference parts itself (WebLLM/Tilde with LFM3's format); llama.cpp's own
+// template path takes text parts only, so there the whole <tool_response> goes as text, which LFM3's template
+// passes through as it is (the same text: toolformats/lfm3.js toolResponse).
+export function nativeMessages(messages, { refs = true, tools = [] } = {}) {
   const out = [];
   let pending = [];                                       // calls of the last assistant turn not yet answered
   for (const m of messages) {
@@ -432,7 +437,13 @@ export function nativeMessages(messages) {
       for (const p of Array.isArray(m.content) ? m.content : [{ name: 'tool', response: m.content }]) {
         const i = pending.findIndex(c => c.function.name === p.name);
         const call = i >= 0 ? pending.splice(i, 1)[0] : pending.shift();
-        out.push({ role: 'tool', tool_call_id: call ? call.id : 'call0', name: p.name, content: resultText(p.response) });
+        // search_tools found deferred tools: they go back as tool_reference parts (LFM3's format; its template writes
+        // their definitions into the result as <additional_tools>).
+        const found = p.response && Array.isArray(p.response.tool_references) ? p.response.tool_references : null;
+        let content = found ? [...(p.response.text ? [{ type: 'text', text: String(p.response.text) }] : []), ...found.map(name => ({ type: 'tool_reference', name: String(name) }))]
+          : resultText(p.response);
+        if (refs === false && Array.isArray(content)) content = toolResponse(content, tools);
+        out.push({ role: 'tool', tool_call_id: call ? call.id : 'call0', name: p.name, content });
       }
       continue;
     }
@@ -459,7 +470,7 @@ export function nativeMessages(messages) {
 
 // Names a tool result says are now usable: `find`'s tools and `tool_info`'s.
 const foundNames = (input) => (Array.isArray(input) ? input : []).flatMap(m => (Array.isArray(m.content) ? m.content : [])
-  .flatMap(p => (p && p.response && Array.isArray(p.response.tools) ? p.response.tools.map(String) : [])));
+  .flatMap(p => (p && p.response ? [...(Array.isArray(p.response.tools) ? p.response.tools : []), ...(Array.isArray(p.response.tool_references) ? p.response.tool_references : [])].map(String) : [])));
 
 export class NativeConversation {
   constructor(w, { preface, sessionConfig }) {
@@ -536,7 +547,7 @@ export class NativeConversation {
       // the tools the gate hasn't declared yet, so they sit in the model's own tool list, by name only.
       const undeclared = this.gate && this.w.info && this.w.info.toolNames ? this.tools.map(nameOf).filter(n => !tools.some(t => nameOf(t) === n)) : [];
       const stream = await this.w.createChatCompletion({
-        messages: nativeMessages(this.messages),
+        messages: nativeMessages(this.messages, { refs: Boolean(this.w.info && this.w.info.toolRefs), tools: this.tools }),
         ...(tools.length ? { tools } : {}),
         ...(undeclared.length ? { tool_names: undeclared } : {}),
         chat_template_kwargs: { enable_thinking: thinking },

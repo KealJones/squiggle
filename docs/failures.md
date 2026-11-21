@@ -355,3 +355,50 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   tool. Always putting a short profile in the prompt was weighed and turned down: it costs every turn of a 6K
   window for an occasional question (Keal, 2026-11-16).
 - **Caught by:** tests/failures.test.js case 21.
+
+### 22. "Forget that I like short answers": saved that the user likes long answers
+
+- **Asked:** "forget that i like short answers" (first turn, no history).
+- **Model:** LFM3 1.7B (QAD Q4_0 on llama.cpp, CPU, temp 0), PR #22's prompt with every tool but bash, the web and
+  search_tools deferred and named by name only, 2026-11-17. Not a Squiggle chat: the prompt was rendered by
+  toolformats/lfm3.js and run by hand. LFM3 Omni 2B (started thinking) on the same prompts.
+- **What it did:** the 1.7B called `memory_write(content: "User prefers longer, detailed answers and does not want
+  short ones.")` without looking the tool up ("I don't have the exact signatures… I'll just call it"): no forget
+  in sight, so it saved the opposite, under an argument the tool doesn't take. Omni web-searched the sentence; on
+  "remember that I like short answers" it called `memory_write(memory_key, memory_value)`, and on a file typo it
+  called `web_fetch` with a file path.
+- **Why it's bad:** an inverted preference read in every later chat as a fact about the user. Calling a tool
+  from its name alone means guessing its arguments.
+- **Good answer:** remove the entry about short answers (or say there was none) and nothing else.
+- **Fix:** Hermes's own memory tool (the 1.7B guessed `content`, Hermes's argument): `memory {action:
+  add|replace|remove, target, content, old_text}`, an entry found by a piece of its text, loaded up front;
+  "forget" is a remove. And `blindCall`: a deferred tool called before its definition was handed over, with
+  arguments that don't fit, doesn't run; its definition comes back as a tool_reference (the way search_tools sends
+  one) and the model calls it again.
+- **Caught by:** tests/failures.test.js case 22; tests/e2e "LFM3 gets bash, the web and search_tools up front…"
+  (remove and replace by a piece of the text, the blind read).
+
+
+### 23. Olivia Rodrigo "starring alongside Zac Efron and Demi Lovato"
+
+- **Asked:** "can you tell me who olivia rodrigo is?"
+- **Model:** from Keal's screenshot, 2026-11-20 (the model and chat id aren't shown in it). Tool calls:
+  `web_search("Olivia Rodrigo who is she")` (6 results via LangSearch), `fetch_url` on
+  biography.com/musicians/a90349688/olivia-rodrigo (saved as /web/1.txt), `cat /web/1.txt | head -n 200`.
+- **What it did:** a bio that was right almost everywhere (birth, parents, Bizaardvark, Drivers License at No. 1,
+  three Grammys), plus "Nini Salazar-Roberts on High School Musical: The Musical: The Series at age 15, starring
+  alongside Zac Efron and Demi Lovato", and the third album, out in June 2026, called "upcoming" in November.
+- **Why it's bad:** neither of them is in the series, and no sentence on the page says so. Both names are only links
+  in the page's "Other Famous Disney Stars" list, right by the High School Musical section. `pageText` took the
+  whole body's text, so the list reached the model as loose lines of names beside that paragraph, and the model
+  bound them to the nearest claim. The model's part: it joined names to a sentence they weren't in. "Upcoming" is
+  the article's tense (updated April 2026), copied without checking it against the date.
+- **Good answer:** "…played Nini Salazar-Roberts in High School Musical: The Musical: The Series", no co-stars
+  named, and "her third album, You Seem Pretty Sad for a Girl So in Love, came out in June 2026."
+- **Fix:** `webpage.js pageText` reads the page the way the accessibility tree does: the main landmark (`<main>`,
+  role=main, else a lone `<article>`) is the content when it holds a real share of the text; banner, navigation,
+  complementary, contentinfo, search, menus and dialogs are dropped (explicit roles, or the tag's implicit one;
+  an article's own header and footer stay, as in HTML-AAM), never one wrapped around the content. Pages without
+  that markup: a list of 3+ items that are each only a link, and its heading, are dropped. The tense is not fixed
+  here.
+- **Caught by:** tests/webpage.test.js (the `pageText` tests); tests/failures.test.js case 23.

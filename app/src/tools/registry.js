@@ -19,8 +19,22 @@ const NAME = /^[a-z][a-z0-9_]{1,63}$/;
 
 /** Builds a tool from flat fields; the parameters default to an object with no properties.
  *  group: a short area label ("files", "git and GitHub", …) for prompts that list tools by name. */
-export function defineTool({ name, description, parameters = params({}), run, group = 'other' }) {
-  return { spec: { name, description, parameters }, run, group };
+// `aliases`: other spellings of an argument ({ path: 'file_path' }), renamed before the required check, so a call
+// written the way another harness spells it still runs; the schema names only the tool's own.
+// `prepare(args)`: any other reshaping of a call before the check (edit takes Pi's edits[] list).
+export function defineTool({ name, description, parameters = params({}), run, group = 'other', aliases = null, prepare = null }) {
+  return { spec: { name, description, parameters }, run, group, ...(aliases ? { aliases } : {}), ...(prepare ? { prepare } : {}) };
+}
+
+// A call's arguments with each alias renamed to the tool's own name (an argument already given under its own name wins).
+export function unalias(tool, args) {
+  if (!tool || !args || typeof args !== 'object') return args;
+  const out = { ...args };
+  for (const [other, own] of Object.entries(tool.aliases || {})) {
+    if (out[other] !== undefined && out[own] === undefined) out[own] = out[other];
+    if (other in out) delete out[other];
+  }
+  return tool.prepare ? tool.prepare(out) : out;
 }
 
 /** Adds a tool (or replaces one with the same name in place, keeping its position). */
@@ -47,6 +61,7 @@ export async function runTool(call, ctx) {
   let args = fn.arguments || {};
   if (typeof args === 'string') { try { args = JSON.parse(args); } catch { args = {}; } }
   if (!tool) return { name: fn.name, args, model: { error: `Unknown tool "${fn.name}".` }, label: `unknown tool ${fn.name}`, ok: false };
+  args = unalias(tool, args);
   // A call missing a required argument is an error, not an empty run: run_js called with {expression} (a model
   // that had only seen run_js's name) ran no code, reported success with empty output, and the model made the
   // output up (docs/failures.md case 13). The error names what's missing and what was sent instead.

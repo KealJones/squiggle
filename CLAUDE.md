@@ -1,7 +1,7 @@
 # Squiggle — notes for engineers and coding agents
 
-A browser-only agent: LFM3 on Keal's own WebGPU engine, Keptsam (LFM3 Omni 2B: it also sees pictures and video, hears
-sound and speaks; 2026-11-16), on phones and computers, or LFM3 1.7B's GGUF on the CPU (wllama) without WebGPU
+A browser-only agent: LFM3 on Keal's own WebGPU engine, Tilde (LFM3 Omni 2B: it also sees pictures and video, hears
+sound and speaks; 2026-11-16; LFM3 1.7B beside it since 2026-11-17), on phones and computers, or LFM3 1.7B's GGUF on the CPU (wllama) without WebGPU
 (`engine.DEFAULTS`); the WebLLM build (our own MLC build) is the GPU fallback; optionally Gemma 4 26B on the relay's Workers AI. Keal's
 own Squiggle Small and Tiny Gemma 4 stay as experimental options; every other model was removed (2026-11-10), the
 runtimes (LiteRT, wllama, WebLLM) and tool formats stay so adding one is a registry entry. State is
@@ -48,9 +48,9 @@ app/                    static app, plain ES modules, no build step
     recall.js           smart mode's recalled block: earlier messages (this chat + other chats) and memory, quoted after the request; time phrases, size caps
     search.js           BM25 (light stemmer: -ing/-ies/-ed/-s and a trailing e) + blend with optional embeddings (embed.js, MiniLM on CPU in embed-worker.js, terminated after 15 s idle on phones / 3 min on computers so its memory is freed)
     engine-webllm.js    WebLLM (MLC on WebGPU) under engine-wllama.js's conversations; per-model WebLLM version (`webllm`); streams any tool format
-    engine-keptsam.js   Keptsam (github.com/KealJones/Keptsam, pinned by commit, from jsDelivr) posing as a WebLLM engine under that shim: raw
+    engine-tilde.js   Tilde (github.com/KealJones/tilde, pinned by commit, from jsDelivr) posing as a WebLLM engine under that shim: raw
                         completions, prompt reuse by snapshot at the shim's safe cut (prefix-cache.js snapshotPoint), ⟦media:id⟧ markers → the
-                        file itself, speak()/transcribe() in a side sequence (the chat's cache survives them); files in Cache Storage keptsam-v1
+                        file itself, speak()/transcribe() in a side sequence (the chat's cache survives them); files in Cache Storage tilde-v1
     media.js            files the model takes in itself (Omni): kept in memory for the page under an id, a marker in the prompt, decoded once
     omni-voice.js       Omni's own voice (a voice.js speaker: a sentence plays once made, the next made meanwhile), a SpeechRecognition stand-in
                         (mic + loudness check, each utterance transcribed by the model) for calls, recordOnce for the composer's microphone
@@ -65,6 +65,7 @@ app/                    static app, plain ES modules, no build step
       index.js          registers the built-ins in a fixed order (the order is prompt text for small models)
       workspace.js      /home, /repos and /web path mapping shared by the tools
       files.js notes.js git.js web.js memory.js compute.js   the tools by area (compute.js hosts the run_js sandbox)
+      common.js         read/write/edit/web_fetch/memory/session_search: the common harness names and schemas (Pi, OpenClaw) on the bash surface, wrapping the tools above
       bash.js           `bash` (lab, settings.toolSurface 'bash'): just-bash (app/vendor/just-bash.js) on the workspace through WorkspaceFs (/home via storage.js so it syncs, /repos and /web via LightningFS, everything else in memory); custom commands git, gh, curl, search, wiki, node, bc call the tools above (approvals and URL rules kept); `man` / `--help` document them
       gitcli.js ghcli.js diff.js   bash's `git` and `gh`, behaving like the real ones (2026-11-12; models know them): real staging (add, then commit; -a), git's own output formats (status, diff, log, show, branch, …), most subcommands and their usual options (`git --help`, `gh --help` list them); runs on isomorphic-git with everything injected, so tests/gitcli.test.js runs it on real repos in Node. Status re-hashes files Squiggle wrote and "racy" ones (changed no earlier than the index), since a size-and-seconds check misses same-size edits. Pushes, pulls and clones still go through git_push/git_pull/git_clone (push policy, never forced; `git push origin <other branch>` passes `pushBranch` in the call context, not as a model-facing parameter). gh: pr/issue/repo/run/workflow/release/search/api/auth with --json/--jq (jq via just-bash's ctx.exec); `gh pr merge`, deleting a branch on GitHub and any `gh api` that isn't a read ask the user (approval card kind 'action'); the storage repo is refused by name (owner/name, -R, search, graphql) and /repositories/<id>. diff.js: Myers line diff in git's unified format (matches `git diff --diff-algorithm=myers` on 275 of 282 random cases; the rest differ only in where a repeated line is shown) and --stat
       tty.js            a just-bash transform plugin: gives each `gh` whose stdout reaches the terminal (not piped, redirected or in $(…)) GH_FORCE_TTY=true, real gh's own switch, since just-bash never tells a command where its output goes; ghcli prints gh's terminal formats only then (`gh repo list`: header and a table cut to 80 columns, gh's fallback width when it can't measure a terminal; GH_FORCE_TTY=<n> sets it, as in gh)
@@ -123,8 +124,13 @@ docs/                   harness.md (the agent loop contract), failures.md (caseb
   page left (2026-11-16: CI lost an unpushed chat that way). Running out of push attempts is a sync error, not a success. A push the server refuses because another
   holds the branch's lock ("failed to update ref") is retried like a non-fast-forward, after a random wait that grows
   (2026-11-16: it used to throw, which was CI's flaky e2e for weeks; tests/e2e "six devices sync at the same moment").
-- The bash surface (`agent.bashSurface()`): the model gets `bash` and `remember` plus the harness tools instead of the
-  file, web, git and maths tools. Commands that reach the network, GitHub or the sandbox go through `runTool` with the
+- The bash surface (`agent.bashSurface()`): the model gets `bash` (every custom command kept) plus the common harness
+  tools beside it (tools/common.js, 2026-11-17: `read`, `write`, `edit`, `web_search`, `web_fetch`, Hermes's `memory`
+  (add/replace/remove by a piece of the text; target `user` = facts for every chat, `memory` = this chat's notes) and `session_search`, snake_case names and arguments, each running the Squiggle tool it wraps) and the harness tools,
+  instead of the separate file, web, git and maths tools. LFM3 gets only bash, web_search, web_fetch, memory and search_tools
+  up front; the rest (files, `session_search`, plan, ask_user…) are deferred (`defer_loading`), named by name
+  at the end of its prompt, and found with `search_tools`, answered as `tool_reference` parts its template expands
+  (docs/harness.md "Deferred tools"); one called blind with arguments that don't fit gets its definition back instead of running. The prompt lists the repos cloned here every turn (`refreshClones`). Bash has directory links (`ln -s`, kept for the chat like /tmp); `git clone URL /tmp/x` clones into /repos/<name> and links /tmp/x to it. Commands that reach the network, GitHub or the sandbox go through `runTool` with the
   agent's context, so a push still needs the approval card and curl fetches any URL (the allowed-URL check stays on fetch_url for the two fine-tunes); the whole output is
   wrapped as untrusted; `.git` stays unreachable (`guard.resolveAgentPath`).
 - No tool cuts its output (Keal, 2026-11-15): bash, curl, read_file, grep, git log, run_js, wiki and the rest return
@@ -283,9 +289,11 @@ stubs the Web Speech API; real-model behaviour needs a WebGPU device and is chec
 iOS Safari kills tabs that load Gemma 4 E2B/E4B, and smaller ONNX models (tried and removed:
 Gemma 3, SmolLM, a QAT E2B build on onnxruntime-web) failed on WebGPU readback. The defaults are `engine.DEFAULTS`
 (one place to change): LFM3 everywhere since 2026-11-10 (settings.js `lfm3Default` moves devices on an old default
-once). A model can have several builds (`engine.GROUPS`, `group` on each MODELS entry): LFM3 is `KOMNI` (LFM3 Omni 2B on
-Keptsam, WebGPU without shader-f16, since 2026-11-16), then `WLF3QAD` (WebLLM, q4f16 with a q4f32 twin), then `LF3` (GGUF on
-wllama, CPU). The user picks the model; `engine.forDevice` picks the first build
+once). A model can have several builds (`engine.GROUPS`, `group` on each MODELS entry): LFM3 1.7B is `KLF3` (Tilde, WebGPU without
+shader-f16, Liquid's QAD Q4_0 GGUF, 2026-11-17), then `WLF3QAD` (WebLLM, q4f16 with a q4f32 twin), then `LF3` (GGUF on
+wllama, CPU). LFM3 Omni 2B (`KOMNI`, Tilde, the default where it runs) is listed beside it as its own model; its
+group falls back to the 1.7B builds. Omni closes an open `<think>` at once (its branch skipped the 1.7B's MOPD and
+agentic RL), so its format (`lfm3-omni`) starts the thinking with "We need to" and shows those words as thinking; it often goes from that thinking straight into a tool call without `</think>`, so a `<tool_call>` there ends the thinking. The user picks the model; `engine.forDevice` picks the first build
 that runs here (`runsHere`: WebGPU for GPU builds, shader-f16 for f16-only ones after `probeGpu`, not in
 `settings.avoidBuilds`), and that one build is the only one listed. `initModel` resolves the saved model to it,
 `sessionModel` resolves a chat saved on another device to it, and `cleanupStorage` frees the other build's download.
@@ -297,7 +305,7 @@ bash is the tool surface wherever `agent.bashSurface()` allows (LFM3 and the clo
 separate tools they were trained on). Context type is per chat, picked before the first message and fixed after
 (`session.contextMode`, set at the first send), Compress by default (settings.js `compactDefault`: until 2026-11-11 a new browser ran the old `harnessV2` step after `simplified` and landed on Smart); the model can still switch in the chat details. Squiggle Small (`SQ`, LFM2.5-350M fine-tuned on the
 harness format, lm-experiments experiments/squiggle-ft, kealjones/squiggle-small, Q4_0 GGUF 219 MB) is an experimental option.
-The models are LFM3 (two builds), Squiggle Small (`SQ`), Tiny Gemma 4 (`TG4A`) and the cloud model; there's no lab
+The models are LFM3 1.7B (three builds), LFM3 Omni 2B, Squiggle Small (`SQ`), Tiny Gemma 4 (`TG4A`) and the cloud model; there's no lab
 mode (`engine.listedModels`; a device that already picked one keeps it).
 Gemma 3 270M (`G3`, unsloth's Q4_0 GGUF, 242 MB) stays as an option. Both run on wllama 3.13.0, CPU only
 (`n_gpu_layers: 0`), in `engine-wllama.js`; wllama caches the file itself. llama.cpp may split LFM2.5's
