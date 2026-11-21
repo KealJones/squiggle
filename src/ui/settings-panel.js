@@ -7,6 +7,7 @@ import * as grants from '../grants.js';
 import * as engine from '../engine.js';
 import * as agent from '../agent.js';
 import * as voice from '../voice.js';
+import { omniSpeaker } from '../omni-voice.js';
 import { h, icon, toast } from './dom.js';
 import { state } from './state.js';
 import { saveSettings, applyTheme } from './settings.js';
@@ -37,7 +38,7 @@ const actions = (hint, ...buttons) => h('div', { class: 'field' }, hint ? h('spa
 let voicesWatched = false;
 const TEST_LINE = 'Hi, this is how I sound on a call.';
 function voiceSettingsField(S, seg) {
-  const synth = window.speechSynthesis;
+  const synth = window.speechSynthesis || { getVoices: () => [], cancel() {}, speak() {} };
   if (!voicesWatched) {
     voicesWatched = true;
     synth.addEventListener?.('voiceschanged', () => { if (state.drawerPanel === 'settings') renderSettingsPanel(); });
@@ -62,13 +63,30 @@ function voiceSettingsField(S, seg) {
     u.rate = Number(S.voiceRate) || 1;
     synth.speak(u);
   };
-  return h('div', { class: 'field' }, h('span', { class: 'label' }, 'Voice calls'),
-    h('div', { class: 'voice-row' }, select, seg([[0.9, 'Slow'], [1, 'Normal'], [1.2, 'Fast'], [1.4, 'Faster']], Number(S.voiceRate) || 1, (v) => { S.voiceRate = v; })),
-    h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: testSystem }, 'Test voice'), status),
+  // LFM3 Omni speaks and hears for itself (voice-ui.js omniVoice/omniEars), unless this picks the device's voices.
+  const omniHere = Boolean(engine.hasSense && engine.hasSense('voice'));
+  const useOmni = omniHere && S.voiceEngine !== 'system';
+  const testOmni = () => {
+    const sp = omniSpeaker({ speak: (text, o) => engine.speak(text, { ...o, voice: S.omniVoice || 'female' }) });
+    sp.prime();
+    status.textContent = 'Making the voice…';
+    const item = sp.prepare(TEST_LINE);
+    sp.play(item, (err) => { status.textContent = err ? `Couldn't speak: ${err.message || err}` : ''; });
+  };
+  const omniRow = omniHere ? h('div', {},
+    h('div', { class: 'row' }, seg([['omni', 'The model\'s own'], ['system', 'This device\'s']], useOmni ? 'omni' : 'system', (v) => { S.voiceEngine = v; })),
+    h('span', { class: 'hint' }, useOmni
+      ? 'LFM3 Omni speaks for itself, on this device; it hears you through this device\'s dictation (live words), or by itself where there is none. Its voice is slower than real time for now, so there are pauses between sentences.'
+      : 'The device\'s speech recognition and voices.'),
+    useOmni ? h('div', { class: 'voice-row' }, seg([['female', 'Female'], ['male', 'Male']], S.omniVoice || 'female', (v) => { S.omniVoice = v; })) : '') : '';
+  return h('div', { class: 'field' }, h('span', { class: 'label' }, 'Voice calls'), omniRow,
+    useOmni ? h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: testOmni }, 'Test voice'), status) : '',
+    useOmni ? '' : h('div', { class: 'voice-row' }, select, seg([[0.9, 'Slow'], [1, 'Normal'], [1.2, 'Fast'], [1.4, 'Faster']], Number(S.voiceRate) || 1, (v) => { S.voiceRate = v; })),
+    useOmni ? '' : h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: testSystem }, 'Test voice'), status),
     h('label', { class: 'toggle' },
       h('span', { class: 'toggle-text' }, h('strong', {}, 'Interrupt by talking'), h('span', { class: 'hint' }, 'Keep listening while Squiggle speaks, so you can cut in. Use headphones: on speakers it can hear itself.')),
       h('input', { type: 'checkbox', class: 'switch', checked: S.voiceBargeIn ? true : null, onchange: (e) => { S.voiceBargeIn = e.target.checked; saveSettings(); } })),
-    voices.some(v => mine(v) && voice.voiceQuality(v) >= 6) ? '' : h('span', { class: 'hint' }, 'For a much more natural voice, download a "Premium" or "Enhanced" voice in your device\'s settings (iPhone: Settings → Accessibility → Spoken Content → Voices), then pick it here.'));
+    useOmni || voices.some(v => mine(v) && voice.voiceQuality(v) >= 6) ? '' : h('span', { class: 'hint' }, 'For a much more natural voice, download a "Premium" or "Enhanced" voice in your device\'s settings (iPhone: Settings → Accessibility → Spoken Content → Voices), then pick it here.'));
 }
 
 // ── Model ──────────────────────────────────────────────────────────────────
@@ -118,7 +136,7 @@ export function renderSettingsPanel() {
       field('Theme', seg([['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']], S.theme || 'auto', (v) => { S.theme = v; applyTheme(); })),
     ),
 
-    voice.support(window).synthesis ? section('Voice', voiceSettingsField(S, seg)) : '',
+    voice.support(window).synthesis || (engine.hasSense && engine.hasSense('voice')) ? section('Voice', voiceSettingsField(S, seg)) : '',
 
     storage.isLocal() ? section('Account',
       field('Demo mode', h('span', { class: 'value' }, 'Chats, memory and files stay in this browser. Nothing syncs; the git and GitHub tools are off.'),
