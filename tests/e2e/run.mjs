@@ -852,6 +852,7 @@ await check('steering: a message sent mid-reply cuts it off, keeps what was writ
     return {
       msgs: s.messages.map(m => [m.role, m.content, Boolean(m.steered), m.thinking || '']),
       history: convs.at(-1).messages.map(m => [m.role, m.content]),
+      carried: convs.at(-1).messages.at(-1).thinking,
       note: document.querySelector('#messages .steered')?.textContent,
       label: document.querySelector('#composer button[type="submit"]').getAttribute('aria-label'),
     };
@@ -865,6 +866,7 @@ await check('steering: a message sent mid-reply cuts it off, keeps what was writ
   assert.equal(r.msgs[1][3], 'Going long.', 'its thinking stays viewable');
   // The new turn sees the cut-off reply as the model's own last turn, before the person's message.
   assert.deepEqual(r.history.slice(-2), [['user', 'STEERTEST write me the long version'], ['model', 'Starting on the long version, first']]);
+  assert.equal(r.carried, 'Going long.', 'and its thinking goes with it');
   assert.match(r.note || '', /cut off by your next message/);
   assert.equal(r.label, 'Send');
 });

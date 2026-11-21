@@ -192,3 +192,18 @@ test('case 18: earlier tool calls come back with what they returned (wrapped); h
   assert.equal(resultGist(''), '');
   assert.equal(resultGist('x'.repeat(400), 50).length <= 51, true);
 });
+
+test('steering: the cut-off reply right before the new message carries its thinking (the tail when long); older ones don\'t', async () => {
+  const session = { id: 's', messages: [], threads: {}, observations: [], summaries: {} };
+  const line = [
+    msg('user', 'write me the long version'),
+    msg('assistant', 'Starting on', { steered: true, thinking: 'old steer thinking' }),
+    msg('user', 'shorter'),
+    msg('assistant', 'Half', { steered: true, thinking: 'x'.repeat(3000) + 'the newest bit' }),
+  ];
+  const r = await assembleContext({ line, session, query: 'even shorter', budget: 4000, mode: 'compact', system: 's' });
+  const models = r.messages.filter(m => m.role === 'model');
+  assert.equal(models[0].thinking, undefined, 'an older steered turn: no thinking');
+  assert.equal(models.at(-1).content, 'Half');
+  assert.ok(models.at(-1).thinking.endsWith('the newest bit') && models.at(-1).thinking.length === 2001, 'the tail, marked as cut');
+});
