@@ -570,6 +570,9 @@ export async function respond(conv, input, opts = {}) {
 }
 
 async function respondOnce(conv, input, { onText, onThinking, signal, resume, track } = {}) {
+  // Stopped (or steered) between rounds, e.g. while a tool ran: the abort event has already fired, so the listener
+  // below would never cancel this generation and it would run to the end.
+  if (signal && signal.aborted) return { text: '', thinking: '', toolCalls: [] };
   activeConv = conv;
   const local = MODELS[loadedModel] && MODELS[loadedModel].runtime !== 'cloud';
   if (local) progress('writing the reply');

@@ -116,6 +116,24 @@ test('step prompt stays within a token budget: sections go first, then older res
   assert.ok(Math.ceil(tasks.finalSystem('BASE', t, { maxTokens: 1500 }).length / 3.2) <= 1500);
 });
 
+test('steering: a reply cut off by the next message carries its task on with that message as the user\'s word', () => {
+  const session = { tasks: {} };
+  const t = mk();
+  session.tasks[t.id] = t;
+  t.status = 'stopped';
+  assert.equal(tasks.resumable(session, null, 'use python instead', t.id), null, 'a plain message after Stop starts fresh');
+  assert.deepEqual(tasks.resumable(session, null, 'use python instead', t.id, { steered: true }), { task: t, how: 'steer' });
+  assert.equal(tasks.resumable(session, 'thread1', 'use python instead', t.id, { steered: true }), null, 'other threads are separate');
+  t.waiting = true;
+  assert.equal(tasks.resumable(session, null, 'Gizmo', t.id, { steered: true }).how, 'answer', 'a question it asked is answered as before');
+  t.waiting = false;
+  tasks.steerTask(t, 'use python instead');
+  assert.equal(t.status, 'active');
+  assert.deepEqual(t.answers.at(-1), { q: tasks.STEERED, a: 'use python instead' });
+  t.status = 'done';
+  assert.equal(tasks.resumable(session, null, 'use python instead', t.id, { steered: true }), null, 'a finished task is not reopened');
+});
+
 test('resumable: only the task of the latest reply, when waiting or told to go on', () => {
   const session = { tasks: {} };
   const t = mk();

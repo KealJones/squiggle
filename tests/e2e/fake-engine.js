@@ -115,8 +115,15 @@ function stepScript(conv, input, onText) {
   return null;
 }
 
-export async function respond(conv, input, { onText } = {}) {
+export async function respond(conv, input, { onText, onThinking, signal } = {}) {
   log.push({ type: 'respond', input, system: conv.cfg && conv.cfg.system });
+  // STEERTEST (steering): writes half a reply, then keeps going until the turn is cut off, like a long generation.
+  if (typeof input === 'string' && /^STEERTEST/.test(input)) {
+    const t = 'Starting on the long version, first';
+    onThinking && onThinking('Going long.'); onText && onText(t);
+    await new Promise(r => { if (!signal || signal.aborted) r(); else signal.addEventListener('abort', r, { once: true }); });
+    return { text: t, thinking: 'Going long.', toolCalls: [] };
+  }
   // The script answers the person's words, not the recalled block smart context appends.
   if (typeof input === 'string') input = input.split('\n\n---\nPossibly relevant earlier messages')[0];
   // Fresh context: the first input is the result of the lookup the agent made for the model.
