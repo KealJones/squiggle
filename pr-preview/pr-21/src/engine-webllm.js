@@ -399,7 +399,10 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
         prompt = (f.bos && !manifest ? f.bos : '') + f.prompt(history, tools, { thinking: Boolean(thinking), names: opts.tool_names || [] });
         // think_prefill: thinking written into the model's own turn and closed here, so it carries on from it as
         // if it had thought that (the thinking budget, engine-wllama.js). The reply then starts after the close.
-        if (opts.think_prefill && f.thinkClose && thinking && prompt.endsWith(f.thinkOpen)) prompt += opts.think_prefill + f.thinkClose;
+        // A format that starts the thinking for the model (f.thinkStart, LFM3 Omni) shows those words as the start of the
+        // thinking, so the prefill already has them: they're taken off the prompt first.
+        const start = f.thinkStart || '';
+        if (opts.think_prefill && f.thinkClose && thinking && prompt.endsWith(f.thinkOpen + start)) prompt = prompt.slice(0, prompt.length - start.length) + opts.think_prefill + f.thinkClose;
         base = prompt;   // what the model's own words are split against (ctx.prompt)
         prompt += st.raw;      // a reply carried on after a lost GPU or a reload: the model goes on from what it wrote
         noteRendered('raw prompt', prompt);   // the exact text the model reads ("What the model saw", trace.js)
@@ -463,7 +466,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
   return {
     async createChatCompletion(opts) { return stream(opts, opts.abortSignal); },
     async exit() { closed = true; unwatch(); try { engine && await engine.unload(); } catch {} },
-    info: { gpu: true, threads: 1, compat: false, webllm: true, closesThinking: Boolean(fmt.mode === 'raw' && fmt.thinkClose), get reuse() { return reuseOn; }, webllmVersion: versionFor(id), toolFormat: fmt.id, toolNames: Boolean(fmt.listsNames), id },
+    info: { gpu: true, threads: 1, compat: false, webllm: true, closesThinking: Boolean(fmt.mode === 'raw' && fmt.thinkClose), get reuse() { return reuseOn; }, webllmVersion: versionFor(id), toolFormat: fmt.id, toolNames: Boolean(fmt.listsNames), toolRefs: Boolean(fmt.toolRefs), id },
     get reloads() { return reloads; },
     get paced() { return Boolean(pace); },
     // Prompt tokens reused from the cache vs read, last call and in all (null when reuse is off, or was turned off).

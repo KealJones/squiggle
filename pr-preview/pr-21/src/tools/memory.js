@@ -52,7 +52,7 @@ export const forget = defineTool({
 export const searchHistory = defineTool({
   name: 'search_history',
   group: 'memory',
-  description: 'Search the user\'s past conversations (all sessions) for something discussed before.',
+  description: 'Search the user\'s past conversations (all sessions) for something discussed before. Each result has session_id, message_id and link, a markdown link that opens that chat: to point the user at it, put the link in your reply exactly as shown.',
   parameters: params({ query: str('What to look for') }, ['query']),
   async run({ query }, ctx) {
     const docs = [];
@@ -63,10 +63,12 @@ export const searchHistory = defineTool({
     }
     const scores = bm25(docs)(query);
     const top = docs.filter(d => scores.has(d.id)).sort((a, b) => scores.get(b.id) - scores.get(a.id)).slice(0, 6);
+    // Ids so a result can be opened or quoted later; the link is ui/links.js's #chat=<id> (] would break its text).
+    const ids = (d) => ({ session_id: d.s.id, message_id: (d.m || d.o).id, link: `[${String(d.s.title || '').replace(/[[\]\n]/g, ' ').trim() || 'Untitled chat'}](#chat=${d.s.id})` });
     return {
       model: { results: top.map(d => d.o
-        ? { session: d.s.title, when: new Date(d.o.ts).toISOString().slice(0, 10), role: 'attachment', file: d.o.title, text: wrapUntrusted('attachment ' + d.o.title, d.o.text), this_session: d.s.id === ctx.session.id }
-        : { session: d.s.title, when: new Date(d.m.ts).toISOString().slice(0, 10), role: d.m.role, text: d.m.content, this_session: d.s.id === ctx.session.id }) },
+        ? { session: d.s.title, ...ids(d), when: new Date(d.o.ts).toISOString().slice(0, 10), role: 'attachment', file: d.o.title, text: wrapUntrusted('attachment ' + d.o.title, d.o.text), this_session: d.s.id === ctx.session.id }
+        : { session: d.s.title, ...ids(d), when: new Date(d.m.ts).toISOString().slice(0, 10), role: d.m.role, text: d.m.content, this_session: d.s.id === ctx.session.id }) },
       label: `searched history for "${query}"`,
     };
   },
