@@ -218,20 +218,3 @@ test('lfm3: gated tools go in the <tools> block by name; calls read back through
   assert.deepEqual(lfm3.split('Hello!', { prompt: off }), { thinking: '', text: 'Hello!' });
 });
 
-// Steering (docs/harness.md "Steering"): the turn cut off by the person's next message goes back closed, with its
-// thinking inside its own <think> while it's the latest assistant turn; an older one loses it like any past turn.
-test('steering: a cut-off turn keeps its thinking inside <think>, closed, before the person\'s message', () => {
-  const msgs = [
-    { role: 'user', content: 'write me the long version' },
-    { role: 'model', content: 'Starting on the long', thinking: 'They want detail, so start with the history' },
-    { role: 'user', content: 'shorter please' },
-  ];
-  const prompt = lfm3Prompt(nativeMessages(msgs), [], { thinking: true });
-  assert.ok(prompt.endsWith('<|im_start|>assistant\n<think>They want detail, so start with the history</think>Starting on the long<|im_end|>\n<|im_start|>user\nshorter please<|im_end|>\n<|im_start|>assistant\n<think>'), prompt);
-  // Cut off before it said anything: the turn is still there, thinking only.
-  const quiet = lfm3Prompt(nativeMessages([msgs[0], { role: 'model', content: '', thinking: 'Hmm, the history first' }, msgs[2]]), [], { thinking: true });
-  assert.match(quiet, /<\|im_start\|>assistant\n<think>Hmm, the history first<\/think><\|im_end\|>\n<\|im_start\|>user\nshorter please/);
-  // Once the model answers after it, the steered turn's thinking leaves the history like any past turn's.
-  const later = lfm3Prompt(nativeMessages([...msgs, { role: 'model', content: 'Short version.' }, { role: 'user', content: 'thanks' }]), [], { thinking: true });
-  assert.ok(later.includes('<think></think>Starting on the long<|im_end|>'), later);
-});

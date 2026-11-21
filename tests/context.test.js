@@ -193,17 +193,20 @@ test('case 18: earlier tool calls come back with what they returned (wrapped); h
   assert.equal(resultGist('x'.repeat(400), 50).length <= 51, true);
 });
 
-test('steering: the cut-off reply right before the new message carries its thinking (the tail when long); older ones don\'t', async () => {
+test('steering: a cut-off reply is replayed as its thinking said out loud, then the words it got to (the tail when long), every time', async () => {
   const session = { id: 's', messages: [], threads: {}, observations: [], summaries: {} };
   const line = [
     msg('user', 'write me the long version'),
     msg('assistant', 'Starting on', { steered: true, thinking: 'old steer thinking' }),
     msg('user', 'shorter'),
     msg('assistant', 'Half', { steered: true, thinking: 'x'.repeat(3000) + 'the newest bit' }),
+    msg('user', 'thanks'),
+    msg('assistant', 'Sure.', { thinking: 'not steered, never replayed' }),
   ];
   const r = await assembleContext({ line, session, query: 'even shorter', budget: 4000, mode: 'compact', system: 's' });
   const models = r.messages.filter(m => m.role === 'model');
-  assert.equal(models[0].thinking, undefined, 'an older steered turn: no thinking');
-  assert.equal(models.at(-1).content, 'Half');
-  assert.ok(models.at(-1).thinking.endsWith('the newest bit') && models.at(-1).thinking.length === 2001, 'the tail, marked as cut');
+  assert.equal(models[0].content, 'old steer thinking\n\nStarting on', 'an older steered turn still says what it thought');
+  assert.ok(models[1].content.startsWith('…x') && models[1].content.endsWith('the newest bit\n\nHalf'), 'the tail, marked as cut');
+  assert.equal(models[2].content, 'Sure.');
+  assert.ok(r.messages.every(m => !m.thinking), 'nothing goes in as thinking');
 });

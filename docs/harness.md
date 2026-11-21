@@ -53,13 +53,12 @@ typed (an empty box still means Stop), and sending cuts the reply off where it i
 by hand. The reply is saved as far as it got (`steered: true`, no "(stopped)" note, its thinking kept for the UI),
 the message goes in as an ordinary user turn, and the next prompt is built the usual way, so the model's own template
 does the splicing: it closes the cut-off thinking and turn (`<think>…</think>text<|im_end|>` for LFM3), puts the
-person's turn after it and opens a fresh reply. The cut-off turn keeps its thinking (`context.js steeredThinking`,
-the last 2,000 characters) inside its own `<think>`, while it's the latest assistant turn: LFM3's template drops
-thinking from turns before the latest user message unless `preserve_thinking` is on, and this is that switch for the
-one turn, so the model picks up where its head was instead of thinking it all again (and the prompt reads the same as
-the one in the cache through that thinking). Once it has answered, the steered turn loses its thinking like any past
-turn. Only the native-tool path carries it (`engine-wllama.js nativeMessages`: LFM3 on Tilde, WebLLM and llama.cpp);
-the other runtimes drop it. The tool calls it made are in "Tool calls you made" either way.
+person's turn after it and opens a fresh reply. The cut-off turn's thinking is replayed as words it said
+(`context.js steeredThinking`, the last 2,000 characters, before the words it got to; messageText), in that prompt and
+every later one, and on every runtime. Kept as thinking (inside `<think>`, LFM3's `preserve_thinking` for that one
+turn, the first try at this), it reads as private notes the model is free to have again, so it tends to think the
+same things over; said out loud, it's something it already told the person and answers on from. The UI still shows it
+as thinking. The tool calls it made are in "Tool calls you made" either way.
 
 In step mode the plan isn't dropped: the stopped task carries on (`tasks.resumable` with `steered`, `how: 'steer'`)
 and the message joins the user's answers in the step prompt as "said while you were working", so the step that was
