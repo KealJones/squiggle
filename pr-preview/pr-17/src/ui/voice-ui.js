@@ -3,6 +3,8 @@
 // this is what shows it.
 import * as agent from '../agent.js';
 import * as voice from '../voice.js';
+import * as engine from '../engine.js';
+import { omniSpeaker, omniRecognition } from '../omni-voice.js';
 import { $, h, icon, squiggleWait, scrollDown, keepAwake } from './dom.js';
 import { state } from './state.js';
 import { send } from './chat.js';
@@ -11,6 +13,16 @@ import { send } from './chat.js';
 // The speaker button under a reply reads it with the system voice calls use.
 // One reading at a time; a call stops it.
 const systemSpeaker = () => voice.systemSpeaker({ synth: window.speechSynthesis, Utterance: window.SpeechSynthesisUtterance, lang: navigator.language || 'en-US', getSettings: () => agent.settings });
+
+// LFM3 Omni speaks and hears for itself (omni-voice.js), unless Settings picks the device's own voices.
+const omniWanted = () => agent.settings.voiceEngine !== 'system';
+export const omniVoice = () => Boolean(engine.hasSense && engine.hasSense('voice')) && omniWanted();
+// Hearing you in a call: the browser's own speech recognition when it has one (live words, instant; Keal 2026-11-17),
+// the model's ears only where there's none.
+export const omniEars = () => Boolean(engine.hasSense && engine.hasSense('audio')) && omniWanted() && !voice.support(window).recognition;
+let omni = null;
+const omniOf = () => (omni ||= omniSpeaker({ speak: (text, o) => engine.speak(text, { ...o, voice: agent.settings.omniVoice || 'female' }) }));
+const speakerNow = () => (omniVoice() ? omniOf() : systemSpeaker());
 
 function setReadButtons() {
   for (const b of document.querySelectorAll('.read-aloud')) {
@@ -39,7 +51,7 @@ export function toggleReadAloud(m) {
   setReadButtons();
   // readAloud primes the speaker first, inside this tap (iOS only starts speech from a gesture).
   mine.ctl = voice.readAloud({
-    speaker: systemSpeaker(), text: agent.scrubFakeToolNotes(m.content),
+    speaker: speakerNow(), text: agent.scrubFakeToolNotes(m.content),
     onEnd: () => { if (state.reader === mine) { state.reader = null; setReadButtons(); } },
   });
 }
@@ -51,12 +63,15 @@ const CALL_LABELS = { listening: 'Listening', thinking: 'Thinking', speaking: 'S
 
 export function startCall() {
   const sup = voice.support(window);
-  if (!sup.ok) { callBar(sup.recognition ? 'Voice calls need speech synthesis, which this browser doesn\'t have.' : voice.UNSUPPORTED_MESSAGE); return; }
+  const ears = omniEars(), mouth = omniVoice();
+  const SR = ears ? omniRecognition({ transcribe: (pcm) => engine.transcribe(pcm) }) : sup.recognition;
+  if (!SR) { callBar(voice.UNSUPPORTED_MESSAGE); return; }
+  if (!mouth && !sup.synthesis) { callBar('Voice calls need speech synthesis, which this browser doesn\'t have.'); return; }
   if (!state.current) return;
   stopReading();
   const bar = callBar();
   const ctl = voice.createCall({
-    SR: sup.recognition, speaker: systemSpeaker(),
+    SR, speaker: speakerNow(),
     lang: navigator.language || 'en-US',
     getSettings: () => agent.settings,
     send: (text) => send(text, null),

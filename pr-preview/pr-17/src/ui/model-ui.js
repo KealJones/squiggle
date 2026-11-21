@@ -147,7 +147,7 @@ function showCrashBanner(c) {
     if (sameModel) { S.avoidBuilds = [...new Set([...(S.avoidBuilds || []), S.model])]; engine.setAvoided(S.avoidBuilds); }
     setDefaultModel(next); setCrashMarker(null);
     state.modelPromise = null; ensureModel(); // downloads the lighter model first if needed, then loads
-  } }, sameModel ? `Run it on the CPU instead (${nm.size}, slower)` : next === S.model ? 'Use lighter settings' : `Use lighter settings (${nm.label}, ${nm.size})`);
+  } }, sameModel ? (nm.backend ? `Try its other GPU build (${nm.size})` : `Run it on the CPU instead (${nm.size}, slower)`) : next === S.model ? 'Use lighter settings' : `Use lighter settings (${nm.label}, ${nm.size})`);
   // Settings may have become lighter since the crash (e.g. phones moved to a phone model).
   const changed = c.model !== S.model || c.contextSize !== S.contextSize || Boolean(c.fast) !== Boolean(S.fastDecode)
     || Boolean(c.small && c.small.gpu) !== Boolean(S.smallGpu && engine.MODELS[S.model].runtime === 'wllama' && !engine.MODELS[S.model].backend)
@@ -293,6 +293,9 @@ export function useSessionContext(session) {
 
 export function updateComposerNote() {
   renderSide();
+  // The composer's microphone: the browser's dictation where it has one, else the model's own hearing (LFM3 Omni).
+  const mic = $('#composer-mic');
+  if (mic) mic.hidden = !(window.SpeechRecognition || window.webkitSpeechRecognition || (state.modelState === 'ready' && engine.hasSense && engine.hasSense('audio')));
   const note = $('#composer-note');
   if (!note || state.modelState !== 'ready') return;
   const cloud = engine.MODELS[agent.settings.model].runtime === 'cloud';
@@ -309,7 +312,7 @@ export function updateComposerNote() {
 export function smallHow() {
   const i = engine.isLite() ? engine.smallInfo() : null;
   if (!i) return '';
-  const parts = [i.webllm ? `GPU, WebLLM${i.webllmVersion ? ' ' + i.webllmVersion : ''}` : i.gpu ? 'GPU' : `${i.threads} CPU core${i.threads === 1 ? '' : 's'}`];
+  const parts = [i.tilde ? `GPU, Tilde ${i.tilde}` : i.webllm ? `GPU, WebLLM${i.webllmVersion ? ' ' + i.webllmVersion : ''}` : i.gpu ? 'GPU' : `${i.threads} CPU core${i.threads === 1 ? '' : 's'}`];
   if (i.reuse) parts.push('prompt reuse on');
   if (i.compat) parts.push('Safari compatibility build');
   if (i.asked && i.asked.gpu && !i.gpu) parts.push('no WebGPU here');
