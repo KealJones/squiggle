@@ -503,7 +503,7 @@
   },
   {
     "name": "search_history",
-    "description": "Search the user's past conversations (all sessions) for something discussed before.",
+    "description": "Search the user's past conversations (all sessions) for something discussed before. Each result has session_id, message_id and link, a markdown link that opens that chat: to point the user at it, put the link in your reply exactly as shown.",
     "parameters": {
       "type": "object",
       "properties": {

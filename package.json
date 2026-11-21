@@ -22,6 +22,7 @@
     "globals": "^16.5.0",
     "isomorphic-git": "1.44.5",
     "just-bash": "3.6.0",
+    "linkedom": "0.18.15",
     "marked": "18.1.2",
     "wrangler": "^4"
   },

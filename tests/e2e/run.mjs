@@ -333,6 +333,17 @@ await check('fetch_url wraps page text as untrusted and strips scripts', async (
   assert.ok(r.obs.text.includes('assets directory'));
 });
 
+await check('fetch_url reads the main landmark: no site nav, sidebar, link-only list or footer (failures case 23)', async () => {
+  const r = await A.page.evaluate(async (url) => {
+    const res = await T.tools.runTool({ function: { name: 'fetch_url', arguments: { url } } }, { session: T.sessions.list()[0] });
+    return res.model.text;
+  }, appUrl + '/test-pages/bio.html');
+  assert.match(r, /Updated: Apr 06, 2026/);
+  assert.match(r, /at age 15\./);
+  assert.match(r, /debuted at No\. 1/);
+  for (const junk of ['Musicians', 'Zac Efron', 'Demi Lovato', 'Other Famous', 'Trending now', 'unrelated story', 'Privacy Notice']) assert.ok(!r.includes(junk), junk + ' leaked: ' + r);
+});
+
 await check('web_search goes through the relay and comes back labeled as outside content', async () => {
   const r = await A.page.evaluate(async () => {
     const res = await T.tools.runTool({ function: { name: 'web_search', arguments: { query: 'squiggle relay' } } }, { session: T.sessions.list()[0] });
@@ -1323,6 +1334,7 @@ await check('attachments: a text file is stored, shown as a chip, searchable, an
   assert.match(r.chips.join('|'), /budget 2026\.csv.*\|pic\.png/);
   assert.equal(r.composerChips, 0, 'composer chips clear after sending');
   assert.match(r.found, /role":"attachment".*<untrusted source=\\"attachment /);
+  assert.ok(r.found.includes(`"session_id":"${r.id}"`) && r.found.includes(`(#chat=${r.id})`), 'search_history results carry the chat id and link');
   assert.match(r.read, /<untrusted source=\\"file \/home\/attachments/);
   // It syncs as plain text to the storage repo.
   await D.page.evaluate(async () => { await (await import('/src/sessions.js')).flush({ sync: false }); await (await import('/src/storage.js')).sync(); });
@@ -1728,6 +1740,81 @@ await check('Squiggle Small (fine-tuned) gets the harness: system prompt and too
   assert.equal(await D.page.evaluate(() => window.__engineLog.filter(e => e.type === 'complete').length), 0, 'no titles, facts or summaries from a small model');
 });
 
+await check('LFM3 gets bash, the web and search_tools up front, the rest named and found with search_tools as tool references', async () => {
+  const D = await device('lfm3');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.evaluate(() => { localStorage.setItem('fake-lfm3', '1'); const s = JSON.parse(localStorage.getItem('squiggle-settings') || '{}'); s.model = 'LF3'; localStorage.setItem('squiggle-settings', JSON.stringify(s)); });
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  await D.page.fill('#input', 'DEFERTEST what did I say about the eiffel tower?');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => document.querySelector('#messages') && /Looked through your past chats/.test(document.querySelector('#messages').textContent), null, { timeout: 15000 });
+  assert.match(await D.page.textContent('#messages'), /Found for files: read, write, edit\./, 'a file tool brings its bundle');
+  const log = await D.page.evaluate(() => window.__engineLog);
+  const c = log.find(e => e.type === 'conversation');
+  for (const n of ['bash', 'read', 'write', 'edit', 'web_search', 'web_fetch', 'memory', 'session_search', 'search_tools', 'ask_user', 'plan']) assert.ok(c.tools.includes(n), n + ' in ' + c.tools);
+  for (const n of ['read_file', 'write_file', 'edit_file', 'fetch_url', 'remember', 'recall', 'forget', 'memory_read', 'memory_write', 'search_history', 'tool_info', 'calculate', 'find']) assert.ok(!c.tools.includes(n), n + ' should not be in ' + c.tools);
+  assert.deepEqual(c.tools.filter(n => !c.deferred.includes(n)).sort(), ['bash', 'memory', 'search_tools', 'web_fetch', 'web_search'], 'only the shell, the web, memory and the finder up front');
+  assert.match(c.system, /If none of your current tools can handle a request, call search_tools to find one, then call the tool it returns\./);
+  const line = (c.system.match(/More tools, found with search_tools: (.*)\./) || [])[1] || '';
+  assert.deepEqual(line.split(', ').sort(), c.deferred.slice().sort(), 'every deferred tool is named, by name only');
+  assert.match(c.system, /save it with the memory tool \(add\)/);
+  assert.doesNotMatch(c.system, /tool_info|the remember tool/);
+  assert.match(c.descriptions.web_search, /web_fetch/, 'web_search points at web_fetch on this surface');
+  assert.doesNotMatch(c.descriptions.web_search, /fetch_url/);
+  const found = log.filter(e => e.type === 'respond' && Array.isArray(e.input) && e.input[0].content[0].name === 'search_tools')[0];
+  assert.ok(found, JSON.stringify(log.map(e => e.type)));
+  assert.ok(found.input[0].content[0].response.tool_references.includes('session_search'), JSON.stringify(found.input[0].content[0].response));
+  assert.ok(log.some(e => e.type === 'respond' && Array.isArray(e.input) && e.input[0].content[0].name === 'session_search'), 'the found tool ran');
+  const blind = log.find(e => e.type === 'respond' && Array.isArray(e.input) && e.input[0].content[0].name === 'read');
+  assert.ok(blind && JSON.stringify(blind.input[0].content[0].response.tool_references) === '["read"]', 'a blind call with the wrong arguments gets the definition, not a run: ' + JSON.stringify(blind && blind.input));
+  assert.match(blind.input[0].content[0].response.text, /didn't run.*missing file_path; it takes no filename/);
+  // The common tools run the Squiggle tools under them, and speak their own names and arguments.
+  const r = await D.page.evaluate(async () => {
+    const { runTool } = await import('/src/tools.js');
+    const session = (await import('/src/sessions.js')).list()[0];
+    const run = async (name, args) => (await runTool({ function: { name, arguments: args } }, { session, room: 20000 })).model;
+    const w = await run('write', { file_path: '/home/notes/plan.md', content: 'one\ntwo\nthree\nfour\n' });
+    const e = await run('edit', { file_path: '/home/notes/plan.md', old_string: 'two', new_string: 'TWO' });
+    const pi = await run('edit', { path: '/home/notes/plan.md', edits: [{ oldText: 'four', newText: 'FOUR' }] });
+    const bad = await run('edit', { file_path: '/home/notes/plan.md', old_string: 'nope', new_string: 'x' });
+    const rd = await run('read', { file_path: '/home/notes/plan.md', offset: 2, limit: 2 });
+    const add1 = await run('memory', { action: 'add', content: 'The user likes short answers.' });
+    const add2 = await run('memory', { action: 'add', target: 'user', content: 'The user deploys on Fridays.' });
+    const both = await run('memory', { action: 'remove', old_text: 'The user' });
+    const repl = await run('memory', { action: 'replace', old_text: 'fridays', content: 'The user deploys on Mondays.' });
+    const gone = await run('memory', { action: 'remove', old_text: 'short answers' });
+    const mem = await import('/src/memory.js');
+    // target "memory": this chat's notes, not the facts kept for every chat.
+    const note = await run('memory', { action: 'add', target: 'memory', content: 'The config lives in /home/notes/plan.md.' });
+    const notes1 = (await import('/src/sessions.js')).liveNotes(session).map(n => n.text);
+    const noteGone = await run('memory', { action: 'remove', target: 'memory', old_text: 'config lives' });
+    const notes2 = (await import('/src/sessions.js')).liveNotes(session).map(n => n.text);
+    // A directory link (ln -s): writes through it land in the place it points to.
+    const sh = await run('bash', { command: 'mkdir -p /home/linked && ln -s /home/linked /tmp/lk && echo hi > /tmp/lk/a.txt && cd /tmp/lk && pwd && cat /home/linked/a.txt' });
+    return { w, e, pi, bad, rd: JSON.stringify(rd), add1, add2, both, repl, gone, facts: mem.all().map(f => mem.factText(f)), note, notes1, noteGone, notes2, sh: JSON.stringify(sh) };
+  });
+  assert.ok(!r.w.error && !r.e.error && !r.pi.error, JSON.stringify(r));
+  assert.match(r.bad.error, /old_string/, 'errors use the arguments the model was given');
+  assert.doesNotMatch(r.bad.error, /old_text|edit_file|read_file/);
+  assert.match(r.rd, /TWO/); assert.match(r.rd, /three/); assert.doesNotMatch(r.rd, /FOUR/);
+  // Hermes's memory tool: an entry found by a piece of its text; "forget that…" removes it.
+  assert.ok(r.add1.ok && r.add2.ok, JSON.stringify(r));
+  assert.match(r.both.error, /in 2 entries/);
+  assert.match(r.repl.replaced, /Fridays/);
+  assert.match(r.gone.removed, /short answers/);
+  assert.deepEqual(r.facts.filter(f => /deploys on|short answers/.test(f)), ['The user deploys on Mondays.']);
+  assert.ok(r.note.ok && r.notes1.includes('The config lives in /home/notes/plan.md.'), JSON.stringify(r.note));
+  assert.ok(!r.facts.some(f => /config lives/.test(f)), 'a chat note is not a fact for every chat');
+  assert.match(r.noteGone.removed, /config lives/);
+  assert.ok(!r.notes2.some(n => /config lives/.test(n)));
+  assert.match(r.sh, /\/tmp\/lk/); assert.match(r.sh, /hi/);
+  await D.ctx.close();
+});
+
 await check('the prompt follows the model, with no switches: a big model gets the full prompt, Squiggle Small its find-first one', async () => {
   const D = await device('smallmode');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
@@ -1795,7 +1882,7 @@ await check('a chat can have its own system prompt and tools: edited in the chat
   // Tools: remember off, find's description edited.
   await D.page.uncheck('#drawer input[aria-label="Offer remember in this chat"]');
   await D.page.click('#drawer .tool-row:has(code:text-is("find")) summary');
-  assert.equal(await D.page.inputValue('#drawer textarea[aria-label="Description of find"]'), first.toolDesc.find);
+  assert.equal(await D.page.inputValue('#drawer textarea[aria-label="Description of find"]'), first.descriptions.find);
   await D.page.fill('#drawer textarea[aria-label="Description of find"]', 'Search saved things.');
   await D.page.click('#drawer button:has-text("Save")');
   await D.page.click('#close-drawer');
@@ -1805,7 +1892,7 @@ await check('a chat can have its own system prompt and tools: edited in the chat
   assert.ok(own.system.startsWith(`Be brief.\nToday is ${new Date().toDateString()}.`), own.system);
   assert.doesNotMatch(own.system, /personal AI agent|\{\{/);
   assert.ok(!own.tools.includes('remember'), 'remember is not offered');
-  assert.equal(own.toolDesc.find, 'Search saved things.');
+  assert.equal(own.descriptions.find, 'Search saved things.');
   // Reset both: back on Squiggle's (null, so the sync merge can't bring an old edit back).
   await D.page.click('#ctx-side button:has-text("Edit")');
   await D.page.click('#drawer button:has-text("Reset prompt to Squiggle")');
@@ -1816,7 +1903,7 @@ await check('a chat can have its own system prompt and tools: edited in the chat
   const back = await send('one more');
   assert.match(back.system, /^You are Squiggle, a personal AI agent/);
   assert.ok(back.tools.includes('remember'));
-  assert.equal(back.toolDesc.find, first.toolDesc.find);
+  assert.equal(back.descriptions.find, first.descriptions.find);
   // The stubbed GitHub API answers 404 for anything it doesn't fake; nothing else may go wrong.
   assert.deepEqual(D.page.errors.filter(e => !/Failed to load resource/.test(e)), []);
 });
