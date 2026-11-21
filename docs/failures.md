@@ -402,3 +402,9 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   that markup: a list of 3+ items that are each only a link, and its heading, are dropped. The tense is not fixed
   here.
 - **Caught by:** tests/webpage.test.js (the `pageText` tests); tests/failures.test.js case 23.
+- **Again, 2026-11-21 (chat s0mwr0ozdb000gyowg, LFM3 1.7B on Tilde):** "Tell me about Olivia Rodrigo" first got a
+  reply about handling edge cases, nothing to do with her: Tilde 735b0d2's 64×64 prompt matmul gave zeros on an
+  iPhone (fixed in Tilde ee73201, a runtime bug, not the model's). After the fix it searched and answered well, but
+  listed "Bad Boy" and "Stay" among her songs (neither is hers) and left out GUTS. Not fixed; the eval case below
+  rejects them.
+- **Eval:** tests/eval/cases.json case 19 (runs the question on a real model).
