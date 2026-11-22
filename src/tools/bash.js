@@ -60,7 +60,17 @@ export function followLinks(path, links) {
   for (const [from, to] of links) if (p === from || p.startsWith(from + '/')) return to + p.slice(from.length);
   return p;
 }
-export const linksOf = (ctx = {}) => (ctx.session ? (ctx.session.__bashLinks = ctx.session.__bashLinks || new Map()) : (ctx.__bashLinks = ctx.__bashLinks || new Map()));
+// A chat's /tmp and directory links live for the page, kept beside the chat's session object here, never on the session object: that one is
+// saved as JSON, so an InMemoryFs or a Map on it came back from a reload or a sync as plain data, and every redirect in
+// that chat (`2>/dev/null`, `> /tmp/x`) failed with "this.tmp.writeFile is not a function" (Keal's iPhone, 2026-11-22).
+const perChat = new WeakMap();   // session object (kept and merged in place, sessions.js) → { tmp, links }
+const chatState = (ctx) => {
+  const s = ctx.session;
+  if (!s || typeof s !== 'object') return null;
+  if (!perChat.has(s)) perChat.set(s, { tmp: null, links: new Map() });
+  return perChat.get(s);
+};
+export const linksOf = (ctx = {}) => { const c = chatState(ctx); return c ? c.links : (ctx.__bashLinks = ctx.__bashLinks || new Map()); };
 
 function locate(path) {
   const p = normalize(path);
@@ -510,7 +520,8 @@ export const bash = defineTool({
     if (!script) return { model: { error: 'The command was empty. Put the whole shell line in command, e.g. gh repo list, ls /repos or man.' }, label: 'bash (empty command)' };
     let L;
     try { L = await load(ctx.bashLib); } catch (e) { return { model: { error: `The shell couldn't load: ${e.message || e}` }, label: 'bash (not loaded)' }; }
-    const tmp = ctx.bashTmp || (ctx.session ? (ctx.session.__bashTmp = ctx.session.__bashTmp || new L.InMemoryFs()) : new L.InMemoryFs());
+    const chat = chatState(ctx);
+    const tmp = ctx.bashTmp || (chat ? (chat.tmp = chat.tmp || new L.InMemoryFs()) : new L.InMemoryFs());
     try { await tmp.mkdir('/tmp', { recursive: true }); } catch {}
     const fs = new WorkspaceFs(tmp, linksOf(ctx));
     await fs.refreshIndex();
