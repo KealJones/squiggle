@@ -1370,10 +1370,14 @@ class Turn {
     return { query: (res.args && res.args.query) || query, items: rerankWeb(query, items, { vecs, k: lite() ? 3 : 5 }), answer: res.answer || null };
   }
 
-  // wiki_lookup for Fresh's lookup: the text it found (already marked as outside content), or null.
+  // wiki_lookup for Fresh's lookup: the text it found (already marked as outside content), or null. Brief: the most
+  // relevant facts and newest links only, with a note of how many more and where (2026-11-22, Keal's iPhone: Olivia
+  // Rodrigo's 175 links made the lookup 17K characters, and the first message didn't fit LFM3's 6K window).
   async wikiTop(query, why = 'looked up first') {
     const call = { function: { name: 'wiki_lookup', arguments: { query } } };
-    const res = await runTool(call, { session: this.session, threadId: this.threadId, pageCards: lite() });
+    const more = bashSurface() ? `\`wiki ${String(query).replace(/[`"'$\\]/g, '').slice(0, 60)}\` in bash` : 'wiki_lookup it';
+    const brief = lite() ? { facts: 15, links: 8, more } : { facts: 40, links: 25, more };
+    const res = await runTool(call, { session: this.session, threadId: this.threadId, pageCards: lite(), brief });
     this.noteUrls(res);
     this.toolEvent({ name: 'wiki_lookup', label: `${res.label} (${why})`, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
     if (!res.ok || !res.model || !res.model.found) return null;

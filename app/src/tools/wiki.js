@@ -181,8 +181,14 @@ export function parseLinks(json, { now = new Date() } = {}) {
 
 // ── What the model reads ────────────────────────────────────────────────────
 
-export function render({ main, lists = [], others = [], facts = [], links = [], qid = '' }, { now = new Date(), small = false, wrap = (s, t) => t } = {}) {
+// `brief` ({ facts, links, more }): the harness's own lookup before the model answers (agent.js wikiTop, Fresh context)
+// keeps the first so many facts (the most relevant) and links (the newest) and says how many it left out and where
+// they are (`more`), since it has to fit the window beside everything else. The tool itself, called by the model,
+// gives everything (no tool cuts its output).
+export function render({ main, lists = [], others = [], facts = [], links = [], qid = '' }, { now = new Date(), small = false, wrap = (s, t) => t, brief = null } = {}) {
   if (!main) return '';
+  const left = brief ? { facts: Math.max(0, facts.length - brief.facts), links: Math.max(0, links.length - brief.links) } : null;
+  if (brief) { facts = facts.slice(0, brief.facts); links = links.slice(0, brief.links); }
   const lines = [`Wikipedia: ${main.title}${main.description ? ` (${main.description})` : ''}`];
   if (main.extract) lines.push(main.extract.replace(/\s+/g, ' '));
   if (main.url) lines.push(main.url);
@@ -196,13 +202,17 @@ export function render({ main, lists = [], others = [], facts = [], links = [], 
   }
   if (lists.length) lines.push('', 'Lists on Wikipedia (fetch_url one for the whole list):', ...lists.map(l => `- ${l.title}: ${l.url}`));
   if (others.length) lines.push('', 'Other matches (if this is the wrong one, wiki_lookup one of these):', ...others.map(o => `- ${o.title}${o.description ? ` (${o.description})` : ''}`));
+  if (left && (left.facts || left.links)) {
+    const n = [left.facts && `${left.facts} more fact${left.facts === 1 ? '' : 's'}`, left.links && `${left.links} older link${left.links === 1 ? '' : 's'}`].filter(Boolean).join(' and ');
+    lines.push('', `(${n} left out here; ${brief.more || 'wiki_lookup it'} for all of them.)`);
+  }
   return wrap('wikipedia and wikidata', lines.join('\n'));
 }
 
 // ── The lookup ──────────────────────────────────────────────────────────────
 
 /** Returns { text, main, qid, facts, links, lists } or { error }. `query`: a question, a name or a Q-id. */
-export async function wikiLookup(query, { fetch: f = globalThis.fetch, now = new Date(), small = false, wrap } = {}) {
+export async function wikiLookup(query, { fetch: f = globalThis.fetch, now = new Date(), small = false, wrap, brief = null } = {}) {
   const get = async (url, headers) => {
     const r = await f(url, headers ? { headers } : undefined);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -237,7 +247,7 @@ export async function wikiLookup(query, { fetch: f = globalThis.fetch, now = new
     const l = lj ? parseLinks(lj, { now }) : { links: [], hub: false };
     links = l.hub ? [] : l.links;
   }
-  const text = render({ ...found, facts, links, qid: main.qid || '' }, { now, small, wrap });
+  const text = render({ ...found, facts, links, qid: main.qid || '' }, { now, small, wrap, brief });
   return { text, main, qid: main.qid || '', facts, links, lists: found.lists };
 }
 
@@ -250,7 +260,7 @@ export const wikiTool = defineTool({
     const q = String(query || '').trim();
     if (!q) return { model: { error: 'Give a question, a name or a Q-id.' } };
     let r;
-    try { r = await wikiLookup(q, { fetch: ctx.fetch, small: Boolean(ctx.pageCards), wrap: wrapUntrusted }); } catch (e) { return { model: { error: `Wikipedia or Wikidata didn't answer (${e.message}). Try web_search.` } }; }
+    try { r = await wikiLookup(q, { fetch: ctx.fetch, small: Boolean(ctx.pageCards), wrap: wrapUntrusted, brief: ctx.brief || null }); } catch (e) { return { model: { error: `Wikipedia or Wikidata didn't answer (${e.message}). Try web_search.` } }; }
     if (r.error) return { model: { error: `${r.error} Try other words, or web_search.` }, label: `looked up "${truncate(q, 50)}" on Wikipedia (nothing)` };
     return {
       model: { found: r.text },
