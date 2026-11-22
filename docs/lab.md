@@ -260,6 +260,42 @@ aren't re-read; a very large checkpoint (storage full) loses the tool result tex
 tool labels. The e2e check loses the page mid-step with a scripted model; the GPU paths are unit tests with fake
 engines.
 
+### Steering: the cut-off thinking kept as thinking (#24) or said out loud (#25)
+
+**Idea.** Keal, 2026-11-21: a message sent mid-reply cuts it off and goes in as the next turn (docs/harness.md
+"Steering"). The open question was what to do with the thinking that got cut off. #24 keeps it inside the cut-off
+turn's own `<think>`. #25 replays it as words the model said, on the hunch that thinking it was free to have again
+would get thought again.
+
+**Eval (2026-11-22).** Keal's iPhone 16, Safari 27.2, LFM3 1.7B on Tilde, Compress, the previews of #24 and #25
+driven through the phone relay. Each run was a new chat, cut off by a script on the phone at 300 characters of
+thinking or at the first tool call, whichever came first. Two cases, run twice on each variant:
+- *Refining:* "Who is Nina Garcia and what's she known for?", then "Just the Project Runway part, two sentences max."
+- *Correcting:* "What's an 18% tip on a $73.40 bill, and how much does each of 3 people pay with the tip?", then
+  "Make it 20% instead." (Right answer: $14.68, $88.08, $29.36 each.)
+
+"Repeated" below is the share of the new thinking's 5-word runs found in the cut-off thinking.
+
+| | #24 (as thinking) | #25 (said out loud) |
+|---|---|---|
+| Tip, right answer | 2 of 2 | 2 of 2 |
+| Tip, thinking again after the steer | 1.1 s, 1.1 s | 4.8 s, 4.8 s |
+| Tip, steer to finished | 39 s, 50 s | 65 s, 46 s |
+| Tip, new thinking (chars) / repeated | 524, 890 / 0%, 0% | 1297, 661 / 10%, 0% |
+| Nina, answered | 0 of 2 | 0 of 2 |
+
+**Result.** Kept as thinking, nothing was thought twice, and the reply carried on from the cache: the prompt reads
+the same as the cut-off one through its thinking, so the first new thinking came in 1.1 s, against 4.8 s once the
+thinking became text. Said out loud, one run went back over the original question ("Then I started computing but got
+cut off") and ran into the 400-token thinking budget. The hunch didn't hold, so #24's way stays.
+
+The Nina runs failed on both variants, for reasons that aren't about steering. The loop guard counted the thinking and
+the reply as one text, so an answer the model noted, drafted and then wrote out was stopped as "repeating itself"
+(docs/failures.md case 24, fixed in #27). The cut always landed on the first tool call: LFM3 thinks about 180
+characters before it searches, so the cut-off turn's search results never reach the next prompt and it searched
+again every time. And in one #25 run it tried to fetch a URL cut off with "…" in the "Tool calls you made" recap.
+Two runs per cell is thin; the tip timing is the clearest signal.
+
 ## Test pages (deployed alongside the app)
 
 - **`memtest.html`**: loads a chosen model on a chosen runtime (wllama, WebLLM, transformers.js ONNX) with a
