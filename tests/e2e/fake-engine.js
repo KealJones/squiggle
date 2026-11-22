@@ -57,6 +57,7 @@ export const load = async (id, ctx, opts = {}) => {
 };
 export const gpuSummary = async () => 'fake gpu, f16';
 export const setProgress = (fn) => { window.__progress = fn; };
+export const markStage = (st) => { if (window.__progress) window.__progress(st); };
 export const unload = async () => { ready = false; };
 export const smallInfo = () => window.__smallInfo || null;
 export const smallSpeed = async () => window.__smallSpeed || null;

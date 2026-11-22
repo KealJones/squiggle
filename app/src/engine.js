@@ -426,6 +426,9 @@ let engineFast = null;
 // is reported, then null when done, so a tab killed mid-reply can say so.
 let progress = () => {};
 export const setProgress = (fn) => { progress = fn || (() => {}); };
+// The same marker for work before the reply that can still run out of memory (Fresh's lookup), so a tab killed there
+// says so on the next open instead of leaving no trace (2026-11-22). null clears it.
+export const markStage = (st) => progress(st);
 let engineSmall = '';
 // Small models (wllama): how the last load ran ({ gpu, threads, compat }) and the last reply's speed.
 export const smallInfo = () => (engine && engine.info) || null;
