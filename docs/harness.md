@@ -300,7 +300,13 @@ Fresh replays nothing just for being recent. Before the model sees a message, th
    and gets none. Other matches are listed so a wrong pick can be corrected. It takes a Q-id too. The model can
    call it itself in any mode (it's in the gate). Checked live on 2026-11-04: Jaws → Spielberg, Zig → inception
    2015, Emma Stone's birth date, her newest released film, Coca-Cola's inventor (the drink and the company are
-   different items).
+   different items). The lookup before the model answers is brief (`wikiTop`, render's `brief`): the 15 most
+   relevant facts and 8 newest links for small models (40 and 25 for big ones), then how many were left out; the
+   whole lookup is saved as a /web file like a fetched page (`saveWebPage`, Keal's idea), and the note says to grep
+   it, so the rest is a grep away, not a second lookup. The full list didn't fit: on Keal's iPhone
+   (2026-11-22, LFM3 1.7B, 6K window) Olivia Rodrigo's 175 links made the lookup 17K characters, and the first
+   message of a Fresh chat failed with "no longer fits in the model's window". Called by the model, it gives
+   everything.
 5. **`wikidata_query(sparql)`** runs the model's own SPARQL, errors returned as the service wrote them. Big models
    only (`agent.js BIG_ONLY`): Qwen3 0.6B's SPARQL didn't run (docs/measurements-2026-11-04.md).
 
@@ -311,6 +317,12 @@ Fresh replays nothing just for being recent. Before the model sees a message, th
    every lookup for that chat, labelled as the user's own earlier instructions, still in force.
 7. **The user's own things stay off the web.** A question about the user ("what's my name?", "my dog") that memory
    or this chat has something for gets no web or Wikipedia search ("What's my name?" went to both, 2026-11-09).
+   Nor does a message about the chat itself or how to reply (`prefetch.js aboutTheChat`: "can you be more concise in
+   the future?", "only reply with 2 sentences", "the secret password for this chat is …"; all three went to the web,
+   2026-11-22), and "this chat" is the chat, not a pronoun pointing back (it borrowed "tell pizza" into the search).
+   The last exchange always comes along, at least as one line, and in full when the message points back or answers
+   it: a correction or reply ("no, …", "I meant …", "yeah the second one") has no pronoun, and "No,
+   GitHub.com/kealjones/squiggle" reached LFM3 without the question it corrected (2026-11-22).
 
 8. **Tools that fit.** A real `find` lists matching tools; the seeded one didn't, so a gated model asked to pull a
    repo saw only an unrelated old chat (failures.md case 15). Tools that clearly fit the message (named, or an

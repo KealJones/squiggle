@@ -225,7 +225,8 @@ Problems are written to the storage repo (KealJones/squiggle-state) as they happ
 the loss, whether the reload got a GPU back, how many tries), `reply-error` (agent.js: the message the user saw,
 chat and reply ids, the trace file with the exact prompt, the context window), `tab-killed` (model-ui.js, on the
 next open: the crash marker, i.e. the stage, chat, window and GPU memory when the reply started, plus the last
-prompt sent, saved as `debug/incidents/<id>.txt`) and `load-failed`, and `sync-failed` (storage.js, once per new error; it arrives with the first sync that works). Every line has the user agent, uptime and
+prompt sent, saved as `debug/incidents/<id>.txt`; Fresh's lookup before the reply marks its own stage,
+`engine.markStage`, since a phone can run out of memory there too) and `load-failed`, and `sync-failed` (storage.js, once per new error; it arrives with the first sync that works). Every line has the user agent, uptime and
 `gpu: { bytes, peak, atLoss }`, the WebGPU buffer bytes this page holds (`trackBuffers`): Safari has no API for a
 tab's memory, and the GPU shares the iPhone tab's ~1.9 GB, so that's the level to compare against. Lines reach
 GitHub with the next sync.

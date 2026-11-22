@@ -1198,6 +1198,19 @@ await check('Fresh context: nothing replayed; a lookup (earlier exchange, web) g
   assert.match(res.found, /Tools for this \(ready to call\):\n- git_clone\(/);
   assert.deepEqual(res.tools, ['git_clone']);
   assert.doesNotMatch(res.found, /Web search for|Wikipedia/);
+  // A correction with nothing to point back with (2026-11-22, "No, GitHub.com/kealjones/squiggle"): the exchange it
+  // answers comes along in full.
+  await ask('No, github.com/tester/other', 5);
+  r = await last();
+  assert.match(r.input[0].content[0].response.found, /Earlier in this chat:\n- The user asked "freshtest can you pull github\.com\/tester\/app"; you answered:\n/);
+  // A rule for the chat: no web search, and no words borrowed from the question before ("tell pizza The secret…").
+  await ask('freshtest in this chat from now on keep it to two sentences', 6);
+  r = await last();
+  const rule = r.input[0].content ? r.input[0].content[0].response.found : '';
+  assert.doesNotMatch(rule, /Web search for|Wikipedia/);
+  assert.ok(!r.trail.some(t => /searched the web/.test(t)), JSON.stringify(r.trail));
+  // Any message brings the last exchange, at least as one line.
+  assert.match(rule, /Earlier in this chat:\n- The user asked "No, github\.com\/tester\/other"/);
   assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
 });
 
@@ -1615,6 +1628,15 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
   assert.notEqual(r.code, 0);
   r = await run('echo scratch > /tmp/a && cat /tmp/a');
   assert.equal(r.out.trim(), 'scratch');
+  // The chat's /tmp outlives a call, and isn't saved with the chat: a session that went through JSON (a reload, a
+  // sync) still redirects (2026-11-22: "this.tmp.writeFile is not a function" on every `2>/dev/null`).
+  r = await run('cat /tmp/a && ls /nope 2>/dev/null || echo fine');
+  assert.equal(r.code, 0, JSON.stringify(r));
+  assert.match(r.out, /scratch[\s\S]*fine/, JSON.stringify(r));
+  assert.doesNotMatch(await D.page.evaluate(() => JSON.stringify(window.__bashSession)), /__bash|InMemory|retainedBytes/);
+  await D.page.evaluate(() => { window.__bashSession = JSON.parse(JSON.stringify({ ...window.__bashSession, __bashTmp: { data: {}, retainedBytes: 0 }, __bashLinks: {} })); });
+  r = await run('echo again > /tmp/b 2>/dev/null && cat /tmp/b');
+  assert.equal(r.out.trim(), 'again', JSON.stringify(r));
   // No tool cuts output (2026-11-15): big output comes back whole, however small the room.
   r = await run('seq 1 20000', 2000);
   assert.ok(!r.saved, JSON.stringify(r).slice(0, 300));

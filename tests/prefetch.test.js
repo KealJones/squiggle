@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { namesIn, isFollowUp, standalone, smallTalk, rank, exchangeCandidates, render, doRequest, pointsBack, standingInstructions, refsIn } from '../app/src/prefetch.js';
+import { namesIn, isFollowUp, standalone, smallTalk, rank, exchangeCandidates, render, doRequest, pointsBack, standingInstructions, refsIn, aboutTheChat } from '../app/src/prefetch.js';
 
 const PREV = 'What is the latest movie that Patrick Stewart was is?';
 const LINE = [
@@ -129,4 +129,21 @@ test('render lists the tools that fit, ready to call, and says not to search the
   const text = render({ query: 'pull github.com/kealjones/bubbles', tools: [{ name: 'git_clone', description: 'Clone a GitHub repo.', args: [{ name: 'url', required: true }, { name: 'name', required: false }] }] });
   assert.match(text, /Tools for this \(ready to call\):\n- git_clone\(url, name\?\): Clone a GitHub repo\./);
   assert.match(text, /Call git_clone for this; don't search the web for it\.$/);
+});
+
+// Keal's iPhone, 2026-11-22 (chat s0mwrs09x4000flrh4, LFM3 1.7B, Fresh): a correction with no pronoun lost the
+// question it corrected, and rules for the chat went to the web with words borrowed from the question before.
+test('replies and corrections point back; "this chat" is the chat, not something said earlier', () => {
+  for (const m of ['No, GitHub.com/kealjones/squiggle', 'nope the band', 'I meant the singer', 'Actually the 2021 one', 'yeah the second one', 'not that one'])
+    assert.equal(pointsBack(m), true, m);
+  for (const m of ['The secret password for this chat is “sneaky”', 'In this chat from now on please only reply with like 2 sentences max', 'Tell me about pizza', 'Nobody knows the answer?'])
+    assert.equal(pointsBack(m), false, m);
+  assert.equal(standalone('In this chat from now on please only reply with like 2 sentences max', { prevUser: 'Tell me about bitcoin' }).borrowed, '', 'no words borrowed from the question before');
+});
+
+test('a message about the chat itself or how to reply isn\'t looked up on the web', () => {
+  for (const m of ['Can you be more concise in the future?', 'In this chat from now on please only reply with like 2 sentences max', 'The secret password for this chat is “sneaky”', 'keep it way shorter', 'answer in 3 sentences', 'call me Kay', 'remember that I like jazz'])
+    assert.equal(aboutTheChat(m), true, m);
+  for (const m of ['Tell me about pizza', 'What is the password policy at Google?', 'Who is the CEO of Concise Inc?', 'Tell me about bitcoin', 'what did the future of AI look like in 2020'])
+    assert.equal(aboutTheChat(m), false, m);
 });
