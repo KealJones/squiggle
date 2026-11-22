@@ -1,5 +1,5 @@
 """The GPU smoke test (tests/eval/hf-gpu-smoke.sh) on a Modal T4: does Chrome's WebGPU get the GPU, and how fast is
-LFM3 1.7B on Tilde there? Run by .github/workflows/modal-smoke.yml with the MODAL_TOKEN_ID / MODAL_TOKEN_SECRET secrets.
+LFM3 1.7B on Tilde there? (Chrome's headless shell with Vulkan gets the T4 here: 2026-11-22, matmul 10.6 ms.) Run by .github/workflows/modal-smoke.yml with the MODAL_TOKEN_ID / MODAL_TOKEN_SECRET secrets.
 
     modal run tests/eval/modal_smoke.py --branch gpu-smoke
 
