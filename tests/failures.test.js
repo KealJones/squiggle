@@ -189,3 +189,11 @@ test('case 24 (Nina Garcia, "two sentences max"): an answer drafted in the think
   const stuckThinking = await run([{ reasoning_content: 'I should search the web for Nina Garcia now. '.repeat(4) }]);
   assert.equal(stuckThinking.looped, true, 'and in the thinking');
 });
+
+test('case 26 (a correct URL refused): the allowed-URL check is only for the two fine-tunes', () => {
+  // agent.js needs the browser to import; the condition is pinned in its source, like case 9.
+  const src = readFileSync(new URL('../app/src/agent.js', import.meta.url), 'utf8');
+  assert.match(src, /\.\.\.\(lite\(\) && !bashSurface\(\) \? \{ allowUrl:/);
+  // bash's own curl stays ungated, so the two tools on that surface agree.
+  assert.match(readFileSync(new URL('../app/src/tools/bash.js', import.meta.url), 'utf8'), /fetch_url'.*allowUrl: undefined/);
+});

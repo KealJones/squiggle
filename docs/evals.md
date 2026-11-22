@@ -87,3 +87,67 @@ A case that fails on a model is either a regression (the fix that produced the c
 case the fix never covered for that model: either way it names the next casebook entry. The bad answers in the
 casebook are never put in a prompt or trained on; each pair is the rejected half of a preference pair for the
 next Squiggle Small.
+
+## 3. A/B battery: two checkouts, one model (real model)
+
+`node tests/eval/ab.mjs --base <dir> --pr <dir> --model KLF3 --reps 3` runs the same cases on two checkouts of
+Squiggle with the same model and reports both arms side by side: score, rounds, wall and thinking per case, then
+the mean of the case means. It is how a harness change is shown to help rather than argued about — one run of a
+small model is noise, and a change that makes replies 30 seconds faster and answers wrong is not an improvement.
+
+An arm is a checkout whose `app/` is served to the browser (`SQUIGGLE_APP_DIR`); the graders, the cases and the
+runner all come from the checkout you run `ab.mjs` in, so both arms are scored by one copy of the harness and a
+branch can't flatter itself by editing its own cases. An arm does not swap `worker/` (the relay) or `tests/`, so
+a change to either isn't what this measures:
+
+```bash
+git worktree add /tmp/ab-base origin/main
+git worktree add /tmp/ab-pr   my-branch
+node tests/eval/ab.mjs --base /tmp/ab-base --pr /tmp/ab-pr \
+    --model KLF3 --mode compact --set cases-deliberation.json --reps 3
+```
+
+Cells (one arm, one repetition) are skipped when their JSON is already in the results directory, so a battery
+that was stopped picks up where it left off; `--fresh` re-runs them. `--cases 1,2` narrows to a few. The
+per-cell JSONs keep every turn, its tool calls and the reply, which is what to read when a number surprises you.
+
+### Where this comes from
+
+The design is adapted from Hermes Agent's `evals/core_tool_deferral` harness
+([NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent), MIT, same licence as Squiggle), which
+runs two pinned checkouts over a task battery and grades accuracy, API turns, tokens and wall per cell. Kept:
+
+- **Two arms from real checkouts**, not a mocked switch. A flag flipped inside one build doesn't catch what a
+  changed prompt or a changed tool list does to the model. (Hermes imports each arm's agent into one harness;
+  here the browser loads each arm's app into one harness, which comes to the same thing.)
+- **Repetitions per cell, and contested cells.** When the arms differ on a case at three repetitions, the report
+  prints the command to re-run *those cases* at six. Below that, a difference is not a result.
+- **Partial credit.** A case's score is the fraction of its checks that held, so one wrong claim in an otherwise
+  good answer is not scored the same as a wrong answer. (run.mjs `checkCount`.)
+- **Same denominator.** A case that timed out or errored scores 0 and stays in the score denominator, but is left
+  out of the rounds and wall means — where a crash would otherwise look like a win, because it is fast.
+- **Interactive fairness.** A reply that ends by asking the user gets the case's scripted answer (`replies` in the
+  case, at most two), recorded as roundtrips instead of counted as a failure. Without this, every case the model
+  is right to ask about scores 0 and the battery is poisoned — and asking after two or three attempts is what the
+  small-model prompt tells it to do.
+- **Read the anomalies** before publishing a verdict; the transcripts are in the cell JSONs.
+
+What is different here, and why:
+
+- **Efficiency is graded, not just reported.** Hermes reports turns and cost next to accuracy; on a phone a round
+  *is* the cost (a 6K-window prefill on an iPhone 16 runs 30 s to 3 min), so cases can set `maxRounds`,
+  `maxToolCalls`, `maxWords` and `noRepeat`, and failing them fails the case. Rounds are counted from the trace
+  the app saves for every reply, so the number is the real one on any runtime, not only under `--llm`.
+- **Cells run one at a time.** The model is local and holds most of the tab's memory, so there is no useful
+  parallelism and no dollar cost — the budget is wall-clock. A three-repetition A/B of five cases on LFM3 1.7B is
+  hours, not minutes: start with `--cases` and one repetition while a change is still moving.
+- **No LLM judge.** Hermes grades with programmatic graders per task and uses a judge for recall questions.
+  Squiggle's checks are regexes, tool names and the ceilings above — cheap, deterministic, and they say what they
+  measured. Anything needing a judge belongs in a separate eval with its own write-up.
+
+### Not built yet
+
+A context-mode recall benchmark, adapted from the same repo's `evals/compaction`: take a real long chat, generate
+recall questions about the region each context mode drops, answer them from only what that mode would have sent,
+and score recall against tokens retained, with the whole transcript as the ceiling arm. That is the measurement
+Compress, Smart, Fresh and AI-managed have never had — docs/lab.md argues about them from single chats instead.
