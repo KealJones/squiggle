@@ -85,6 +85,17 @@ export function messageText(m, threadNotes) {
   return text;
 }
 
+// Steering (docs/harness.md "Steering"): the thinking of a reply the person cut off with their next message. It goes back
+// with that turn, inside its own thinking, when it's the turn right before the new message (LFM3's template keeps only
+// the latest turn's thinking; `preserve_thinking` is its switch for keeping more), so the model picks up where its head
+// was instead of thinking it all again. The tail is kept when it's long: the newest thinking is what was cut off.
+export const STEER_THINKING_CHARS = 2000;
+export function steeredThinking(m) {
+  if (!m || m.role !== 'assistant' || !m.steered || !m.thinking) return '';
+  const t = String(m.thinking).trim();
+  return t.length > STEER_THINKING_CHARS ? '…' + t.slice(-STEER_THINKING_CHARS) : t;
+}
+
 // Small models sometimes imitate tool bookkeeping instead of calling tools;
 // drop lines like "[tools used: ...]" so they never pass as real actions.
 export function scrubFakeToolNotes(text) {
@@ -150,7 +161,7 @@ export async function assembleContext(o) {
   const recent = [];
   let recentTokens = 0;
   for (let i = M.fresh ? -1 : line.length - 1; i >= 0; i--) {
-    const t = estTokens(messageText(line[i], threadNotes)) + 8;
+    const t = estTokens(messageText(line[i], threadNotes)) + (i === line.length - 1 ? estTokens(steeredThinking(line[i])) : 0) + 8;
     if (recent.length >= MIN_RECENT && recentTokens + t > recentCap) break;
     recent.unshift(line[i]);
     recentTokens += t;
@@ -328,9 +339,10 @@ export async function assembleContext(o) {
   for (const m of recent) {
     const role = m.role === 'user' ? 'user' : 'model';
     const text = messageText(m, threadNotes);
+    const thinking = m === line[line.length - 1] ? steeredThinking(m) : '';
     const last = messages[messages.length - 1];
-    if (last && last.role === role) last.content += '\n\n' + text;
-    else messages.push({ role, content: text });
+    if (last && last.role === role && !thinking) last.content += '\n\n' + text;
+    else messages.push({ role, content: text, ...(thinking ? { thinking } : {}) });
   }
   if (messages.length && messages[0].role !== 'user') messages.unshift({ role: 'user', content: '(continuing our conversation)' });
   // The new message is sent next as a user turn, so history must end on the model.

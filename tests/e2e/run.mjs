@@ -828,6 +828,49 @@ await check('a full agent turn through the UI (scripted model): tools, untrusted
   assert.deepEqual(errs, []);
 });
 
+await check('steering: a message sent mid-reply cuts it off, keeps what was written, and goes in as the next turn', async () => {
+  const D = await device('steer');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  await D.page.fill('#input', 'STEERTEST write me the long version');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .body')].some(b => /long version, first/.test(b.textContent)), null, { timeout: 20000 });
+  const btn = '#composer button[type="submit"]';
+  assert.equal(await D.page.getAttribute(btn, 'aria-label'), 'Stop', 'an empty box stops');
+  await D.page.fill('#input', 'Shorter please');
+  assert.match(await D.page.getAttribute(btn, 'aria-label'), /^Send now/, 'something typed steers');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .body')].some(b => /Plain answer to: Shorter please/.test(b.textContent)), null, { timeout: 20000 });
+  const r = await D.page.evaluate(async () => {
+    const sessions = await import('/src/sessions.js');
+    const s = sessions.list().find(x => x.messages.some(m => /^STEERTEST/.test(m.content)));
+    const convs = window.__engineLog.filter(x => x.type === 'conversation');
+    return {
+      msgs: s.messages.map(m => [m.role, m.content, Boolean(m.steered), m.thinking || '']),
+      history: convs.at(-1).messages.map(m => [m.role, m.content]),
+      carried: convs.at(-1).messages.at(-1).thinking,
+      note: document.querySelector('#messages .steered')?.textContent,
+      label: document.querySelector('#composer button[type="submit"]').getAttribute('aria-label'),
+    };
+  });
+  assert.deepEqual(r.msgs.map(m => m.slice(0, 3)), [
+    ['user', 'STEERTEST write me the long version', false],
+    ['assistant', 'Starting on the long version, first', true],
+    ['user', 'Shorter please', false],
+    ['assistant', 'Plain answer to: Shorter please', false],
+  ], 'the cut-off reply is kept as written, with no "(stopped)" note');
+  assert.equal(r.msgs[1][3], 'Going long.', 'its thinking stays viewable');
+  // The new turn sees the cut-off reply as the model's own last turn, before the person's message.
+  assert.deepEqual(r.history.slice(-2), [['user', 'STEERTEST write me the long version'], ['model', 'Starting on the long version, first']]);
+  assert.equal(r.carried, 'Going long.', 'and its thinking goes with it');
+  assert.match(r.note || '', /cut off by your next message/);
+  assert.equal(r.label, 'Send');
+});
+
 await check('AI-managed context: budget line, steps attach earlier results, checkpoints carry on fresh (in a step and in chat)', async () => {
   const D = await device('managed');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));

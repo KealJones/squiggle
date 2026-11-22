@@ -361,7 +361,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
     tasks.compactOld(session);
     try {
       const lastReply = [...sessions.lineMessages(session, threadId)].reverse().find(m => m.role === 'assistant');
-      const goOn = resume ? null : tasks.resumable(session, threadId, shown, lastReply && lastReply.task);
+      const goOn = resume ? null : tasks.resumable(session, threadId, shown, lastReply && lastReply.task, { steered: Boolean(lastReply && lastReply.steered) });
       if (resume) await turn.resumeFrom(resume);
       else if (goOn) {
         const task = goOn.task;
@@ -369,6 +369,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
         const note = attachments.length ? attachmentPrompt(attachments, 0).note : '';
         if (note) task.attachNote = [task.attachNote, note].filter(Boolean).join('\n');
         if (goOn.how === 'answer') tasks.answerNeed(task, shown);
+        else if (goOn.how === 'steer') tasks.steerTask(task, shown);
         else { task.status = 'active'; tasks.touch(task); }
         sessions.saveTask(session, task);
         await turn.steps(task);
@@ -404,7 +405,11 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
     reply.model = replyModel();
     if (turn.thinking) reply.thinking = turn.thinking.slice(-20000); // shown in the UI only; never replayed to the model
     if (turn.task) reply.task = turn.task.id;
-    if (signal?.aborted && !reply.content) reply.content = '_(stopped)_';
+    // Steering (chat.js `steer`): the person sent a message while this was being written. The reply is kept as far as
+    // it got, with no "(stopped)" note: it's replayed as the model's own turn (the template closes its thinking and
+    // the turn like any other), the person's message follows as the next user turn, and the model starts again.
+    if (signal?.aborted && signal.reason === 'steer') reply.steered = true;
+    else if (signal?.aborted && !reply.content) reply.content = '_(stopped)_';
     // The whole context, exactly as sent, in its own file (it's big: system prompts, every schema, every result),
     // read by "What the model saw". Kept with "Save tool results and prompts" on (the default).
     if (settings.debugTools && turn.trace.convs.length) {

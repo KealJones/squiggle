@@ -27,7 +27,7 @@ app/                    static app, plain ES modules, no build step
       settings.js       per-device settings (localStorage) and their one-time migrations
       setup.js          first-run wizard: sign in, install the GitHub App, storage, model picker
       app.js            startApp/wireApp: loads state, wires index.html to the modules, storage events
-      chat.js           sessions sidebar + search, message list, composer, send() → agent.runTurn, approval/check-in cards
+      chat.js           sessions sidebar + search, message list, composer, send() → agent.runTurn, approval/check-in cards; steer(): a message sent mid-reply cuts it off (kept as written, `steered`) and goes in as the next turn (docs/harness.md "Steering")
       panels.js         drawer panels: threads, notes, memory + recipes, files, "what the model saw"
       side.js           chat details sidebar (see below)
       settings-panel.js the Settings drawer

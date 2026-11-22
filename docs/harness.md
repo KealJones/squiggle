@@ -46,6 +46,27 @@ check-in every 60 tool calls: the UI shows a "Keep going" button with the plan
 so far. Stop always works; a stopped task resumes when the next message says
 "continue" (only the task of the latest reply resumes).
 
+### Steering (2026-11-21)
+
+A message sent while a reply is being written steers it: the send button stays a send button while something is
+typed (an empty box still means Stop), and sending cuts the reply off where it is. Nothing is spliced into the prompt
+by hand. The reply is saved as far as it got (`steered: true`, no "(stopped)" note, its thinking kept for the UI),
+the message goes in as an ordinary user turn, and the next prompt is built the usual way, so the model's own template
+does the splicing: it closes the cut-off thinking and turn (`<think>…</think>text<|im_end|>` for LFM3), puts the
+person's turn after it and opens a fresh reply. The cut-off turn keeps its thinking (`context.js steeredThinking`,
+the last 2,000 characters) inside its own `<think>`, while it's the latest assistant turn: LFM3's template drops
+thinking from turns before the latest user message unless `preserve_thinking` is on, and this is that switch for the
+one turn, so the model picks up where its head was instead of thinking it all again (and the prompt reads the same as
+the one in the cache through that thinking). Once it has answered, the steered turn loses its thinking like any past
+turn. Only the native-tool path carries it (`engine-wllama.js nativeMessages`: LFM3 on Tilde, WebLLM and llama.cpp);
+the other runtimes drop it. The tool calls it made are in "Tool calls you made" either way.
+
+In step mode the plan isn't dropped: the stopped task carries on (`tasks.resumable` with `steered`, `how: 'steer'`)
+and the message joins the user's answers in the step prompt as "said while you were working", so the step that was
+interrupted runs again with it and the model can revise the plan if the message asks for something else. A question
+the task asked (`ask_user`) is answered as before. Several messages sent before the cut lands go in as one; a message
+typed in a different line (a thread while the main chat replies) just stops the reply, as before.
+
 A step that won't move ends the turn with a question instead of spinning:
 a reply with no text and no tool call (thinking cut off at the output cap) or a
 reply stopped for repeating itself gets two nudges, then the user is asked
