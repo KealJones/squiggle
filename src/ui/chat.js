@@ -314,12 +314,13 @@ export function setupComposer(form, input, onSend, threadId = null) {
   const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, innerHeight * 0.4) + 'px'; };
   // While a reply is being written the button stops it; with something typed for that reply's line it sends it as
   // a steer instead (clear the box to get Stop back).
-  const steers = () => state.busy && state.liveLine === threadId && Boolean(input.value.trim() || files.length);
+  const steers = () => state.busy && !state.replyWritten && state.liveLine === threadId && Boolean(input.value.trim() || files.length);
   const paint = () => {
     if (!form.isConnected) { painters.delete(paint); return; }
     const btn = form.querySelector('button[type="submit"]');
     if (!btn) return;
-    const mode = !state.busy ? 'send' : steers() ? 'steer' : 'stop';
+    // A reply already written (the turn is only tidying up) takes a message as the next one, not as a steer.
+    const mode = !state.busy || state.replyWritten ? 'send' : steers() ? 'steer' : 'stop';
     if (btn.dataset.mode === mode) return;
     btn.dataset.mode = mode;
     btn.replaceChildren(icon(mode === 'stop' ? 'i-stop' : 'i-send'));
@@ -426,13 +427,14 @@ export function setupComposer(form, input, onSend, threadId = null) {
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const steering = steers();
-    if (state.busy && !steering) { state.controller && state.controller.abort(); return; }
+    const queued = state.busy && state.replyWritten;   // sent once the finished turn has tidied up
+    if (state.busy && !steering && !queued) { state.controller && state.controller.abort(); return; }
     const text = input.value.trim();
     if (!text && !files.length) return;
     const sending = files;
     input.value = ''; grow();
     files = []; renderChips(); notice.hidden = true;
-    if (steering) steer(text, threadId, sending);
+    if (steering || queued) steer(text, threadId, sending);
     else onSend(text, sending);
   });
 }
@@ -464,7 +466,8 @@ export function steer(text, threadId, files = []) {
   state.steer = prev
     ? { text: [prev.text, text].filter(Boolean).join('\n\n'), threadId, files: prev.files.concat(files) }
     : { text, threadId, files };
-  if (!state.controller.signal.aborted) state.controller.abort('steer');
+  // The reply was already written: the message waits for the turn to finish and goes in as the next one.
+  if (!state.replyWritten && !state.controller.signal.aborted) state.controller.abort('steer');
 }
 
 // ── A turn ─────────────────────────────────────────────────────────────────
@@ -509,6 +512,7 @@ export async function send(text, threadId, files = [], resumed = null) {
   const liveTools = [];
   if (!threadId) state.liveTurn = { ctx: null, tools: liveTools, task: null };
   state.liveLine = threadId || null;
+  state.replyWritten = false;
   setBusy(true);
   const controller = state.controller = new AbortController();
   try {
@@ -559,6 +563,7 @@ export async function send(text, threadId, files = [], resumed = null) {
           card.querySelector('button').focus({ preventScroll: true });
         },
         onReload: () => { toast('Getting the GPU back: reloading, then the reply carries on.'); setTimeout(() => location.reload(), 300); },
+        onWritten: () => { state.replyWritten = true; for (const paint of [...painters]) paint(); },
         onDone: (m) => { smooth.stop(); if (vc) vc.finish(agent.scrubFakeToolNotes(m.content)); live.replaceWith(messageEl(m, { inThread: Boolean(threadId), session })); if (!threadId) $('#chat-title').textContent = session.title; state.liveTurn = null; renderSide(); },
       },
     });
