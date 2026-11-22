@@ -574,10 +574,13 @@ export class NativeConversation {
           if (tc.function && tc.function.name) p.name += tc.function.name;
           if (tc.function && tc.function.arguments) p.args += tc.function.arguments;
         }
+        // The thinking and the reply are checked apart: a model that drafts its answer in its thinking ("Sentence 1:
+        // …", "Let me craft…") and then writes it out has the same words two or three times across the two without
+        // being stuck (docs/failures.md case 24). A real loop repeats inside one of them.
         const all = reasoning + text;
         if (all.length - checked > 200 || (/[.!?\n]/.test(d.content || d.reasoning_content || '') && all.length - checked > 40)) {
           checked = all.length;
-          if (isLooping(all.slice(-3000))) { looped = true; ctrl.abort(); break; }
+          if (isLooping(reasoning.slice(-3000)) || isLooping(text.slice(-3000))) { looped = true; ctrl.abort(); break; }
         }
       }
     } catch (e) {

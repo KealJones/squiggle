@@ -408,3 +408,22 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   listed "Bad Boy" and "Stay" among her songs (neither is hers) and left out GUTS. Not fixed; the eval case below
   rejects them.
 - **Eval:** tests/eval/cases.json case 19 (runs the question on a real model).
+
+### 24. Nina Garcia, "two sentences max": stopped as "repeating itself" with no answer
+
+- **Asked:** "Who is Nina Garcia and what's she known for?", cut off by "Just the Project Runway part, two sentences
+  max." (steering, PR #24's preview).
+- **Model:** LFM3 1.7B on Tilde, Keal's iPhone, 2026-11-22, chats s0mwrq0pe4000i3bbb and s0mwrq3gl7000yolwk (both
+  runs of the steering eval). Tool calls: `web_search("Nina Garcia Project Runway")`, then in the second
+  `web_fetch` owiki.org/wiki/Nina_García and `cat /web/1.txt`.
+- **What it did:** found the right facts, noted them in its thinking ("From the page: She is … a judge on Project
+  Runway since its first season"), drafted the two sentences ("Sentence 1: … Let me craft concisely."), and started
+  writing them. Both replies ended in "(stopped: the model was repeating itself)": the first before any answer, the
+  second mid-sentence.
+- **Why it's bad:** the harness's fault, not the model's. Noting facts, drafting and then writing is good work for a
+  length limit. The loop guard (`NativeConversation.generate`) counted the thinking and the reply as one text, and
+  any 8 words three times in it is a loop, so the same clause noted, drafted and written tripped it.
+- **Good answer:** the two sentences it drafted: a Colombian-American fashion journalist and Elle's editor-in-chief,
+  a judge on Project Runway since its first season in 2004.
+- **Fix:** the thinking and the reply are checked apart; a loop has to repeat inside one of them.
+- **Caught by:** tests/failures.test.js case 24.
