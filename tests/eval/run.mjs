@@ -113,8 +113,26 @@ if (state !== 'ready') { console.log('model not ready; stopping'); await ctx.clo
 
 const lastReply = () => page.evaluate(() => {
   const s = window.__sqState.current; const m = s && [...s.messages].reverse().find(x => x.role === 'assistant');
-  return m && { content: m.content || '', thinking: (m.thinking || '').slice(0, 600), tools: (m.tools || []).map(t => ({ name: t.name, args: t.args, ok: t.ok, result: t.result })), window: m.context && m.context.window, llm: (window.__llmLog || []).slice() };
+  return m && { content: m.content || '', thinking: (m.thinking || '').slice(0, 600), tools: (m.tools || []).map(t => ({ name: t.name, args: t.args, ok: t.ok, result: t.result })), window: m.context && m.context.window, llm: (window.__llmLog || []).slice(), trace: m.trace || '' };
 });
+
+// How many times the model was asked for a reply (every phase, every round), from the trace the app saves for
+// each reply (trace.js, Settings → Lab, on by default). `calls` from --llm only counts the native server's
+// completions, so it is null on a real runtime; a round is the thing a phone pays for, so it is counted here.
+// agent.js writes the trace without waiting for it (storage.write(...).catch), so the file can land a moment
+// after the turn ends: it is given ~3 s to appear.
+const roundsOf = (trace) => (trace ? page.evaluate(async (path) => {
+  try {
+    const st = await import('/src/storage.js');
+    let text = null;
+    for (let i = 0; i < 15 && text == null; i++) { text = await st.read(path); if (text == null) await new Promise(r => setTimeout(r, 200)); }
+    if (text == null) return { error: `trace ${path} never arrived` };
+    const file = JSON.parse(text);
+    const convs = file.convs || [];
+    return { rounds: convs.reduce((n, c) => n + (c.rounds || []).length, 0), convs: convs.length,
+      think: convs.reduce((n, c) => n + (c.rounds || []).reduce((m, r) => m + ((r.output && r.output.thinking) || '').length, 0), 0) };
+  } catch (e) { return { error: String((e && e.message) || e) }; }
+}, trace) : Promise.resolve(null));
 
 async function send(text) {
   const before = await page.evaluate(() => window.__sqState.current.messages.length);
@@ -133,9 +151,32 @@ const COMMANDS = [[/\bgh\s+repo\s+list\b/, 'github_list_repos'], [/\b(git\s+clon
   [/(^|[|;&]\s*|\$\(\s*)search\b/, 'web_search'], [/(^|[|;&]\s*)wiki\b/, 'wiki_lookup'], [/(^|[|;&]\s*)node\b/, 'run_js'], [/\bbc\b|\$\(\(/, 'calculate'],
   [/(^|[|;&]\s*)(grep|rg)\b/, 'grep'], [/(^|[|;&]\s*)(cat|head|tail|sed\s+-n)\b/, 'read_file'], [/(^|[|;&]\s*)(ls|find|tree)\b/, 'list_files'], [/>\s*\S/, 'write_file']];
 const commandTools = (t) => (t.name === 'bash' ? COMMANDS.filter(([r]) => r.test(String((t.args && t.args.command) || ''))).map(([, n]) => n) : []);
-function grade(c, reply) {
+// Every check a case makes, so a score is "checks that held / checks made" instead of pass-or-fail: one wrong
+// claim in a good answer and a wholly wrong answer are not the same thing (Hermes's core_tool_deferral battery
+// grades 0..1 partial credit per task; see docs/evals.md).
+function checkCount(c) {
+  return [c.expect, c.reject, c.expectUrlFromTools, c.file, c.maxRounds, c.maxWords, c.maxToolCalls, c.noRepeat].filter(Boolean).length
+    + (c.tools || []).length + (c.noTools || []).length;
+}
+
+function grade(c, reply, { rounds = null } = {}) {
   const problems = [];
   const text = (reply && reply.content) || '';
+  if (c.maxRounds && rounds != null && rounds > c.maxRounds) problems.push(`${rounds} rounds (at most ${c.maxRounds})`);
+  if (c.maxWords) { const n = text.trim().split(/\s+/).filter(Boolean).length; if (n > c.maxWords) problems.push(`${n} words (at most ${c.maxWords})`); }
+  const calls = (reply && reply.tools) || [];
+  if (c.maxToolCalls && calls.length > c.maxToolCalls) problems.push(`${calls.length} tool calls (at most ${c.maxToolCalls})`);
+  if (c.noRepeat) {
+    // The same call, arguments and all, run twice in one reply: a page fetched again when it is already saved,
+    // the same grep twice. The app has this rule for a resumed turn (resume.js repeatKey); a case can ask for it
+    // within one turn too.
+    const seen = new Set();
+    for (const x of calls) {
+      const key = `${x.name} ${JSON.stringify(x.args || {})}`;
+      if (seen.has(key)) { problems.push(`ran the same call twice: ${String(key).slice(0, 80)}`); break; }
+      seen.add(key);
+    }
+  }
   const names = ((reply && reply.tools) || []).flatMap(t => [t.name, ...commandTools(t)]);
   if (c.expect && !re(c.expect).test(text)) problems.push(`reply lacks /${c.expect}/`);
   if (c.reject && re(c.reject).test(text)) problems.push(`reply matches /${c.reject}/`);
@@ -161,7 +202,24 @@ for (const c of cases) {
     turns.push({ text, timedOut: r.timedOut, reply: r.reply });
     last = r;
   }
-  const problems = last && last.timedOut ? ['timed out'] : grade(c, last && last.reply);
+  // Interactive fairness (Hermes's rule, docs/evals.md): a reply that ends by asking the user something gets the
+  // case's scripted answer, at most twice, and the roundtrips are recorded instead of counted as a failure.
+  // Without this every case a model is right to ask about scores 0, which poisons the battery — and asking
+  // instead of guessing is what the small-model prompt tells it to do after two or three attempts.
+  const asked = (reply) => Boolean(reply && (((reply.tools || []).some(x => x.name === 'ask_user' || x.name === 'need'))
+    || /\?\s*$/.test(String(reply.content || '').trim())));
+  const scripted = [...(c.replies || [])];
+  let roundtrips = 0;
+  while (scripted.length && roundtrips < 2 && last && !last.timedOut && asked(last.reply)) {
+    const r = await send(scripted.shift());
+    roundtrips++;
+    turns.push({ text: r && 'scripted', scripted: true, timedOut: r.timedOut, reply: r.reply });
+    last = r;
+  }
+  const trace = last && last.reply && last.reply.trace ? await roundsOf(last.reply.trace) : null;
+  const rounds = trace && trace.rounds != null ? trace.rounds : (last && last.reply && last.reply.llm && last.reply.llm.length) || null;
+  if (trace && trace.error) console.log(`       (no round count: ${trace.error})`);
+  const problems = last && last.timedOut ? ['timed out'] : grade(c, last && last.reply, { rounds });
   if (c.file && !(last && last.timedOut)) {
     const got = await page.evaluate(async (p) => (await import('/src/tools/workspace.js')).readAgentFile(p), c.file[0]).catch(() => null);
     if (got == null) problems.push(`${c.file[0]} wasn't written`); else if (!re(c.file[1]).test(got)) problems.push(`${c.file[0]} lacks /${c.file[1]}/`);
@@ -171,13 +229,20 @@ for (const c of cases) {
   const lr = last && last.reply;
   const calls = lr && lr.llm ? lr.llm.length : null;
   const toolTokens = lr && lr.window && lr.window.parts ? lr.window.parts.tools : null;
-  results.cases.push({ id: c.id, name: c.name, ok, problems, ms: Date.now() - t, calls, toolTokens, turns });
+  const checks = checkCount(c);
+  // Partial credit: the checks that held. A timed-out case scores 0 and stays in the denominator (same-denominator
+  // rule, docs/evals.md), but ab.mjs leaves it out of the rounds and wall means.
+  const score = checks ? Math.max(0, (checks - problems.length) / checks) : (ok ? 1 : 0);
+  const toolCalls = lr && lr.tools ? lr.tools.length : null;
+  results.cases.push({ id: c.id, name: c.name, ok, score, checks, problems, ms: Date.now() - t, rounds, calls, toolCalls,
+    thinkChars: trace ? trace.think : null, convs: trace ? trace.convs : null, roundtrips, timedOut: Boolean(last && last.timedOut), toolTokens, turns });
   const reply = String((last && last.reply && last.reply.content) || '').replace(/\s+/g, ' ').slice(0, 160);
   const tools = ((last && last.reply && last.reply.tools) || []).map(x => (x.name === 'bash' ? `$ ${String((x.args && x.args.command) || '').slice(0, 70)}` : x.name)).join(' · ');
-  console.log(`${ok ? 'ok  ' : 'FAIL'} ${String(c.id).padStart(2)} ${c.name}  (${((Date.now() - t) / 1000).toFixed(0)} s${calls != null ? `, ${calls} model calls` : ''}${toolTokens != null ? `, tool definitions ${toolTokens} tokens` : ''})${ok ? '' : '\n       ' + problems.join('; ')}\n       tools: ${tools || '(none)'}\n       reply: ${reply}`);
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${String(c.id).padStart(2)} ${c.name}  (${((Date.now() - t) / 1000).toFixed(0)} s${rounds != null ? `, ${rounds} rounds` : ''}${roundtrips ? `, ${roundtrips} scripted replies` : ''}${toolTokens != null ? `, tool definitions ${toolTokens} tokens` : ''}, score ${score.toFixed(2)})${ok ? '' : '\n       ' + problems.join('; ')}\n       tools: ${tools || '(none)'}\n       reply: ${reply}`);
 }
 results.passed = passed; results.total = cases.length;
-console.log(`\n${passed}/${cases.length} passed (${MODEL}, ${MODE})`);
+results.score = results.cases.reduce((n, c) => n + c.score, 0) / (cases.length || 1);
+console.log(`\n${passed}/${cases.length} passed, mean score ${results.score.toFixed(2)} (${MODEL}, ${MODE})`);
 if (errors.length) console.log('page errors:', errors.slice(0, 5).join('\n'));
 mkdirSync(dirname(OUT), { recursive: true });
 writeFileSync(OUT, JSON.stringify(results, null, 1));

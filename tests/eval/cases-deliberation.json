@@ -1,0 +1,28 @@
+{
+  "_about": "How long a small model takes to answer, not only whether it can. Every case here comes from one real chat on Keal's iPhone (storage repo s0mwqy0afi000b9bqn, LFM3 1.7B on Tilde, Compress, 2026-11-21: 11 rounds and 13.5 minutes for a short biography, docs/failures.md cases 25 and 26), so `maxRounds`, `maxWords`, `maxToolCalls` and `noRepeat` are the checks that matter as much as the text. Run it through tests/eval/ab.mjs to compare two checkouts; on its own it is one arm. The URL gate (case 26) has no case of its own: it only shows up as a round the model didn't need, so it is measured here as rounds and pinned by tests/failures.test.js.",
+  "seed": {
+    "facts": [
+      { "s": "the user", "p": "is named", "o": "Keal" },
+      { "s": "the user", "p": "prefers", "o": "short answers" }
+    ],
+    "chats": []
+  },
+  "cases": [
+    { "id": 1, "name": "A short biography: a few rounds, not a dozen",
+      "messages": ["Tell me about Olivia Rodrigo"],
+      "expect": "2003|singer|songwriter", "maxRounds": 6, "noRepeat": true },
+    { "id": 2, "name": "\"Just a small summary\" is answered small, and without starting over",
+      "messages": ["Tell me about Olivia Rodrigo", "Homie just a small summary is good"],
+      "expect": "singer|songwriter|Sour|Guts", "maxWords": 120, "maxRounds": 4, "maxToolCalls": 2, "noRepeat": true },
+    { "id": 3, "name": "An award it didn't win isn't handed out (casebook 23 and 25: claims bound to the nearest text)",
+      "messages": ["What Grammys has Olivia Rodrigo won?"],
+      "expect": "Best New Artist", "reject": "(won|winning)[^.]{0,60}Album of the Year|Album of the Year[^.]{0,40}(won|win)",
+      "tools": ["web_search|wiki_lookup|fetch_url|web_fetch|find|bash"], "maxRounds": 6 },
+    { "id": 4, "name": "A record that is out is not \"upcoming\" (the article's tense is not today's)",
+      "messages": ["Has Olivia Rodrigo released a third album?"],
+      "expect": "You Seem Pretty Sad|2026", "reject": "upcoming|has not (yet )?released|hasn't released", "maxRounds": 6 },
+    { "id": 5, "name": "Too little to go on: it asks, instead of weighing options until the window is gone",
+      "messages": ["Can you make it shorter?"],
+      "tools": ["ask_user|need"], "replies": ["The Olivia Rodrigo summary you just wrote."], "maxRounds": 4 }
+  ]
+}

@@ -427,3 +427,55 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   a judge on Project Runway since its first season in 2004.
 - **Fix:** the thinking and the reply are checked apart; a loop has to repeat inside one of them.
 - **Caught by:** tests/failures.test.js case 24.
+
+### 25. Thirteen minutes and eleven rounds for a short biography
+
+- **Asked:** "Tell me about Olivia Rodrigo", then "Homie just a small summary is good".
+- **Model:** LFM3 1.7B on Tilde, Compress, 6K window, iPhone Safari (iOS 18.7 user agent, Safari 27.2), chat
+  `s0mwqy0afi000b9bqn`, 2026-11-21. The first reply took 8m 15s and ended in `_(stopped)_`; the second 5m 14s.
+  Eleven model rounds over the two replies, the longest prefill ~3 minutes.
+- **What it did:** searched (five good results, enough for the answer — its own thinking said "the summary is
+  sufficient"), then decided to check Wikipedia anyway; guessed `en.wikipedia.org/wiki/Olivia_Rodrigo`, which the
+  allowed-URL check refused (case 26); searched again to be handed the same link; read the page; ran
+  `grep -n -i "early life\|career\|Drivers License\|Sour\|deja vu" /web/1.txt | head -60`, which on Wikipedia is
+  60 whole paragraphs, so the result was cut to fit and the next round's prefill took ~3 minutes; called `plan`
+  for one step; ran out of room and checkpointed. The second reply fetched the same article again as `/web/2.txt`
+  although `/web/1.txt` was already saved and named in its own context, grepped it again, and answered in three
+  dense paragraphs — for "just a small summary" — with "won Grammys for Best New Artist, Album of the Year" (it
+  was nominated for Album of the Year, and the text it had grepped says so) and a third album out in June 2026
+  called "upcoming" (casebook 23's tense problem, unfixed, from a different page).
+- **Why it's bad:** the deliberating never ended because the thinking budget was per round. Each round spent its
+  400 reasoning tokens, got Squiggle's "I've weighed enough options" line, and then a tool result started a fresh
+  budget — the line appears twice in the second reply's thinking, and the model kept weighing after both. The
+  four small-model rules meant to stop this (budget, the "stop after three options" prompt line, the tool-call
+  nudge at 3, the cap at 6) are all per round or per call; none of them is per turn.
+- **Good answer:** the first search already had it. Two or three sentences, and after "just a small summary",
+  three sentences from what was already saved, with no new fetch.
+- **Fix:** the thinking budget belongs to the conversation, not the round (`engine-wllama.js`
+  `thinkUsed`/`spentThinking`): a conversation is one phase of one turn, so a round after a tool result spends
+  what is left. Once it is gone, the native path asks with thinking off and the fenced path carries on from an
+  already-closed think block — one call either way, and `thinkSpentNote` says so once in the thinking.
+  Not fixed here: the `| head -60` that cuts nothing on Wikipedia, re-fetching a page already saved, and the
+  tense. Those are measured by the cases below rather than patched blind.
+- **Caught by:** tests/wllama.test.js (the two budget tests); tests/eval/cases-deliberation.json cases 1–2
+  (rounds, words, repeated calls) and 3–4 (the award and the tense), run as an A/B with tests/eval/ab.mjs.
+
+
+### 26. A URL it guessed right was refused, and the search that followed returned the same link
+
+- **Asked:** as case 25.
+- **Model:** as case 25 (same chat, first reply, rounds 2–3).
+- **What it did:** called `web_fetch("https://en.wikipedia.org/wiki/Olivia_Rodrigo")` — the real article. The
+  allowed-URL check refused it ("didn't come from a search result, a page you read or the user"), so the model
+  searched for "Olivia Rodrigo Wikipedia" and fetched the same URL out of the results, a round later.
+- **Why it's bad:** the check exists because the two fine-tunes invent URLs (`bugonia.com/confirmation`,
+  casebook 4), and CLAUDE.md already says it is for them — but the code applied it to every `lite()` model, so
+  LFM3 got it too, on the same surface where `curl` deliberately fetches any URL (Keal, 2026-11-10: "curl
+  shouldn't block URLs the model hasn't seen"). Two tools on one surface, opposite rules, and the stricter one
+  cost a round on a correct guess. A made-up URL costs a 404, which `fetch_url` already reports as a failure.
+- **Good answer:** read the page it named.
+- **Fix:** `agent.js` passes `allowUrl` only when `lite() && !bashSurface()` — the two fine-tunes, as the
+  documentation said all along. Replies still can't carry made-up links: cases.json case 4 checks every URL in a
+  reply against what the tools actually returned.
+- **Caught by:** tests/failures.test.js case 26 (the condition, pinned in the source); cases.json case 4
+  (made-up URLs in a reply); the round it saves shows up in cases-deliberation.json case 1.

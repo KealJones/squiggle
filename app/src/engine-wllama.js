@@ -33,6 +33,15 @@ export function samplingOptions(sampling, { greedy = false, retry = false } = {}
 // What a native model's thinking ends with when it reaches its budget (Keal's idea, 2026-11-11): a decision, not a stop.
 export const ENOUGH_THINKING = 'I\'ve weighed enough options. I\'ll go with the best one now, or ask the user if I\'m really unsure.';
 export const thinkBudgetNote = (n) => `[Squiggle stopped the thinking at its ${n}-token budget and asked for the answer.]`;
+// Said once a turn, on the first round that starts with the budget already spent (the thinking of an earlier round
+// used it): from here the model answers or calls a tool with no thinking at all.
+export const thinkSpentNote = (n) => `[The ${n} thinking tokens for this reply are spent; answering from here.]`;
+// After the budget is spent a native model still gets this many tool rounds (to read what its last call fetched); then
+// the tools leave the request and the next round is the answer. With thinking off and tools still there, LFM3 1.7B
+// went on calling them instead of answering (the #26 A/B on Keal's iPhone, 2026-11-22: 10 rounds for the Grammys case,
+// and "Tell me about Olivia Rodrigo" ran past 300 s re-reading the page it had saved).
+export const SPENT_TOOL_ROUNDS = 1;
+export const toolsOffNote = '[Tools are off for the rest of this reply: answering with what was found.]';
 
 let lib = null;
 const getLib = async () => lib || (lib = await import(LIB));
@@ -239,10 +248,17 @@ export class Conversation {
     this.max = Math.min(sessionConfig.maxOutputTokens || MAX_OUTPUT, MAX_OUTPUT);
     this.greedy = Boolean(sessionConfig.samplerParams && sessionConfig.samplerParams.type === 3);
     this.sampling = sessionConfig.sampling || null;
-    this.thinkBudget = sessionConfig.thinkBudget || 0;   // reasoning tokens per reply; 0 = no cap
+    // Reasoning tokens for the whole turn, not for each round: a conversation is one phase of one turn (agent.js
+    // `open`), so a round after a tool result spends what is left of the same budget. Per round it never added up
+    // to a stop: LFM3 1.7B spent its 400 again on every round, read Squiggle's "go with the best one" line twice
+    // and went on weighing options (chat s0mwqy0afi, 2026-11-21: 11 rounds and 13 minutes for a short biography).
+    this.thinkBudget = sessionConfig.thinkBudget || 0;   // 0 = no cap
+    this.thinkUsed = 0;
     this.ctrl = null;
   }
   cancel() { try { this.ctrl && this.ctrl.abort(); } catch {} }
+  // The turn's thinking budget is spent: the rounds after it answer or call a tool straight away.
+  spentThinking() { return this.thinkBudget > 0 && this.thinkUsed >= this.thinkBudget; }
   // Swaps a tool result already in history (the object sendMessageStreaming got)
   // for a shorter one. Returns true when it was found.
   replaceResult(msg, response) {
@@ -269,10 +285,10 @@ export class Conversation {
     const loops = (buf, last, piece) => (/[.!?\n]/.test(piece) && buf.length - last > 40) || buf.length - last > 200;
     const tools = this.tools.length > 0;
     const t0 = performance.now();
-    let tFirst = 0, pieces = 0, thinkPieces = 0, overBudget = false;
+    let tFirst = 0, pieces = 0, overBudget = false;
     // Thinking budget: streamed pieces are about one token each; past the budget the thinking is
     // stopped and the reply continues from a closed think block (prefill), so the model answers.
-    const budgetHit = () => this.thinkBudget && ++thinkPieces > this.thinkBudget;
+    const budgetHit = () => this.thinkBudget && ++this.thinkUsed > this.thinkBudget;
     try {
       const stream = await this.w.createChatCompletion({
         messages: [...gemmaMessages(this.messages, this.tools, this.active), ...(prefill ? [{ role: 'assistant', content: prefill }] : [])],
@@ -371,7 +387,9 @@ export class Conversation {
         }
       }
     }
-    let res = yield* this.generate({ canRetry: true });
+    const spent = this.spentThinking();
+    if (spent && !this.saidSpent) { this.saidSpent = true; yield { thinking: `\n\n${thinkSpentNote(this.thinkBudget)}\n\n` }; }
+    let res = yield* this.generate({ canRetry: true, ...(spent ? { prefill: `<think>\n${ENOUGH_THINKING}\n</think>\n` } : {}) });
     if (res.overBudget) {
       // Carry on from the closed think block: the model writes the answer (or its call) now.
       const budget = this.thinkBudget;
@@ -491,10 +509,20 @@ export class NativeConversation {
     this.max = Math.min(sessionConfig.maxOutputTokens || MAX_OUTPUT, MAX_OUTPUT);
     this.greedy = Boolean(sessionConfig.samplerParams && sessionConfig.samplerParams.type === 3);
     this.sampling = sessionConfig.sampling || null;
-    this.thinkBudget = sessionConfig.thinkBudget || 0;   // reasoning tokens per reply; 0 = no cap
+    // Reasoning tokens for the whole turn, not for each round: a conversation is one phase of one turn (agent.js
+    // `open`), so a round after a tool result spends what is left of the same budget. Per round it never added up
+    // to a stop: LFM3 1.7B spent its 400 again on every round, read Squiggle's "go with the best one" line twice
+    // and went on weighing options (chat s0mwqy0afi, 2026-11-21: 11 rounds and 13 minutes for a short biography).
+    this.thinkBudget = sessionConfig.thinkBudget || 0;   // 0 = no cap
+    this.thinkUsed = 0;
+    this.spentRounds = 0;   // rounds started with the budget already spent (SPENT_TOOL_ROUNDS)
     this.ctrl = null;
   }
   cancel() { try { this.ctrl && this.ctrl.abort(); } catch {} }
+  // The turn's thinking budget is spent: the rounds after it answer or call a tool straight away.
+  spentThinking() { return this.thinkBudget > 0 && this.thinkUsed >= this.thinkBudget; }
+  // The tools are taken away: the budget is spent and so are the tool rounds allowed after it.
+  toolsOff() { return this.spentRounds > SPENT_TOOL_ROUNDS; }
   replaceResult(msg, response) {
     const i = this.messages.indexOf(msg);
     if (i < 0 || !Array.isArray(msg.content)) return false;
@@ -521,7 +549,12 @@ export class NativeConversation {
       for (const m of input) this.messages.push(m);
       for (const n of foundNames(input)) this.active.add(n);
     }
-    let r = yield* this.generate({ thinking: this.thinking, resume: opts.resume, track: opts.track });
+    const spent = this.spentThinking();
+    if (spent && this.thinking && !this.saidSpent) { this.saidSpent = true; yield { thinking: `\n\n${thinkSpentNote(this.thinkBudget)}\n\n` }; }
+    if (spent && this.thinking) this.spentRounds++;
+    const off = this.toolsOff();
+    if (off && this.spentRounds === SPENT_TOOL_ROUNDS + 1) yield { thinking: `\n\n${toolsOffNote}\n\n` };
+    let r = yield* this.generate({ thinking: this.thinking && !spent, noTools: off, resume: opts.resume, track: opts.track });
     if (r.overBudget && this.w.info && this.w.info.closesThinking && r.reasoning) {
       // The thinking used its budget: it's kept, and closed with a decision in the model's own words, so the reply
       // carries on from it. Restarting with thinking off threw it away, and the model re-argued it in the reply
@@ -534,24 +567,28 @@ export class NativeConversation {
       yield { thinking: `\n\n${thinkBudgetNote(this.thinkBudget)}\n\n` };
       r = yield* this.generate({ thinking: false, reasoning: r.reasoning });
     }
-    const { calls, looped, aborted } = r;
+    let { calls, looped, aborted } = r;
     if (aborted && !looped) return;
+    // A call written with the tools off isn't run (its text was never shown): the reply is whatever came before it.
+    if (off && calls.length) { const last = this.messages[this.messages.length - 1]; if (last && last.tool_calls) delete last.tool_calls; calls = []; }
     for (const c of calls) this.active.add(c.function.name);   // a tool it called without looking up stays declared
     if (calls.length) yield { tool_calls: calls };
   }
 
   // One model reply; `thinking` is this call's switch. Returns { calls, looped, aborted, overBudget, reasoning }.
   // `reasoning` is thinking from a stopped first try, kept with the tool call it leads to (nativeMessages).
-  async *generate({ thinking, reasoning: earlier = '', prefill = '', resume = '', track = null }) {
-    const tools = this.declared();
+  async *generate({ thinking, noTools = false, reasoning: earlier = '', prefill = '', resume = '', track = null }) {
+    // Tools off: every tool goes as deferred, so none is listed but a tool_reference already in history still finds
+    // its definition (LFM3's template refuses a reference to a tool missing from the request).
+    const tools = noTools ? this.tools.map(t => ({ ...t, defer_loading: true })) : this.declared();
     const ctrl = this.ctrl = new AbortController();
     const t0 = performance.now();
-    let tFirst = 0, pieces = 0, thinkPieces = 0, text = '', reasoning = '', checked = 0, looped = false, overBudget = false;
+    let tFirst = 0, pieces = 0, text = '', reasoning = '', checked = 0, looped = false, overBudget = false;
     const parts = [];                                          // streamed tool calls, by index
     try {
       // A runtime whose tool format lists every tool (w.info.toolNames: WebLLM with LFM2) also gets the names of
       // the tools the gate hasn't declared yet, so they sit in the model's own tool list, by name only.
-      const undeclared = this.gate && this.w.info && this.w.info.toolNames ? this.tools.map(nameOf).filter(n => !tools.some(t => nameOf(t) === n)) : [];
+      const undeclared = !noTools && this.gate && this.w.info && this.w.info.toolNames ? this.tools.map(nameOf).filter(n => !tools.some(t => nameOf(t) === n)) : [];
       const stream = await this.w.createChatCompletion({
         messages: nativeMessages(this.messages, { refs: Boolean(this.w.info && this.w.info.toolRefs), tools: this.tools }),
         ...(tools.length ? { tools } : {}),
@@ -571,7 +608,7 @@ export class NativeConversation {
         if (d.reasoning_content || d.content || d.tool_calls) { pieces++; if (!tFirst) tFirst = performance.now(); }
         if (d.reasoning_content) {
           reasoning += d.reasoning_content; yield { thinking: d.reasoning_content };
-          if (this.thinkBudget && ++thinkPieces > this.thinkBudget && !text && !parts.length) { overBudget = true; ctrl.abort(); break; }
+          if (this.thinkBudget && ++this.thinkUsed > this.thinkBudget && !text && !parts.length) { overBudget = true; ctrl.abort(); break; }
         }
         if (d.content) { text += d.content; yield { content: d.content }; }
         for (const tc of d.tool_calls || []) {

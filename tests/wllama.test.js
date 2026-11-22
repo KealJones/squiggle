@@ -458,3 +458,84 @@ test('NativeConversation without a gate declares every tool, and known tools sta
   const gated = new NativeConversation(w, { preface: { messages: [], tools: TOOLS, gate: ['web_search'], known: ['remember'] }, sessionConfig: {} });
   assert.deepEqual(gated.declared().map(t => t.function.name), ['web_search', 'remember']);
 });
+
+test('the thinking budget is for the whole reply: a round after a tool result does not get a fresh one', async () => {
+  const { NativeConversation, thinkSpentNote } = await import('../app/src/engine-wllama.js');
+  const seen = [];
+  let call = 0;
+  const w = { async createChatCompletion(p) {
+    seen.push({ kw: p.chat_template_kwargs, last: p.messages.at(-1) });
+    const deltas = call++ === 0
+      ? Array.from({ length: 20 }, (_, i) => ({ reasoning_content: `r${i} ` }))   // spends the budget, never closes
+      : [{ content: 'She is a singer.' }];
+    return (async function* () { for (const d of deltas) { if (p.abortSignal.aborted) return; yield { choices: [{ delta: d }] }; } })();
+  } };
+  const conv = new NativeConversation(w, { preface: { messages: [{ role: 'system', content: 'S' }], tools: TOOLS, extra_context: { enable_thinking: true } }, sessionConfig: { maxOutputTokens: 256, thinkBudget: 8 } });
+  for await (const x of conv.sendMessageStreaming('who is she?')) void x;
+  assert.deepEqual(seen.map(x => x.kw), [{ enable_thinking: true }, { enable_thinking: false }]);
+  assert.ok(conv.spentThinking(), 'the budget is spent for the rest of the reply');
+
+  // The next round (a tool result) is asked for with thinking off, once, instead of spending another 8 tokens
+  // weighing options: per round the model hit the budget again on every round and never stopped (chat
+  // s0mwqy0afi, 2026-11-21: Squiggle's "go with the best one" line read twice in one reply).
+  const got = [];
+  for await (const x of conv.sendMessageStreaming([{ role: 'tool', content: [{ name: 'web_search', response: 'r' }] }])) got.push(x);
+  assert.deepEqual(seen.slice(2).map(x => x.kw), [{ enable_thinking: false }]);
+  assert.equal(got.filter(x => x.content).map(x => x.content).join(''), 'She is a singer.');
+  assert.ok(got.filter(x => x.thinking).map(x => x.thinking).join('').includes(thinkSpentNote(8)));
+});
+
+test('with the budget spent, one more round may call a tool; after that the tools are off and the round answers', async () => {
+  const { NativeConversation, SPENT_TOOL_ROUNDS, toolsOffNote } = await import('../app/src/engine-wllama.js');
+  assert.equal(SPENT_TOOL_ROUNDS, 1);
+  const seen = [];
+  const call = (id) => [{ tool_calls: [{ index: 0, id, function: { name: 'web_search', arguments: '{"query":"x"}' } }] }];
+  const script = [
+    Array.from({ length: 20 }, (_, i) => ({ reasoning_content: `r${i} ` })),   // spends the budget
+    call('c1'),                                                                   // the retry with thinking off calls a tool
+    call('c2'),                                                                   // the grace round: still allowed
+    [{ content: 'Three Grammys. ' }, ...call('c3')],                              // tools off: the call is dropped
+  ];
+  const w = { async createChatCompletion(p) {
+    seen.push(p);
+    const deltas = script[seen.length - 1] || [{ content: 'late' }];
+    return (async function* () { for (const d of deltas) { if (p.abortSignal.aborted) return; yield { choices: [{ delta: d }] }; } })();
+  } };
+  const conv = new NativeConversation(w, { preface: { messages: [{ role: 'system', content: 'S' }], tools: TOOLS, extra_context: { enable_thinking: true } }, sessionConfig: { maxOutputTokens: 256, thinkBudget: 8 } });
+  const run = async (input) => { const got = []; for await (const x of conv.sendMessageStreaming(input)) got.push(x); return got; };
+  const result = (id) => [{ role: 'tool', tool_call_id: id, content: [{ name: 'web_search', response: 'r' }] }];
+  const listed = (p) => (p.tools || []).filter(t => !t.defer_loading && !(t.function && t.function.defer_loading)).length;
+
+  const a = await run('What Grammys has she won?');
+  assert.ok(a.some(x => x.tool_calls), 'the round that spent the budget may still call');
+  const b = await run(result('c1'));
+  assert.ok(b.some(x => x.tool_calls), 'one round after it may call too (to read what it fetched)');
+  assert.equal(listed(seen[2]), TOOLS.length);
+  const c = await run(result('c2'));
+  assert.equal(listed(seen[3]), 0, 'no tool is listed once they are off');
+  assert.equal((seen[3].tools || []).length, TOOLS.length, 'but every one is still sent (deferred), for tool_reference parts in history');
+  assert.ok(!c.some(x => x.tool_calls), 'a call written with the tools off is not run');
+  assert.equal(c.filter(x => x.content).map(x => x.content).join('').trim(), 'Three Grammys.');
+  assert.ok(c.filter(x => x.thinking).map(x => x.thinking).join('').includes(toolsOffNote));
+  assert.ok(!conv.messages.at(-1).tool_calls, 'the dropped call is not kept in history either');
+});
+
+test('the fenced path with the budget spent carries on from a closed think block, in one call', async () => {
+  const { Conversation, ENOUGH_THINKING } = await import('../app/src/engine-wllama.js');
+  const seen = [];
+  let call = 0;
+  const w = { async createChatCompletion(p) {
+    seen.push(p.messages.at(-1));
+    const pieces = call++ === 0 ? ['<think>', ...Array.from({ length: 30 }, (_, i) => `t${i} `)] : [p.messages.at(-1).content, 'Answer.'];
+    return (async function* () { for (const c of pieces) { if (p.abortSignal.aborted) return; yield { choices: [{ delta: { content: c } }] }; } })();
+  } };
+  const conv = new Conversation(w, { preface: { messages: [{ role: 'system', content: 'S' }] }, sessionConfig: { maxOutputTokens: 200, thinkBudget: 10 } });
+  for await (const x of conv.sendMessageStreaming('q?')) void x;
+  assert.equal(seen.length, 2);                                    // the stopped try, then the prefilled carry-on
+  assert.ok(conv.spentThinking());
+  call = 1;                                                        // the next round answers straight away
+  for await (const x of conv.sendMessageStreaming([{ role: 'user', content: 'and?' }])) void x;
+  assert.equal(seen.length, 3, 'one call for the round, not a second stopped try');
+  assert.match(seen[2].content, new RegExp(`^<think>\\n${ENOUGH_THINKING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n</think>`));
+  assert.equal(conv.thinkBudget, 10);
+});

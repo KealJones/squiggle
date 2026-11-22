@@ -10,7 +10,9 @@ import { tmpdir } from 'node:os';
 import { join, extname, normalize } from 'node:path';
 import worker, { AiBudget } from '../../worker/index.js';
 
-const APP_DIR = new URL('../../app/', import.meta.url).pathname;
+// The app served to the browser. SQUIGGLE_APP_DIR points it at another checkout's `app/`, so one copy of this
+// harness (and of the eval graders) can drive two builds of the app — tests/eval/ab.mjs does that for an A/B.
+const APP_DIR = process.env.SQUIGGLE_APP_DIR ? (process.env.SQUIGGLE_APP_DIR.replace(/\/?$/, '/')) : new URL('../../app/', import.meta.url).pathname;
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json', '.md': 'text/plain' };
 
 export function makeGitRoot() {
