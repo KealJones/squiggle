@@ -47,7 +47,10 @@ makeRepo(root, 'tester', 'app', { 'README.md': '# app\nA test app.\n', 'src/inde
 const REPOS = [['tester/app', 'A test app', false], ['tester/bubbles', 'Bubble physics toy', false], ['tester/state', 'Squiggle storage', true]]
   .map(([f, d, p]) => ({ full_name: f, name: f.split('/')[1], owner: { login: 'tester' }, private: p, default_branch: 'main', description: d }));
 const { appUrl, close } = await start(root, {}, { liveWeb: LIVE });
-const ctx = await chromium.launchPersistentContext(profile, { viewport: { width: 1280, height: 800 }, args: ['--enable-unsafe-webgpu', '--enable-features=Vulkan'] });
+// SQUIGGLE_CHROME_ARGS (space-separated) replaces the WebGPU flags and SQUIGGLE_CHANNEL picks Playwright's channel, for
+// machines whose GPU needs other switches (a headless Linux GPU box: tests/eval/gpu-probe.mjs finds the set that works).
+const chromeArgs = process.env.SQUIGGLE_CHROME_ARGS ? process.env.SQUIGGLE_CHROME_ARGS.split(/\s+/).filter(Boolean) : ['--enable-unsafe-webgpu', '--enable-features=Vulkan'];
+const ctx = await chromium.launchPersistentContext(profile, { viewport: { width: 1280, height: 800 }, args: chromeArgs, ...(process.env.SQUIGGLE_CHANNEL ? { channel: process.env.SQUIGGLE_CHANNEL } : {}) });
 await ctx.route('https://api.github.com/**', async (route) => {
   const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': 'GET,POST' };
   if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
