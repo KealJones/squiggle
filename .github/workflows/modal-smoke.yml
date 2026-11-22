@@ -21,6 +21,8 @@ jobs:
       MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -30,6 +32,12 @@ jobs:
           set -o pipefail
           mkdir -p out
           modal run tests/eval/modal_smoke.py --branch "${GITHUB_REF_NAME}" 2>&1 | tee out/modal.log
+      - name: Log tail as an annotation (readable through the checks API)
+        if: always()
+        run: |
+          tail -n 40 out/modal.log 2>/dev/null | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' > /tmp/tail.txt || true
+          echo "::notice title=modal-smoke log tail::$(cat /tmp/tail.txt)"
+          [ -n "${MODAL_TOKEN_ID}" ] || echo "::error title=modal-smoke::MODAL_TOKEN_ID is empty in this run"
       - name: Commit the log and results
         if: always()
         run: |
