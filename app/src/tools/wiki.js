@@ -183,8 +183,8 @@ export function parseLinks(json, { now = new Date() } = {}) {
 
 // `brief` ({ facts, links, more }): the harness's own lookup before the model answers (agent.js wikiTop, Fresh context)
 // keeps the first so many facts (the most relevant) and links (the newest) and says how many it left out and where
-// they are (`more`), since it has to fit the window beside everything else. The tool itself, called by the model,
-// gives everything (no tool cuts its output).
+// they are (`more`: where the whole lookup was saved, wikiLookup), since it has to fit the window beside everything
+// else. The tool itself, called by the model, gives everything (no tool cuts its output).
 export function render({ main, lists = [], others = [], facts = [], links = [], qid = '' }, { now = new Date(), small = false, wrap = (s, t) => t, brief = null } = {}) {
   if (!main) return '';
   const left = brief ? { facts: Math.max(0, facts.length - brief.facts), links: Math.max(0, links.length - brief.links) } : null;
@@ -212,6 +212,8 @@ export function render({ main, lists = [], others = [], facts = [], links = [], 
 // ── The lookup ──────────────────────────────────────────────────────────────
 
 /** Returns { text, main, qid, facts, links, lists } or { error }. `query`: a question, a name or a Q-id. */
+// `brief.save(text)`: keeps the whole lookup as a file and returns its path, and `brief.where(path)` says how to read
+// it, for the note under a brief result.
 export async function wikiLookup(query, { fetch: f = globalThis.fetch, now = new Date(), small = false, wrap, brief = null } = {}) {
   const get = async (url, headers) => {
     const r = await f(url, headers ? { headers } : undefined);
@@ -247,8 +249,14 @@ export async function wikiLookup(query, { fetch: f = globalThis.fetch, now = new
     const l = lj ? parseLinks(lj, { now }) : { links: [], hub: false };
     links = l.hub ? [] : l.links;
   }
-  const text = render({ ...found, facts, links, qid: main.qid || '' }, { now, small, wrap, brief });
-  return { text, main, qid: main.qid || '', facts, links, lists: found.lists };
+  const full = render({ ...found, facts, links, qid: main.qid || '' }, { now, small });
+  let path = null;
+  if (brief && brief.save && (facts.length > brief.facts || links.length > brief.links)) {
+    path = brief.save(full, main);
+    brief = { ...brief, more: brief.where ? brief.where(path) : `grep ${path}` };
+  }
+  const text = brief ? render({ ...found, facts, links, qid: main.qid || '' }, { now, small, wrap, brief }) : wrap ? wrap('wikipedia and wikidata', full) : full;
+  return { text, full, path, main, qid: main.qid || '', facts, links, lists: found.lists };
 }
 
 export const wikiTool = defineTool({
@@ -260,13 +268,14 @@ export const wikiTool = defineTool({
     const q = String(query || '').trim();
     if (!q) return { model: { error: 'Give a question, a name or a Q-id.' } };
     let r;
+    // Brief: the harness's lookup up front only (agent.js wikiTop, which also says where the whole one is saved).
     try { r = await wikiLookup(q, { fetch: ctx.fetch, small: Boolean(ctx.pageCards), wrap: wrapUntrusted, brief: ctx.brief || null }); } catch (e) { return { model: { error: `Wikipedia or Wikidata didn't answer (${e.message}). Try web_search.` } }; }
     if (r.error) return { model: { error: `${r.error} Try other words, or web_search.` }, label: `looked up "${truncate(q, 50)}" on Wikipedia (nothing)` };
     return {
       model: { found: r.text },
       label: `looked up "${r.main.title}" on Wikipedia and Wikidata${r.qid ? ` (${r.qid})` : ''}`,
       // Its links count as given (fetch_url's check), and later searches can find it.
-      observation: { source: 'wikipedia', title: `${r.main.title} (${r.main.url})`, text: r.text.replace(/<\/?untrusted[^>]*>/g, '') },
+      observation: { source: 'wikipedia', title: `${r.main.title} (${r.main.url})`, text: r.full },
       items: [r.main, ...r.lists].map(p => ({ title: p.title, url: p.url })),
     };
   },

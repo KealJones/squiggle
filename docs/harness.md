@@ -301,8 +301,9 @@ Fresh replays nothing just for being recent. Before the model sees a message, th
    call it itself in any mode (it's in the gate). Checked live on 2026-11-04: Jaws → Spielberg, Zig → inception
    2015, Emma Stone's birth date, her newest released film, Coca-Cola's inventor (the drink and the company are
    different items). The lookup before the model answers is brief (`wikiTop`, render's `brief`): the 15 most
-   relevant facts and 8 newest links for small models (40 and 25 for big ones), then how many were left out and
-   how to get them all (`wiki <name>` in bash, or wiki_lookup). The full list didn't fit: on Keal's iPhone
+   relevant facts and 8 newest links for small models (40 and 25 for big ones), then how many were left out; the
+   whole lookup is saved as a /web file like a fetched page (`saveWebPage`, Keal's idea), and the note says to grep
+   it, so the rest is a grep away, not a second lookup. The full list didn't fit: on Keal's iPhone
    (2026-11-22, LFM3 1.7B, 6K window) Olivia Rodrigo's 175 links made the lookup 17K characters, and the first
    message of a Fresh chat failed with "no longer fits in the model's window". Called by the model, it gives
    everything.

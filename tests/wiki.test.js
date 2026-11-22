@@ -161,3 +161,18 @@ test('render brief (Fresh\'s lookup before the model answers): the first facts a
   assert.doesNotMatch(full, /left out/, 'the tool itself gives everything');
   assert.equal(render({ ...found, facts: facts.slice(0, 2), links: links.slice(0, 1), qid: 'Q147077' }, { now: NOW, brief: { facts: 2, links: 1 } }).includes('left out'), false, 'nothing left out, no note');
 });
+
+test('wikiLookup brief: the whole lookup goes to a file and the note says where; nothing saved when nothing was left out', async () => {
+  const asked = [], saved = [];
+  const save = (text, main) => { saved.push({ text, main }); return '/web/7.txt'; };
+  const r = await wikiLookup('Emma Stone', { fetch: fakeFetch(asked), now: NOW, brief: { facts: 1, links: 1, save, where: (p) => `grep ${p} in bash` } });
+  assert.equal(saved.length, 1);
+  assert.equal(r.path, '/web/7.txt');
+  assert.equal(saved[0].text, r.full, 'the file holds the whole lookup');
+  assert.doesNotMatch(r.full, /left out/);
+  assert.ok(r.full.length > r.text.length);
+  assert.match(r.text, /left out here; grep \/web\/7\.txt in bash for all of them\.\)$/);
+  const roomy = await wikiLookup('Emma Stone', { fetch: fakeFetch([]), now: NOW, brief: { facts: 999, links: 999, save } });
+  assert.equal(saved.length, 1, 'all of it fit: no file');
+  assert.equal(roomy.text, roomy.full);
+});
