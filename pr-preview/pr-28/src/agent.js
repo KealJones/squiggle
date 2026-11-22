@@ -10,6 +10,7 @@ import * as storage from './storage.js';
 import * as recipes from './recipes.js';
 import * as tasks from './tasks.js';
 import { COMMON_FROM } from './tools/common.js';
+import { saveWebPage } from './tools/workspace.js';
 import { find as findAll, renderFind, nothingFor, NOTHING, PAST_CHAT, PUSHBACK, checkQuery, rerankWeb, urlLedger, rankTools } from './find.js';
 import * as prefetchLib from './prefetch.js';
 import { buildEntities, resolve as resolveRefs, renderRefs } from './refs.js';
@@ -1371,12 +1372,15 @@ class Turn {
   }
 
   // wiki_lookup for Fresh's lookup: the text it found (already marked as outside content), or null. Brief: the most
-  // relevant facts and newest links only, with a note of how many more and where (2026-11-22, Keal's iPhone: Olivia
-  // Rodrigo's 175 links made the lookup 17K characters, and the first message didn't fit LFM3's 6K window).
+  // relevant facts and newest links only, the whole lookup saved as a /web file, and a note of how many more and
+  // where (2026-11-22, Keal's iPhone: Olivia Rodrigo's 175 links made the lookup 17K characters, and the first
+  // message didn't fit LFM3's 6K window).
   async wikiTop(query, why = 'looked up first') {
     const call = { function: { name: 'wiki_lookup', arguments: { query } } };
-    const more = bashSurface() ? `\`wiki ${String(query).replace(/[`"'$\\]/g, '').slice(0, 60)}\` in bash` : 'wiki_lookup it';
-    const brief = lite() ? { facts: 15, links: 8, more } : { facts: 40, links: 25, more };
+    // The whole lookup is saved under /web (Keal's idea, 2026-11-22), so the rest is a grep away, not a second lookup.
+    const where = (path) => bashSurface() ? `grep ${path} in bash` : `grep or read_file ${path}`;
+    const save = (text, main) => saveWebPage(main.url + '#wikidata', `${main.title} (Wikipedia and Wikidata)`, text);
+    const brief = lite() ? { facts: 15, links: 8, where, save } : { facts: 40, links: 25, where, save };
     const res = await runTool(call, { session: this.session, threadId: this.threadId, pageCards: lite(), brief });
     this.noteUrls(res);
     this.toolEvent({ name: 'wiki_lookup', label: `${res.label} (${why})`, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
