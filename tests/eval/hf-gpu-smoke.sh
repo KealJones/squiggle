@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One Hugging Face Job on a GPU (t4-small): does Chrome's WebGPU get the GPU in a headless Linux container, and how fast
-# is LFM3 1.7B on Tilde there? Run it in the node:22-bookworm image with NVIDIA_DRIVER_CAPABILITIES=all (the container
-# toolkit then mounts the driver's Vulkan library, which Chrome's WebGPU needs; the default "compute,utility" has none).
+# is LFM3 1.7B on Tilde there? HF reserves NVIDIA_DRIVER_CAPABILITIES, so when the driver's Vulkan libraries aren't
+# mounted the script installs the same driver version's user-space libraries itself (Chrome's WebGPU needs Vulkan).
 #   1. nvidia-smi and vulkaninfo: is there a GPU, and does Vulkan see it?
 #   2. tests/eval/gpu-probe.mjs: which Chrome switches give WebGPU a hardware adapter, and a timed matmul.
 #   3. If one does: deliberation case 1 ("Tell me about Olivia Rodrigo") through the real app on Tilde, timed.
@@ -13,7 +13,29 @@ step "GPU"
 nvidia-smi || echo "no nvidia-smi"
 
 step "packages"
-apt-get update -qq >/dev/null && apt-get install -y -qq git libvulkan1 vulkan-tools >/dev/null 2>&1 && echo installed
+apt-get update -qq >/dev/null && apt-get install -y -qq git curl ca-certificates libvulkan1 vulkan-tools >/dev/null 2>&1 && echo installed
+echo "NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-unset} (HF reserves it: a job can't set it)"
+
+# Without "graphics" in those capabilities the toolkit mounts CUDA but not the driver's Vulkan libraries. They're
+# user-space only, so the same version's installer can supply them: extract it and copy in what isn't there.
+VER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ')
+LIB=/usr/lib/x86_64-linux-gnu
+if [ -n "$VER" ] && ! ldconfig -p | grep -q libGLX_nvidia; then
+  echo "no Vulkan driver mounted: fetching NVIDIA $VER user-space libraries"
+  for url in "https://us.download.nvidia.com/tesla/$VER/NVIDIA-Linux-x86_64-$VER.run" \
+             "https://us.download.nvidia.com/XFree86/Linux-x86_64/$VER/NVIDIA-Linux-x86_64-$VER.run"; do
+    curl -fsSLo /tmp/nv.run "$url" && break
+  done
+  if [ -s /tmp/nv.run ] && sh /tmp/nv.run -x --target /opt/nv >/dev/null 2>&1; then
+    for f in /opt/nv/*.so."$VER"; do [ -e "$LIB/$(basename "$f")" ] || cp "$f" "$LIB/"; done
+    ldconfig
+    mkdir -p /usr/share/vulkan/icd.d
+    echo '{"file_format_version":"1.0.0","ICD":{"library_path":"libGLX_nvidia.so.0","api_version":"1.3"}}' > /usr/share/vulkan/icd.d/nvidia_icd.json
+    echo "copied in: $(ls /opt/nv/*.so."$VER" | wc -l) libraries"
+  else
+    echo "could not get the NVIDIA $VER installer"
+  fi
+fi
 # The toolkit mounts the driver's libraries but not always the loader's ICD file: write it if it's missing.
 if ! ls /usr/share/vulkan/icd.d/nvidia_icd.json /etc/vulkan/icd.d/nvidia_icd.json >/dev/null 2>&1; then
   mkdir -p /usr/share/vulkan/icd.d
