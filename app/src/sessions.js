@@ -81,7 +81,8 @@ export async function flush({ sync = true } = {}) {
   pendingSave.clear();
   for (const id of ids) {
     const s = cache.get(id);
-    if (s) await storage.write(`sessions/${id}.json`, JSON.stringify(s, null, 1));
+    // Keys starting with __ are the page's own (never saved; older versions saved bash's /tmp there, which broke it).
+    if (s) await storage.write(`sessions/${id}.json`, JSON.stringify(s, (k, v) => (k.startsWith('__') ? undefined : v), 1));
   }
   if (ids.length && sync) storage.sync();
 }
@@ -184,7 +185,8 @@ export function saveTask(session, task) {
   return task;
 }
 
-function parse(text) { try { return JSON.parse(text); } catch { return null; } }
+// Keys starting with __ are the page's own and never come back from a file (older versions saved some).
+function parse(text) { try { return JSON.parse(text, (k, v) => (k.startsWith('__') ? undefined : v)); } catch { return null; } }
 
 function normalize(s) {
   s.messages = s.messages || [];

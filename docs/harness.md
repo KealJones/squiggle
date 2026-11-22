@@ -317,6 +317,12 @@ Fresh replays nothing just for being recent. Before the model sees a message, th
    every lookup for that chat, labelled as the user's own earlier instructions, still in force.
 7. **The user's own things stay off the web.** A question about the user ("what's my name?", "my dog") that memory
    or this chat has something for gets no web or Wikipedia search ("What's my name?" went to both, 2026-11-09).
+   Nor does a message about the chat itself or how to reply (`prefetch.js aboutTheChat`: "can you be more concise in
+   the future?", "only reply with 2 sentences", "the secret password for this chat is …"; all three went to the web,
+   2026-11-22), and "this chat" is the chat, not a pronoun pointing back (it borrowed "tell pizza" into the search).
+   The last exchange always comes along, at least as one line, and in full when the message points back or answers
+   it: a correction or reply ("no, …", "I meant …", "yeah the second one") has no pronoun, and "No,
+   GitHub.com/kealjones/squiggle" reached LFM3 without the question it corrected (2026-11-22).
 
 8. **Tools that fit.** A real `find` lists matching tools; the seeded one didn't, so a gated model asked to pull a
    repo saw only an unrelated old chat (failures.md case 15). Tools that clearly fit the message (named, or an

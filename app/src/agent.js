@@ -1418,7 +1418,11 @@ class Turn {
     // the reply in full (Fresh replays nothing else, and "it" was lost, 2026-11-09).
     // The exchange is the question before this one (prevQ: past "thanks!" and the like), not just the latest.
     const last = (prevQ && exchanges.find(x => x.ref === prevQ.id)) || null;
+    // The last exchange always comes along, at least as one line, whatever the ranking says: a message is read
+    // against the one before it, and a reply with nothing to point back with ("No, github.com/…") was lost
+    // (2026-11-22). In full when the message points back or answers it.
     if (last && prefetchLib.pointsBack(said)) found = [{ ...last, full: true, score: 1 }, ...found.filter(x => x.id !== last.id)];
+    else if (last && !found.some(x => x.id === last.id)) found = [{ ...last, score: 1 }, ...found];
     // A named question only takes memory that names them too (find's rule: "Emma Stone's real name" ≠ "the user's name").
     const asked = prefetchLib.namesIn(query).map(n => n.toLowerCase());
     const facts = (await memory.recall(query, 6).catch(() => [])).filter(r => r.score >= 0.3)
@@ -1437,7 +1441,9 @@ class Turn {
     // The best one, and a second only when it scores close to it: a small model takes a list as a to-do.
     const fit = fitTools(said, modelTools());
     const toolJob = fit.length > 0;
-    const lookup = pushback || (!toolJob && !prefetchLib.doRequest(said));
+    // Nor is a message about the chat itself or how to reply (2026-11-22: "Can you be more concise in the future?" and
+    // "The secret password for this chat is …" went to the web).
+    const lookup = pushback || (!toolJob && !prefetchLib.doRequest(said) && !prefetchLib.aboutTheChat(said));
     // Wikipedia and Wikidata when the question names someone or something, alongside the web search.
     const wikiP = lookup && !own && prefetchLib.namesIn(query).length && modelTools().some(t => t.name === 'wiki_lookup') ? this.wikiTop(query) : null;
     if (this.webOn() && !own && lookup) {
