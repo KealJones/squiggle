@@ -12,7 +12,7 @@ does not need to know the world; it needs the habits: notice what it doesn't
 know, find it, act, keep track of where it is. The harness carries the
 memory and the bookkeeping.
 
-Two rules from Keal shape everything:
+Two rules shape everything:
 
 1. **Slow the first time is fine; the second time should be fast.** Squiggle
    keeps *recipes*: how a task was solved, reused next time.
@@ -236,14 +236,14 @@ id like facts):
   and lets the next big-model session refine it (saved with `draft: true`; a
   big model refines one draft per turn, in the background).
 - **Approved**: every new recipe is saved `pending: true` (a "possible recipe") and isn't
-  matched until the user approves it in Memory → Recipes (Keal, 2026-11-04: a failed
+  matched until the user approves it in Memory → Recipes (2026-11-04: a failed
   "confirm Bugonia" task taught find + example.com). Small-model drafts saved before this
   load as pending.
 - **Merged**: if a new recipe's `when` matches an existing one closely, update that
   one (append example phrasing, refresh steps if they changed) instead of adding. An
   approved recipe only gains the new phrasing; its steps stay as approved.
 - **Used**: the model looks recipes up with `find` (results include "Recipes from
-  similar tasks"); nothing is injected into the prompt (Keal, 2026-10-29: an injected
+  similar tasks"); nothing is injected into the prompt (2026-10-29: an injected
   recipe for "What is the date?" took over a small model's turn). The best recipe the
   model found in the chat phase goes with the plan it makes, into each step prompt.
   Using one bumps `uses` and `lastUsed`. Note: fine-tunes up to v2 were trained with
@@ -305,8 +305,8 @@ Fresh replays nothing just for being recent. Before the model sees a message, th
    2015, Emma Stone's birth date, her newest released film, Coca-Cola's inventor (the drink and the company are
    different items). The lookup before the model answers is brief (`wikiTop`, render's `brief`): the 15 most
    relevant facts and 8 newest links for small models (40 and 25 for big ones), then how many were left out; the
-   whole lookup is saved as a /web file like a fetched page (`saveWebPage`, Keal's idea), and the note says to grep
-   it, so the rest is a grep away, not a second lookup. The full list didn't fit: on Keal's iPhone
+   whole lookup is saved as a /web file like a fetched page (`saveWebPage`), and the note says to grep
+   it, so the rest is a grep away, not a second lookup. The full list didn't fit: on the test iPhone
    (2026-11-22, LFM3 1.7B, 6K window) Olivia Rodrigo's 175 links made the lookup 17K characters, and the first
    message of a Fresh chat failed with "no longer fits in the model's window". Called by the model, it gives
    everything.
@@ -445,7 +445,7 @@ Anthropic's tool search uses the same field names. So for agent-trained models o
 (agent.js `deferring()`), instead of the gate and `tool_info`:
 
 - Declared up front (`LOADED`): `bash` with every command it had, `web_search`, `web_fetch`, `memory` and
-  `search_tools` (plus `done` in a step and `checkpoint` in AI-managed mode). Keal, 2026-11-17: files, plan and
+  `search_tools` (plus `done` in a step and `checkpoint` in AI-managed mode). 2026-11-17: files, plan and
   ask_user wait to be found (no model had called ask_user yet); memory stays up front (failures.md case 22).
 - Deferred, and named by name only at the end of the system prompt (`deferredLine`: "More tools, found with
   search_tools: …", the way Claude's own harness lists deferred tools): the file tools (tools/common.js, each
@@ -588,13 +588,13 @@ Habits, in order of importance:
    through `calculate(expression)` (calc.js: a safe expression parser, no code), and
    the number in the reply is the one it returned. `run_js` is for real code and data
    tasks only.
-5. **Messy input**: Keal's rambling, voice-dictated, self-correcting messages,
+5. **Messy input**: rambling, voice-dictated, self-correcting messages,
    bare links, references to old chats.
 6. Plain chat stays plain: "hey whats up lol" gets a short normal reply.
 
 ## The model manages its own context (AI-managed mode)
 
-Status: **built 2026-10-29** as Settings → Context → "AI-managed (experimental)" (Keal: "it's always a toggle so easy
+Status: **built 2026-10-29** as Settings → Context → "AI-managed (experimental)" ("it's always a toggle so easy
 enough to turn off"). Proposed 2026-10-28; 0b was built first. What differs from the proposal below:
 
 - **Everything is behind the setting**, including sections 1, 2 and 5 that the proposal applied to every mode: Squiggle

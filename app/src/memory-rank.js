@@ -7,7 +7,7 @@ export const factText = (f) => `${f.text || `${f.s} ${f.p} ${f.o}`}${f.note ? ` 
 const norm = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
 // "What do you remember about me?" shares no words with what was saved ("Keal likes short answers"), so the
-// absolute bar finds nothing (Keal's iPhone, 2026-11-16; LFM3 then asked find("me")). Strip the words that only
+// absolute bar finds nothing (the test iPhone, 2026-11-16; LFM3 then asked find("me")). Strip the words that only
 // point at the user (me/my/I are stopwords already) or at memory itself: a query with nothing else left is a
 // general question about the user and gets the newest facts; "what's my favorite food" keeps its words and is
 // matched as usual. Words, not phrases, so new wordings don't need a list.

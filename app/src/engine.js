@@ -12,7 +12,7 @@ const HF = 'https://huggingface.co/';
 
 // phone: small enough for a phone's per-tab memory. size: download size.
 export const MODELS = {
-  // LFM3 1.7B, the model (Keal, 2026-11-10): one model, two builds (GROUPS). Liquid's first small model post-trained
+  // LFM3 1.7B, the model (2026-11-10): one model, two builds (GROUPS). Liquid's first small model post-trained
   // for agent harnesses; on Squiggle's prompt and tools it greets without tools, writes code itself and picks the right
   // tool. Thinking on by default (its card).
   // The WebLLM build (lm-experiments experiments/lfm3-mlc): our own MLC port, TVM built from source at WebLLM 0.2.87's
@@ -20,7 +20,7 @@ export const MODELS = {
   // (toolformats/lfm3.js). Liquid's quantization-aware-trained 4-bit weights copied in exactly (job lfm3-mlc-8,
   // qad_to_mlc.py: Q4_0 (k-8)*d = MLC (q-7)*s with q = 15-k, s = -d) and a one-sequence model library (~17 MB of
   // scratch instead of ~163). On an iPhone 16 in Squiggle: first word in 15 s, 13.7 tok/s (2026-11-10).
-  WLF3QAD: { label: 'LFM3 1.7B', size: '~990 MB', group: 'LFM3', note: 'Liquid\'s LFM3 1.7B on WebGPU with tools in its own format, thinking first: the first small model trained for agent harnesses, about 14 words a second on an iPhone. Liquid\'s own 4-bit weights. 6K context at most', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 6144,   // 6K: on Keal's iPhone 16 it loaded at 1065 MB (4K: 1021) and read a ~3K-token prompt; 8K killed the tab while loading (2026-11-15)
+  WLF3QAD: { label: 'LFM3 1.7B', size: '~990 MB', group: 'LFM3', note: 'Liquid\'s LFM3 1.7B on WebGPU with tools in its own format, thinking first: the first small model trained for agent harnesses, about 14 words a second on an iPhone. Liquid\'s own 4-bit weights. 6K context at most', phone: true, runtime: 'wllama', backend: 'webllm', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 6144,   // 6K: on the test iPhone 16 it loaded at 1065 MB (4K: 1021) and read a ~3K-token prompt; 8K killed the tab while loading (2026-11-15)
     mlc: 'LFM3-1.7B-QAD-q4f16_1-MLC', bytes: 990000000,
     mlcRecord: {
       model: HF + 'kealjones/LFM3-1.7B-QAD-q4f16_1-MLC/resolve/main/',
@@ -37,16 +37,16 @@ export const MODELS = {
   // LFM3 1.7B on Tilde (2026-11-17): Liquid's quantization-aware 4-bit GGUF, the same file as the CPU build, on the
   // GPU without shader-f16. The text model with every training stage (MOPD, agentic RL): it thinks and reaches for
   // tools on its own. LFM3's first build; WebLLM's next, then the CPU.
-  KLF3: { label: 'LFM3 1.7B', size: '1.0 GB', group: 'LFM3', note: 'Liquid\'s LFM3 1.7B, the text model trained for agent harnesses: it thinks first and uses tools in its own format. On Keal\'s own WebGPU engine (Tilde), Liquid\'s own 4-bit weights. 6K context at most', phone: true, runtime: 'wllama', backend: 'tilde', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 6144,
+  KLF3: { label: 'LFM3 1.7B', size: '1.0 GB', group: 'LFM3', note: 'Liquid\'s LFM3 1.7B, the text model trained for agent harnesses: it thinks first and uses tools in its own format. On Tilde, a custom WebGPU engine, with Liquid\'s own 4-bit weights. 6K context at most', phone: true, runtime: 'wllama', backend: 'tilde', tools: true, native: true, toolFormat: 'lfm3', family: 'lfm3', maxContext: 6144,
     url: HF + 'LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-QAD-Q4_0.gguf', bytes: 1049615680, fileBytes: [1049615680] },
   // LFM3 Omni 2B on Tilde (github.com/KealJones/tilde, engine-tilde.js), the GPU build since 2026-11-16: the
   // same LFM3 backbone (24 layers, Q4_0), plus Omni's encoders (mmproj, Q8_0) so it sees pictures and video, hears
-  // sound and speaks in its own voice. Keal's own WebGPU engine: no shader-f16 needed, GPU work in short submits for
-  // iOS's ~3 s limit, encoders loaded only while used. On Keal's iPhone 16 (Tilde's demo, 2026-11-16): reads 51
+  // sound and speaks in its own voice. A custom WebGPU engine: no shader-f16 needed, GPU work in short submits for
+  // iOS's ~3 s limit, encoders loaded only while used. On the test iPhone 16 (Tilde's demo, 2026-11-16): reads 51
   // tokens a second, writes 12.6; 1,123 MB at a 4K window, 1,241 MB at its peak while speaking.
   // Its thinking is started for it (toolformats/lfm3.js lfm3Omni): Omni's branch skipped the 1.7B's MOPD and agentic
   // RL and closes an open <think> at once (llama.cpp, 2026-11-17).
-  KOMNI: { label: 'LFM3 Omni 2B', size: '1.55 GB', group: 'LFM3O', note: 'Liquid\'s LFM3 with eyes, ears and a voice, on Keal\'s own WebGPU engine (Tilde): it sees pictures and video, hears audio, and can answer out loud. Tools in its own format; Squiggle starts its thinking for it. 6K context at most', phone: true, runtime: 'wllama', backend: 'tilde', tools: true, native: true, toolFormat: 'lfm3-omni', family: 'lfm3', maxContext: 6144,
+  KOMNI: { label: 'LFM3 Omni 2B', size: '1.55 GB', group: 'LFM3O', note: 'Liquid\'s LFM3 with eyes, ears and a voice, on Tilde, a custom WebGPU engine: it sees pictures and video, hears audio, and can answer out loud. Tools in its own format; Squiggle starts its thinking for it. 6K context at most', phone: true, runtime: 'wllama', backend: 'tilde', tools: true, native: true, toolFormat: 'lfm3-omni', family: 'lfm3', maxContext: 6144,
     senses: ['image', 'video', 'audio', 'voice'],
     url: HF + 'LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/LFM3-Omni-2B-Q4_0.gguf',
     mmproj: HF + 'LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/mmproj-LFM3-Omni-2B-Q8_0.gguf',
@@ -55,14 +55,14 @@ export const MODELS = {
   // the GGUF's own template. Slow on a phone CPU (1 GB, thinks first).
   LF3: { label: 'LFM3 1.7B', size: '1.0 GB', maxContext: 4096, group: 'LFM3', note: 'Liquid\'s LFM3 1.7B with tools in its own format, thinking first: the first small model trained for agent harnesses. On this device it runs on the CPU (no WebGPU here), so replies are slower than on a GPU', phone: true, runtime: 'wllama', tools: true, native: true, family: 'lfm3',
     url: HF + 'LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-QAD-Q4_0.gguf', bytes: 1049615680 },
-  // Keal's own models, kept as experiments. Squiggle Small: LFM2.5-350M fine-tuned on Squiggle's harness format
+  // Custom models, kept as experiments. Squiggle Small: LFM2.5-350M fine-tuned on Squiggle's harness format
   // (lm-experiments experiments/squiggle-ft): the fenced find-first prompt and separate tools are its training text.
-  SQ: { label: 'Squiggle Small', size: '219 MB', maxContext: 4096, experimental: true, note: 'Keal\'s own fine-tune: LFM2.5 350M trained on Squiggle\'s tools and habits (plan, find, done). Uses tools and looks things up; still often wrong; runs on a phone\'s CPU, no WebGPU needed', phone: true, runtime: 'wllama', tools: true, family: 'fenced',
+  SQ: { label: 'Squiggle Small', size: '219 MB', maxContext: 4096, experimental: true, note: 'A fine-tune of LFM2.5 350M on Squiggle\'s tools and habits (plan, find, done). Uses tools and looks things up; still often wrong; runs on a phone\'s CPU, no WebGPU needed', phone: true, runtime: 'wllama', tools: true, family: 'fenced',
     url: HF + 'kealjones/squiggle-small/resolve/main/squiggle-small-lfm25-Q4_0.gguf', bytes: 219312160 },
   // Tiny Gemma 4: Gemma 4 E2B pruned (80K vocab, hidden 1024, FFN 42%, 31 layers) and healed by distillation on E2B's
   // own answers and tool calls, then on Toucan's multi-turn tool conversations with real results (lm-experiments
   // experiments/tiny-gemma4, heal 4 pilot A, 2026-11-03): answers from tool results, handles a failed search.
-  TG4A: { label: 'Tiny Gemma 4', size: '778 MB', maxContext: 4096, experimental: true, note: 'Keal\'s own build: Gemma 4 E2B pruned to a 0.6B core, healed by distillation, then trained on tool conversations with real results. Answers from what a search returns; still often wrong; runs on a phone\'s CPU', phone: true, runtime: 'wllama', tools: true, native: true, family: 'gemma4', thinking: false,
+  TG4A: { label: 'Tiny Gemma 4', size: '778 MB', maxContext: 4096, experimental: true, note: 'Gemma 4 E2B pruned to a 0.6B core, healed by distillation, then trained on tool conversations with real results. Answers from what a search returns; still often wrong; runs on a phone\'s CPU', phone: true, runtime: 'wllama', tools: true, native: true, family: 'gemma4', thinking: false,
     url: HF + 'kealjones/tiny-gemma4-test/resolve/main/tiny-gemma4-heal4a-Q4_0.gguf', bytes: 778158496 },
   // Not on this device: runs on the relay (only listed when the relay offers it).
   cloud: { label: 'Gemma 4 26B (Cloudflare)', size: 'no download', note: 'bigger and smarter, runs on your Cloudflare relay; chats leave this device. Free daily limit, then it pauses until midnight UTC.', phone: true, runtime: 'cloud', needsRelay: true, family: 'gemma4' },
@@ -135,19 +135,19 @@ export function isMobile() {
 }
 
 export const hasWebGpu = () => typeof navigator !== 'undefined' && Boolean(navigator.gpu);
-// The defaults in one place. Since 2026-11-10 it's LFM3 1.7B everywhere (Keal: "we only need LFM3"): our WebLLM build
+// The defaults in one place. Since 2026-11-10 it's LFM3 1.7B everywhere ("we only need LFM3"): our WebLLM build
 // on WebGPU, Liquid's GGUF on the CPU without it. Gemma 4 E4B, LFM2.5 1.2B and the rest are lab-mode options.
 export const DEFAULTS = { computer: 'KOMNI', phoneGpu: 'KOMNI', phoneCpu: 'LF3' };
 export function deviceModel() {
   return forDevice(isMobile() ? DEFAULTS.phoneGpu : DEFAULTS.computer);
 }
 
-// The context window a model gets: the most it was built for (maxContext: LFM3's builds and Keal's two small models,
+// The context window a model gets: the most it was built for (maxContext: LFM3's builds and the two custom small models,
 // 4K), else 16K (the cloud model: bigger windows cost more of the relay's free daily budget per request). There's no
-// setting (Keal, 2026-11-10: "give them the biggest context").
+// setting (2026-11-10: "give them the biggest context").
 export const contextFor = (id) => (MODELS[id] && MODELS[id].maxContext) || 16384;
 
-// One model, several builds (Keal, 2026-11-10: "a user should only have to pick LFM3 1.7B, not the GGUF vs GPU
+// One model, several builds (2026-11-10: "a user should only have to pick LFM3 1.7B, not the GGUF vs GPU
 // version for their device"). Each build stays its own MODELS entry (its download, runtime, tool format) with
 // `group` naming the model it's a build of; GROUPS lists the builds in order of preference, and the first one
 // that can run on this device is the one listed, loaded and resolved to when a chat from another device names

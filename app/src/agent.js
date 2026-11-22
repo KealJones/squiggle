@@ -81,13 +81,13 @@ export const LITE_SYSTEM_NATIVE = [
 ].join('\n');
 
 // The same for the bash surface (tools/bash.js): the lookups are commands in the shell. The GitHub line is there
-// because LFM3, told "clone my repo bubbles", searched memory three times and asked Keal for the URL: nothing said
-// git and gh are already signed in as him (failures.md case 20). Left out in demo mode (no account).
+// because LFM3, told "clone my repo bubbles", searched memory three times and asked the user for the URL: nothing said
+// git and gh are already signed in as the user (failures.md case 20). Left out in demo mode (no account).
 const GITHUB_LINE = "git and gh are signed in as the user: \"my repo X\" is theirs, so gh repo clone X (it lands in /repos/X).";
 // LFM3's prompt had nothing on memory (only the big prompt did): case 21.
 // Just "use the tool": its description says how to word it and the scopes, and the harness handles the rest.
 // The bash surface (BASH_SURFACE): the tools LFM3 knows from Pi, OpenClaw and Hermes next to bash, and the rest
-// found with search_tools, in LFM3's own deferred-tools format (its model card's line, below). Keal, 2026-11-17.
+// found with search_tools, in LFM3's own deferred-tools format (its model card's line, below). 2026-11-17.
 const MEMORY_LINE = 'When the user tells you something lasting about themselves or their work, save it with the memory tool (add); when it changes, or they ask you to forget it, replace or remove that entry. session_search finds what was said in earlier chats. Notes that only matter in this chat go in target "memory".';
 export const SEARCH_TOOLS_LINE = 'If none of your current tools can handle a request, call search_tools to find one, then call the tool it returns.';
 export const LITE_SYSTEM_BASH = [
@@ -170,7 +170,7 @@ function toolNamesLine(phase, known = []) {
     groups.size ? `Other tools, by area: ${[...groups].map(([g, names]) => `${g}: ${names.join(', ')}`).join('; ')}. To use one, first call tool_info(names) with every one you expect to need.` : ''].filter(Boolean).join('\n');
 }
 
-// The repos cloned on this device, one line in the bash surface's prompt every turn (Keal, 2026-11-18). Compress
+// The repos cloned on this device, one line in the bash surface's prompt every turn (2026-11-18). Compress
 // doesn't replay tool results, so a turn after a clone only had the model's own summary of where it went, and it
 // trusted a path it had made up (/repos/KealJones/Keptsam for /repos/Keptsam, 2026-11-17). Refreshed before each
 // prompt is built (refreshClones); the prompt itself stays synchronous.
@@ -252,12 +252,12 @@ const GATE = ['plan', 'done', 'need', 'ask_user', 'find', 'checkpoint', 'tool_in
 const BIG_ONLY = ['wikidata_query'];
 // The bash surface (settings.toolSurface 'bash', lab): the shell does files, the web, git and maths through commands
 // it already knows (tools/bash.js); memory keeps its own tool. Otherwise the shell isn't offered.
-// One bash tool in place of the file, web, git and maths tools, for the models that can take it (Keal, 2026-11-10:
+// One bash tool in place of the file, web, git and maths tools, for the models that can take it (2026-11-10:
 // "we don't need those tools anymore"): LFM3, trained for agent harnesses, and the cloud model. Squiggle Small and
 // Tiny Gemma 4 keep the separate tools: those, and Squiggle Small's fenced prompt, are what they were trained on.
 export const bashSurface = () => settings.toolSurface === 'bash'
   && (engine.agentTrained(settings.model) || Boolean(engine.MODELS[settings.model] && engine.MODELS[settings.model].runtime === 'cloud'));
-// The bash surface keeps bash (with all its commands) and adds the common harness tools beside it (Keal, 2026-11-17):
+// The bash surface keeps bash (with all its commands) and adds the common harness tools beside it (2026-11-17):
 // what Pi, OpenClaw and Hermes give a model, under their names (tools/common.js). The models with the separate
 // Squiggle tools never see these names, and this surface never sees those (read_file, fetch_url, remember…).
 const COMMON_NAMES = new Set(Object.keys(COMMON_FROM));
@@ -270,7 +270,7 @@ const enabledTool = (name) => !settings.tools || settings.tools.has(name) || (CO
 // as tool_reference parts; the template then writes their definitions into the result (<additional_tools>).
 // Replaces tool_info for them; small native models without that training keep the gate.
 const deferring = () => gated() && bashSurface() && engine.agentTrained(settings.model);
-// Declared from the start: the shell, the web, memory and the finder (Keal, 2026-11-17: files, plan and ask_user wait
+// Declared from the start: the shell, the web, memory and the finder (2026-11-17: files, plan and ask_user wait
 // to be found; memory stays, since a guessed memory call saved the opposite of what the user said; `done` and `checkpoint` only appear inside a step / in AI-managed mode, where they're needed).
 // The rest are named in the prompt (deferredLine) and found with search_tools.
 const LOADED = new Set(['bash', 'web_search', 'web_fetch', 'memory', 'search_tools', 'done', 'checkpoint']);
@@ -393,7 +393,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
     } finally {
       // Whether a steer cut this reply off is decided here, when the writing has ended: a message sent while the
       // conversation is being closed (Tilde's cache snapshot can take a moment) comes after a finished reply and is
-      // just the next message (Keal, 2026-11-22: a reply that had finished got "cut off by your next message").
+      // just the next message (2026-11-22: a reply that had finished got "cut off by your next message").
       cutOff = Boolean(signal && signal.aborted && signal.reason === 'steer');
       ui.onWritten && ui.onWritten();
       await turn.close();
@@ -710,7 +710,7 @@ class Turn {
       if (full) {
         // Full, told so ("Not run: … answer now or call plan"), and it reached for another tool anyway: carry on by
         // itself in a fresh context (a one-step task that starts from what this reply found) instead of stopping and
-        // waiting for "continue" (Keal, 2026-11-10; stopping threw away three good lookups by LFM3 1.7B). Squiggle
+        // waiting for "continue" (2026-11-10; stopping threw away three good lookups by LFM3 1.7B). Squiggle
         // Small keeps the stop: its prompts are its training text.
         if (!fencedSmall()) return this.carryOn(r.toolCalls);
         this.prefix += '\n\n_(Stopped: the context filled up. Ask again and I\'ll make a plan for what\'s left.)_';
@@ -932,7 +932,7 @@ class Turn {
   // Gated models: a call to an undeclared tool, or a find/tool_info result naming tools, declares them from the
   // next request on (NativeConversation does the same). Returns their schema tokens, which also go on the
   // window's tool definitions.
-  // Repeating a call is allowed (Keal, 2026-11-12): the same command can rightly give a new answer (date, ls
+  // Repeating a call is allowed (2026-11-12): the same command can rightly give a new answer (date, ls
   // after a write, git status), and blocking it left models stuck. Runaway lookups are still bounded by the call
   // caps (maxChatCalls per turn, STEP_SOFT_CAP per step).
 
@@ -1381,11 +1381,11 @@ class Turn {
 
   // wiki_lookup for Fresh's lookup: the text it found (already marked as outside content), or null. Brief: the most
   // relevant facts and newest links only, the whole lookup saved as a /web file, and a note of how many more and
-  // where (2026-11-22, Keal's iPhone: Olivia Rodrigo's 175 links made the lookup 17K characters, and the first
+  // where (2026-11-22, the test iPhone: Olivia Rodrigo's 175 links made the lookup 17K characters, and the first
   // message didn't fit LFM3's 6K window).
   async wikiTop(query, why = 'looked up first') {
     const call = { function: { name: 'wiki_lookup', arguments: { query } } };
-    // The whole lookup is saved under /web (Keal's idea, 2026-11-22), so the rest is a grep away, not a second lookup.
+    // The whole lookup is saved under /web (an idea from 2026-11-22), so the rest is a grep away, not a second lookup.
     const where = (path) => bashSurface() ? `grep ${path} in bash` : `grep or read_file ${path}`;
     const save = (text, main) => saveWebPage(main.url + '#wikidata', `${main.title} (Wikipedia and Wikidata)`, text);
     const brief = lite() ? { facts: 15, links: 8, where, save } : { facts: 40, links: 25, where, save };

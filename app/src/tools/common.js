@@ -1,14 +1,14 @@
-// The tools the agent harnesses LFM3 was benched in give a model, under their usual names (Keal, 2026-11-17): read,
+// The tools the agent harnesses LFM3 was benched in give a model, under their usual names (2026-11-17): read,
 // write, edit, web_fetch, Hermes's memory and session_search (web_search already has the common name and schema,
 // web.js). They sit next to bash on the bash surface (agent.js BASH_SURFACE); bash keeps its own commands for all of
 // it too. Each one runs the Squiggle tool that already does the job, so approvals, path rules and untrusted wrapping
 // are unchanged; the fine-tunes keep the old names (read_file, write_file, edit_file, fetch_url, remember, recall,
 // search_history) they were trained on.
 //
-// One convention: snake_case names and arguments (Keal, 2026-11-17), as Hermes and Claude's tools write them
+// One convention: snake_case names and arguments (2026-11-17), as Hermes and Claude's tools write them
 // (file_path, old_string, new_string, replace_all, old_text). The other harnesses' spellings of the same argument
 // (path, filePath, oldString, oldText, maxChars…) are accepted too, since a model brings the habits of the one it
-// knows; the schemas name only ours. No tool cuts its output (Keal, 2026-11-15).
+// knows; the schemas name only ours. No tool cuts its output (2026-11-15).
 import { defineTool, params, str, num, bool, oneOf } from './registry.js';
 import { readFile, writeFile, editFile } from './files.js';
 import { fetchUrl } from './web.js';
@@ -122,9 +122,9 @@ export const webFetch = defineTool({
   },
 });
 
-// Hermes's memory tool (Keal, 2026-11-17): one tool, add / replace / remove, an entry found by a piece of its text.
-// No read: what's relevant is already in the prompt. Its two targets map onto Squiggle's two kinds of memory (Keal,
-// 2026-11-18): `user` is memory/facts.jsonl, kept for every chat; `memory` is this chat's own notes (the session's
+// Hermes's memory tool (2026-11-17): one tool, add / replace / remove, an entry found by a piece of its text.
+// No read: what's relevant is already in the prompt. Its two targets map onto Squiggle's two kinds of memory
+// (2026-11-18): `user` is memory/facts.jsonl, kept for every chat; `memory` is this chat's own notes (the session's
 // notes, shown in the prompt under "Your notes for this chat"). "Forget that…" is a remove, so a model never has to
 // save the opposite instead (LFM3 1.7B did, on the CPU, 2026-11-17).
 const userEntries = () => memory.all().map(f => ({ id: f.id, text: memory.factText(f), drop: () => memory.remove(f.id) }));

@@ -32,7 +32,7 @@ test('LFM3 1.7B: the Tilde build with WebGPU, the CPU build without; Omni stays 
 test('LFM3 1.7B and LFM3 Omni 2B are listed side by side, each once', () => {
   device({ gpu: true });
   const listed = engine.listedModels({ cloudOffered: true });
-  assert.deepEqual(listed.sort(), ['KLF3', 'KOMNI', 'SQ', 'TG4A', 'cloud'], 'the two LFM3s, Keal\'s two small models, the cloud model');
+  assert.deepEqual(listed.sort(), ['KLF3', 'KOMNI', 'SQ', 'TG4A', 'cloud'], 'the two LFM3s, the two custom small models, the cloud model');
   assert.equal(engine.MODELS.KLF3.label, 'LFM3 1.7B');
   assert.equal(engine.MODELS.WLF3QAD.label, engine.MODELS.LF3.label);
   assert.equal(engine.MODELS.KLF3.url, engine.MODELS.LF3.url, 'Tilde reads the same QAD GGUF as llama.cpp');

@@ -83,7 +83,7 @@ const join = (parts) => { const out = new Float32Array(parts.reduce((s, p) => s 
  * `silenceMs` of quiet. The threshold follows the room's noise floor. Returns { stop() }.
  */
 // Call it straight from the tap, before any await: iOS only lets an AudioContext run if it's made and resumed inside
-// the gesture (made after awaiting the microphone, it stays suspended and hears nothing; Keal's iPhone, 2026-11-17).
+// the gesture (made after awaiting the microphone, it stays suspended and hears nothing; the test iPhone, 2026-11-17).
 // One context serves every listen, so a call's later turns (started after a reply, not by a tap) keep hearing.
 let micAc = null;
 export function micContext() {
