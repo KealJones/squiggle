@@ -57,6 +57,10 @@
       "tools": ["git_clone"], "noTools": ["web_search"], "reject": "squiggle" },
     { "id": 18, "name": "Casebook 16: \"list my GitHub repos\" lists them with the tool, not the web",
       "messages": ["List my GitHub repos"],
-      "tools": ["github_list_repos"], "noTools": ["web_search", "fetch_url"], "expect": "tester/app" }
+      "tools": ["github_list_repos"], "noTools": ["web_search", "fetch_url"], "expect": "tester/app" },
+    { "id": 19, "name": "Casebook 23: \"Tell me about Olivia Rodrigo\" answers about her from a lookup, with no co-stars or songs made up (it also caught Tilde 735b0d2 giving garbage on an iPhone, 2026-11-21)",
+      "messages": ["Tell me about Olivia Rodrigo"],
+      "tools": ["web_search|wiki_lookup|web_fetch|fetch_url|bash|find"],
+      "expect": "drivers license|SOUR", "reject": "Zac Efron|Demi Lovato|edge case|\"Bad Boy\"|\"Stay\"" }
   ]
 }

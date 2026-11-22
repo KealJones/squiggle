@@ -163,7 +163,34 @@ test('case 23 (Zac Efron in High School Musical: The Series): sidebars and link-
   assert.doesNotMatch(t, /Zac Efron|Demi Lovato|Miley Cyrus|Other Famous|Taylor Swift|Privacy|Home/);
 });
 
-test('case 25 (a correct URL refused): the allowed-URL check is only for the two fine-tunes', () => {
+test('case 24 (Nina Garcia, "two sentences max"): an answer drafted in the thinking and then written out isn\'t a loop; a real one still is', async () => {
+  const { NativeConversation } = await import('../app/src/engine-wllama.js');
+  const fake = (chunks) => ({ async createChatCompletion() { return (async function* () { for (const c of chunks) yield { choices: [{ delta: c }] }; })(); } });
+  const run = async (chunks) => {
+    const conv = new NativeConversation(fake(chunks), { preface: { messages: [{ role: 'system', content: 'S' }], tools: [] }, sessionConfig: { maxOutputTokens: 512 } });
+    conv.messages.push({ role: 'user', content: 'Who is Nina Garcia? Just the Project Runway part, two sentences max.' });
+    const out = [];
+    const g = conv.generate({ thinking: true });
+    let r;
+    while (!(r = await g.next()).done) out.push(r.value);
+    return { ...r.value, content: out.map(o => o.content || '').join('') };
+  };
+  // From chat s0mwrq3gl7000yolwk (LFM3 1.7B on Tilde, 2026-11-22): the facts noted, the answer drafted, then written.
+  const S = 'is a Colombian-American fashion journalist, editor-in-chief of Elle, author, and a judge on Project Runway';
+  const drafted = await run([
+    { reasoning_content: `From the page: She ${S} since its first season. ` },
+    { reasoning_content: `Sentence 1: Nina García ${S}. Let me craft concisely.` },
+    { content: `Nina García ${S} since 2004. ` }, { content: 'She is known for her blunt critiques of the designs.' },
+  ]);
+  assert.equal(drafted.looped, false);
+  assert.doesNotMatch(drafted.content, /repeating itself/);
+  const stuck = await run([{ content: 'The answer is that the answer is the same. '.repeat(4) }]);
+  assert.equal(stuck.looped, true, 'the same words three times in the reply still stop it');
+  const stuckThinking = await run([{ reasoning_content: 'I should search the web for Nina Garcia now. '.repeat(4) }]);
+  assert.equal(stuckThinking.looped, true, 'and in the thinking');
+});
+
+test('case 26 (a correct URL refused): the allowed-URL check is only for the two fine-tunes', () => {
   // agent.js needs the browser to import; the condition is pinned in its source, like case 9.
   const src = readFileSync(new URL('../app/src/agent.js', import.meta.url), 'utf8');
   assert.match(src, /\.\.\.\(lite\(\) && !bashSurface\(\) \? \{ allowUrl:/);

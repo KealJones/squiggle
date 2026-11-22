@@ -65,14 +65,17 @@ export function loadEmbedder() {
 // Returns embeddings for texts (or null when the model isn't available). Wakes the worker when needed.
 export async function embed(texts) {
   if (!enabled) return null;
-  const todo = [...new Set(texts.filter(t => !cache.has(t)))].map(t => [t, t.slice(0, 2000)]);
+  // Phones: shorter texts in small batches. One batch of 16 texts of ~500 tokens holds about 200 MB of attention per
+  // layer, beside a chat model already near the iPhone tab's ~1.9 GB (2026-11-22: a Fresh chat's second message, the
+  // first with saved pages to rank, killed the tab before the reply started). MiniLM was trained on 256 tokens anyway.
+  const todo = [...new Set(texts.filter(t => !cache.has(t)))].map(t => [t, t.slice(0, PHONE ? 1000 : 2000)]);
   if (todo.length) {
     clearTimeout(idle);
     await wake();
     const id = nextId++;
     const vectors = await new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
-      worker.postMessage({ type: 'embed', id, texts: todo.map(([, t]) => t) });
+      worker.postMessage({ type: 'embed', id, texts: todo.map(([, t]) => t), batch: PHONE ? 2 : 16 });
     });
     todo.forEach(([t], i) => cache.set(t, vectors[i]));
   }

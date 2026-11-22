@@ -154,6 +154,17 @@ export function answerNeed(task, answer, now = Date.now()) {
   return s;
 }
 
+// A message sent while the task was working (steering, docs/harness.md "Steering"): the interrupted step goes back to
+// work with the message beside the user's answers, in their words, so the plan bends to it instead of starting over.
+export const STEERED = 'said while you were working';
+export function steerTask(task, text, now = Date.now()) {
+  task.answers = task.answers || [];
+  task.answers.push({ q: STEERED, a: truncate(String(text || ''), 1500) });
+  task.waiting = false;
+  task.status = 'active';
+  touch(task, now);
+}
+
 export function logCall(task, step, { name, args, ok, label, text }, now = Date.now()) {
   task.log.push({ step: step ? step.id : null, name, args: args && typeof args === 'object' ? args : {}, ok: ok !== false, label: label || name, text: truncate(String(text || ''), 1500) });
   if (task.log.length > MAX_LOG) task.log.splice(0, task.log.length - MAX_LOG);
@@ -370,12 +381,14 @@ export function resultsReply(task) {
 // The task that can pick up again from the new message: only the one the
 // latest reply in this conversation line belongs to (`lastTaskId`), when it is
 // waiting on an answer, or stopped and the user says to go on. A stopped task
-// whose steps are all done resumes straight to its final reply.
+// whose steps are all done resumes straight to its final reply. A reply cut off by a steering message (`steered`)
+// carries its task on with that message, whatever it says.
 const GO_ON = /^\s*(?:ok(?:ay)?[,.!\s]*)?(?:continue|keep going|go on|go ahead|resume|carry on|yes,? (?:continue|keep going))\b/i;
-export function resumable(session, threadId, text, lastTaskId) {
+export function resumable(session, threadId, text, lastTaskId, { steered = false } = {}) {
   const t = lastTaskId && session.tasks && session.tasks[lastTaskId];
   if (!t || (t.thread || null) !== (threadId || null) || t.status === 'done') return null;
   if (t.waiting) return { task: t, how: 'answer' };
+  if (steered) return { task: t, how: 'steer' };
   if (GO_ON.test(String(text || ''))) return { task: t, how: 'continue' };
   return null;
 }

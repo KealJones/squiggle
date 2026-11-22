@@ -402,9 +402,33 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   that markup: a list of 3+ items that are each only a link, and its heading, are dropped. The tense is not fixed
   here.
 - **Caught by:** tests/webpage.test.js (the `pageText` tests); tests/failures.test.js case 23.
+- **Again, 2026-11-21 (chat s0mwr0ozdb000gyowg, LFM3 1.7B on Tilde):** "Tell me about Olivia Rodrigo" first got a
+  reply about handling edge cases, nothing to do with her: Tilde 735b0d2's 64×64 prompt matmul gave zeros on an
+  iPhone (fixed in Tilde ee73201, a runtime bug, not the model's). After the fix it searched and answered well, but
+  listed "Bad Boy" and "Stay" among her songs (neither is hers) and left out GUTS. Not fixed; the eval case below
+  rejects them.
+- **Eval:** tests/eval/cases.json case 19 (runs the question on a real model).
 
+### 24. Nina Garcia, "two sentences max": stopped as "repeating itself" with no answer
 
-### 24. Thirteen minutes and eleven rounds for a short biography
+- **Asked:** "Who is Nina Garcia and what's she known for?", cut off by "Just the Project Runway part, two sentences
+  max." (steering, PR #24's preview).
+- **Model:** LFM3 1.7B on Tilde, Keal's iPhone, 2026-11-22, chats s0mwrq0pe4000i3bbb and s0mwrq3gl7000yolwk (both
+  runs of the steering eval). Tool calls: `web_search("Nina Garcia Project Runway")`, then in the second
+  `web_fetch` owiki.org/wiki/Nina_García and `cat /web/1.txt`.
+- **What it did:** found the right facts, noted them in its thinking ("From the page: She is … a judge on Project
+  Runway since its first season"), drafted the two sentences ("Sentence 1: … Let me craft concisely."), and started
+  writing them. Both replies ended in "(stopped: the model was repeating itself)": the first before any answer, the
+  second mid-sentence.
+- **Why it's bad:** the harness's fault, not the model's. Noting facts, drafting and then writing is good work for a
+  length limit. The loop guard (`NativeConversation.generate`) counted the thinking and the reply as one text, and
+  any 8 words three times in it is a loop, so the same clause noted, drafted and written tripped it.
+- **Good answer:** the two sentences it drafted: a Colombian-American fashion journalist and Elle's editor-in-chief,
+  a judge on Project Runway since its first season in 2004.
+- **Fix:** the thinking and the reply are checked apart; a loop has to repeat inside one of them.
+- **Caught by:** tests/failures.test.js case 24.
+
+### 25. Thirteen minutes and eleven rounds for a short biography
 
 - **Asked:** "Tell me about Olivia Rodrigo", then "Homie just a small summary is good".
 - **Model:** LFM3 1.7B on Tilde, Compress, 6K window, iPhone Safari (iOS 18.7 user agent, Safari 27.2), chat
@@ -412,7 +436,7 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   Eleven model rounds over the two replies, the longest prefill ~3 minutes.
 - **What it did:** searched (five good results, enough for the answer — its own thinking said "the summary is
   sufficient"), then decided to check Wikipedia anyway; guessed `en.wikipedia.org/wiki/Olivia_Rodrigo`, which the
-  allowed-URL check refused (case 25); searched again to be handed the same link; read the page; ran
+  allowed-URL check refused (case 26); searched again to be handed the same link; read the page; ran
   `grep -n -i "early life\|career\|Drivers License\|Sour\|deja vu" /web/1.txt | head -60`, which on Wikipedia is
   60 whole paragraphs, so the result was cut to fit and the next round's prefill took ~3 minutes; called `plan`
   for one step; ran out of room and checkpointed. The second reply fetched the same article again as `/web/2.txt`
@@ -437,10 +461,10 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
   (rounds, words, repeated calls) and 3–4 (the award and the tense), run as an A/B with tests/eval/ab.mjs.
 
 
-### 25. A URL it guessed right was refused, and the search that followed returned the same link
+### 26. A URL it guessed right was refused, and the search that followed returned the same link
 
-- **Asked:** as case 24.
-- **Model:** as case 24 (same chat, first reply, rounds 2–3).
+- **Asked:** as case 25.
+- **Model:** as case 25 (same chat, first reply, rounds 2–3).
 - **What it did:** called `web_fetch("https://en.wikipedia.org/wiki/Olivia_Rodrigo")` — the real article. The
   allowed-URL check refused it ("didn't come from a search result, a page you read or the user"), so the model
   searched for "Olivia Rodrigo Wikipedia" and fetched the same URL out of the results, a round later.
@@ -453,5 +477,5 @@ Models are named for what they are; the id in parentheses is Squiggle's (engine.
 - **Fix:** `agent.js` passes `allowUrl` only when `lite() && !bashSurface()` — the two fine-tunes, as the
   documentation said all along. Replies still can't carry made-up links: cases.json case 4 checks every URL in a
   reply against what the tools actually returned.
-- **Caught by:** tests/failures.test.js case 25 (the condition, pinned in the source); cases.json case 4
+- **Caught by:** tests/failures.test.js case 26 (the condition, pinned in the source); cases.json case 4
   (made-up URLs in a reply); the round it saves shows up in cases-deliberation.json case 1.

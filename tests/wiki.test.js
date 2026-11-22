@@ -146,3 +146,33 @@ test('wikidata_query: rows as compact lines; the service\'s own error comes back
   const ok = await wikidataQuery.run({ sparql: 'SELECT ...' }, { fetch: good });
   assert.match(ok.model.result, /1 row:\nn: 3/);
 });
+
+test('render brief (Fresh\'s lookup before the model answers): the first facts and newest links, and how many more and where', () => {
+  const found = pickPages(SEARCH, 'Emma Stone');
+  const facts = parseFacts(COKE), links = parseLinks(LINKS, { now: NOW }).links;
+  assert.ok(facts.length > 2 && links.length > 1);
+  const text = render({ ...found, facts, links, qid: 'Q147077' }, { now: NOW, small: true, brief: { facts: 2, links: 1, more: '`wiki Emma Stone` in bash' } });
+  const factLines = text.split('Wikidata Q147077')[1].split('\n\n')[0].split('\n').filter(l => l.startsWith('- '));
+  assert.equal(factLines.length, 2, 'the two most relevant facts');
+  assert.match(text, /\n- country: United States\n/);
+  assert.match(text, /today is 2026-11-04\):\n- The Catch \(film\), 2027-05-21 \(not out yet\): its cast member, producer\n\n/, 'the newest link only');
+  assert.match(text, new RegExp(`\\(${facts.length - 2} more facts and ${links.length - 1} older links? left out here; \`wiki Emma Stone\` in bash for all of them\\.\\)$`));
+  const full = render({ ...found, facts, links, qid: 'Q147077' }, { now: NOW, small: true });
+  assert.doesNotMatch(full, /left out/, 'the tool itself gives everything');
+  assert.equal(render({ ...found, facts: facts.slice(0, 2), links: links.slice(0, 1), qid: 'Q147077' }, { now: NOW, brief: { facts: 2, links: 1 } }).includes('left out'), false, 'nothing left out, no note');
+});
+
+test('wikiLookup brief: the whole lookup goes to a file and the note says where; nothing saved when nothing was left out', async () => {
+  const asked = [], saved = [];
+  const save = (text, main) => { saved.push({ text, main }); return '/web/7.txt'; };
+  const r = await wikiLookup('Emma Stone', { fetch: fakeFetch(asked), now: NOW, brief: { facts: 1, links: 1, save, where: (p) => `grep ${p} in bash` } });
+  assert.equal(saved.length, 1);
+  assert.equal(r.path, '/web/7.txt');
+  assert.equal(saved[0].text, r.full, 'the file holds the whole lookup');
+  assert.doesNotMatch(r.full, /left out/);
+  assert.ok(r.full.length > r.text.length);
+  assert.match(r.text, /left out here; grep \/web\/7\.txt in bash for all of them\.\)$/);
+  const roomy = await wikiLookup('Emma Stone', { fetch: fakeFetch([]), now: NOW, brief: { facts: 999, links: 999, save } });
+  assert.equal(saved.length, 1, 'all of it fit: no file');
+  assert.equal(roomy.text, roomy.full);
+});

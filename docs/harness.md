@@ -46,6 +46,30 @@ check-in every 60 tool calls: the UI shows a "Keep going" button with the plan
 so far. Stop always works; a stopped task resumes when the next message says
 "continue" (only the task of the latest reply resumes).
 
+### Steering (2026-11-21)
+
+A message sent while a reply is being written steers it: the send button stays a send button while something is
+typed (an empty box still means Stop), and sending cuts the reply off where it is. Nothing is spliced into the prompt
+by hand. The reply is saved as far as it got (`steered: true`, no "(stopped)" note, its thinking kept for the UI),
+the message goes in as an ordinary user turn, and the next prompt is built the usual way, so the model's own template
+does the splicing: it closes the cut-off thinking and turn (`<think>…</think>text<|im_end|>` for LFM3), puts the
+person's turn after it and opens a fresh reply. The cut-off turn keeps its thinking (`context.js steeredThinking`,
+the last 2,000 characters) inside its own `<think>`, while it's the latest assistant turn: LFM3's template drops
+thinking from turns before the latest user message unless `preserve_thinking` is on, and this is that switch for the
+one turn, so the model picks up where its head was instead of thinking it all again (and the prompt reads the same as
+the one in the cache through that thinking). Once it has answered, the steered turn loses its thinking like any past
+turn. Only the native-tool path carries it (`engine-wllama.js nativeMessages`: LFM3 on Tilde, WebLLM and llama.cpp);
+the other runtimes drop it. The tool calls it made are in "Tool calls you made" either way.
+
+In step mode the plan isn't dropped: the stopped task carries on (`tasks.resumable` with `steered`, `how: 'steer'`)
+and the message joins the user's answers in the step prompt as "said while you were working", so the step that was
+interrupted runs again with it and the model can revise the plan if the message asks for something else. A question
+the task asked (`ask_user`) is answered as before. Several messages sent before the cut lands go in as one; a message
+typed in a different line (a thread while the main chat replies) just stops the reply, as before. Once the reply is
+written (`ui.onWritten`, before the conversation is closed, which can take a moment on Tilde) the button is Send
+again and a message waits for the turn to finish as the next one; the reply isn't marked cut off (2026-11-22: a
+finished reply got "cut off by your next message").
+
 A step that won't move ends the turn with a question instead of spinning:
 a reply with no text and no tool call (thinking cut off at the output cap) or a
 reply stopped for repeating itself gets two nudges, then the user is asked
@@ -279,7 +303,13 @@ Fresh replays nothing just for being recent. Before the model sees a message, th
    and gets none. Other matches are listed so a wrong pick can be corrected. It takes a Q-id too. The model can
    call it itself in any mode (it's in the gate). Checked live on 2026-11-04: Jaws → Spielberg, Zig → inception
    2015, Emma Stone's birth date, her newest released film, Coca-Cola's inventor (the drink and the company are
-   different items).
+   different items). The lookup before the model answers is brief (`wikiTop`, render's `brief`): the 15 most
+   relevant facts and 8 newest links for small models (40 and 25 for big ones), then how many were left out; the
+   whole lookup is saved as a /web file like a fetched page (`saveWebPage`, Keal's idea), and the note says to grep
+   it, so the rest is a grep away, not a second lookup. The full list didn't fit: on Keal's iPhone
+   (2026-11-22, LFM3 1.7B, 6K window) Olivia Rodrigo's 175 links made the lookup 17K characters, and the first
+   message of a Fresh chat failed with "no longer fits in the model's window". Called by the model, it gives
+   everything.
 5. **`wikidata_query(sparql)`** runs the model's own SPARQL, errors returned as the service wrote them. Big models
    only (`agent.js BIG_ONLY`): Qwen3 0.6B's SPARQL didn't run (docs/measurements-2026-11-04.md).
 
@@ -290,6 +320,12 @@ Fresh replays nothing just for being recent. Before the model sees a message, th
    every lookup for that chat, labelled as the user's own earlier instructions, still in force.
 7. **The user's own things stay off the web.** A question about the user ("what's my name?", "my dog") that memory
    or this chat has something for gets no web or Wikipedia search ("What's my name?" went to both, 2026-11-09).
+   Nor does a message about the chat itself or how to reply (`prefetch.js aboutTheChat`: "can you be more concise in
+   the future?", "only reply with 2 sentences", "the secret password for this chat is …"; all three went to the web,
+   2026-11-22), and "this chat" is the chat, not a pronoun pointing back (it borrowed "tell pizza" into the search).
+   The last exchange always comes along, at least as one line, and in full when the message points back or answers
+   it: a correction or reply ("no, …", "I meant …", "yeah the second one") has no pronoun, and "No,
+   GitHub.com/kealjones/squiggle" reached LFM3 without the question it corrected (2026-11-22).
 
 8. **Tools that fit.** A real `find` lists matching tools; the seeded one didn't, so a gated model asked to pull a
    repo saw only an unrelated old chat (failures.md case 15). Tools that clearly fit the message (named, or an

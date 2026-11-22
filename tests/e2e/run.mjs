@@ -828,6 +828,80 @@ await check('a full agent turn through the UI (scripted model): tools, untrusted
   assert.deepEqual(errs, []);
 });
 
+await check('steering: a message sent mid-reply cuts it off, keeps what was written, and goes in as the next turn', async () => {
+  const D = await device('steer');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  await D.page.fill('#input', 'STEERTEST write me the long version');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .body')].some(b => /long version, first/.test(b.textContent)), null, { timeout: 20000 });
+  const btn = '#composer button[type="submit"]';
+  assert.equal(await D.page.getAttribute(btn, 'aria-label'), 'Stop', 'an empty box stops');
+  await D.page.fill('#input', 'Shorter please');
+  assert.match(await D.page.getAttribute(btn, 'aria-label'), /^Send now/, 'something typed steers');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .body')].some(b => /Plain answer to: Shorter please/.test(b.textContent)), null, { timeout: 20000 });
+  const r = await D.page.evaluate(async () => {
+    const sessions = await import('/src/sessions.js');
+    const s = sessions.list().find(x => x.messages.some(m => /^STEERTEST/.test(m.content)));
+    const convs = window.__engineLog.filter(x => x.type === 'conversation');
+    return {
+      msgs: s.messages.map(m => [m.role, m.content, Boolean(m.steered), m.thinking || '']),
+      history: convs.at(-1).messages.map(m => [m.role, m.content]),
+      carried: convs.at(-1).messages.at(-1).thinking,
+      note: document.querySelector('#messages .steered')?.textContent,
+      label: document.querySelector('#composer button[type="submit"]').getAttribute('aria-label'),
+    };
+  });
+  assert.deepEqual(r.msgs.map(m => m.slice(0, 3)), [
+    ['user', 'STEERTEST write me the long version', false],
+    ['assistant', 'Starting on the long version, first', true],
+    ['user', 'Shorter please', false],
+    ['assistant', 'Plain answer to: Shorter please', false],
+  ], 'the cut-off reply is kept as written, with no "(stopped)" note');
+  assert.equal(r.msgs[1][3], 'Going long.', 'its thinking stays viewable');
+  // The new turn sees the cut-off reply as the model's own last turn, before the person's message.
+  assert.deepEqual(r.history.slice(-2), [['user', 'STEERTEST write me the long version'], ['model', 'Starting on the long version, first']]);
+  assert.equal(r.carried, 'Going long.', 'and its thinking goes with it');
+  assert.match(r.note || '', /cut off by your next message/);
+  assert.equal(r.label, 'Send');
+});
+
+await check('steering: a message sent after the reply is written (the turn still tidying up) is the next message, not a steer', async () => {
+  const D = await device('steer-done');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  await D.page.evaluate(() => { window.__slowClose = 3000; });
+  await D.page.fill('#input', 'First question');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .body')].some(b => /Plain answer to: First question/.test(b.textContent)), null, { timeout: 20000 });
+  const btn = '#composer button[type="submit"]';
+  assert.equal(await D.page.getAttribute(btn, 'aria-label'), 'Send', 'the reply is written: the button is Send again');
+  await D.page.evaluate(() => { window.__slowClose = 0; });
+  await D.page.fill('#input', 'Second question');
+  assert.equal(await D.page.getAttribute(btn, 'aria-label'), 'Send', 'not "Send now"');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .body')].some(b => /Plain answer to: Second question/.test(b.textContent)), null, { timeout: 20000 });
+  const r = await D.page.evaluate(async () => {
+    const sessions = await import('/src/sessions.js');
+    const s = sessions.list().find(x => x.messages.some(m => m.content === 'First question'));
+    return { msgs: s.messages.map(m => [m.role, m.content, Boolean(m.steered)]), note: Boolean(document.querySelector('#messages .steered')) };
+  });
+  assert.deepEqual(r.msgs, [
+    ['user', 'First question', false], ['assistant', 'Plain answer to: First question', false],
+    ['user', 'Second question', false], ['assistant', 'Plain answer to: Second question', false],
+  ]);
+  assert.equal(r.note, false, 'no "cut off by your next message"');
+});
+
 await check('AI-managed context: budget line, steps attach earlier results, checkpoints carry on fresh (in a step and in chat)', async () => {
   const D = await device('managed');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
@@ -1155,6 +1229,19 @@ await check('Fresh context: nothing replayed; a lookup (earlier exchange, web) g
   assert.match(res.found, /Tools for this \(ready to call\):\n- git_clone\(/);
   assert.deepEqual(res.tools, ['git_clone']);
   assert.doesNotMatch(res.found, /Web search for|Wikipedia/);
+  // A correction with nothing to point back with (2026-11-22, "No, GitHub.com/kealjones/squiggle"): the exchange it
+  // answers comes along in full.
+  await ask('No, github.com/tester/other', 5);
+  r = await last();
+  assert.match(r.input[0].content[0].response.found, /Earlier in this chat:\n- The user asked "freshtest can you pull github\.com\/tester\/app"; you answered:\n/);
+  // A rule for the chat: no web search, and no words borrowed from the question before ("tell pizza The secret…").
+  await ask('freshtest in this chat from now on keep it to two sentences', 6);
+  r = await last();
+  const rule = r.input[0].content ? r.input[0].content[0].response.found : '';
+  assert.doesNotMatch(rule, /Web search for|Wikipedia/);
+  assert.ok(!r.trail.some(t => /searched the web/.test(t)), JSON.stringify(r.trail));
+  // Any message brings the last exchange, at least as one line.
+  assert.match(rule, /Earlier in this chat:\n- The user asked "No, github\.com\/tester\/other"/);
   assert.deepEqual(D.page.errors.filter(e => !/favicon|404|Failed to load resource/.test(e)), []);
 });
 
@@ -1572,6 +1659,15 @@ await check('bash tool (lab): just-bash on the workspace; /home writes sync; git
   assert.notEqual(r.code, 0);
   r = await run('echo scratch > /tmp/a && cat /tmp/a');
   assert.equal(r.out.trim(), 'scratch');
+  // The chat's /tmp outlives a call, and isn't saved with the chat: a session that went through JSON (a reload, a
+  // sync) still redirects (2026-11-22: "this.tmp.writeFile is not a function" on every `2>/dev/null`).
+  r = await run('cat /tmp/a && ls /nope 2>/dev/null || echo fine');
+  assert.equal(r.code, 0, JSON.stringify(r));
+  assert.match(r.out, /scratch[\s\S]*fine/, JSON.stringify(r));
+  assert.doesNotMatch(await D.page.evaluate(() => JSON.stringify(window.__bashSession)), /__bash|InMemory|retainedBytes/);
+  await D.page.evaluate(() => { window.__bashSession = JSON.parse(JSON.stringify({ ...window.__bashSession, __bashTmp: { data: {}, retainedBytes: 0 }, __bashLinks: {} })); });
+  r = await run('echo again > /tmp/b 2>/dev/null && cat /tmp/b');
+  assert.equal(r.out.trim(), 'again', JSON.stringify(r));
   // No tool cuts output (2026-11-15): big output comes back whole, however small the room.
   r = await run('seq 1 20000', 2000);
   assert.ok(!r.saved, JSON.stringify(r).slice(0, 300));

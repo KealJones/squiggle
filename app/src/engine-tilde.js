@@ -15,7 +15,7 @@ import { snapshotPoint } from './prefix-cache.js';
 import * as media from './media.js';
 
 // Pinned to a commit: Tilde is plain ES modules, loaded straight from jsDelivr (no build step on either side).
-export const TILDE_SHA = 'a7234e47c1b3fb3872412361c32d281896ce6fba';
+export const TILDE_SHA = 'ee7320121ea4db62005aecbe4c60d8d43ab900dd';
 const defaultUrl = () => `https://cdn.jsdelivr.net/gh/KealJones/tilde@${TILDE_SHA}/src/index.js`;
 // Tests and local checks can point it elsewhere (globalThis.SQUIGGLE_TILDE = '/tilde/src/index.js').
 const libUrl = () => globalThis.SQUIGGLE_TILDE || defaultUrl();
