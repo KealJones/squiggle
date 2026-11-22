@@ -12,6 +12,8 @@ try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require(
 
 const VK = ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan', '--use-angle=vulkan', '--use-vulkan=native', '--disable-vulkan-surface'];
 const SETS = [
+  // Google Chrome itself, as the Chrome team's Colab T4 guide uses (developer.chrome.com/docs/web-platform/webgpu/colab-headless).
+  { name: 'Google Chrome + Vulkan', channel: 'chrome', args: VK },
   { name: 'new headless + Vulkan', channel: 'chromium', args: VK },
   { name: 'new headless + Vulkan + webgpu-developer', channel: 'chromium', args: [...VK, '--enable-dawn-features=allow_unsafe_apis', '--enable-webgpu-developer-features'] },
   { name: 'headless shell + Vulkan', channel: undefined, args: VK },
@@ -62,10 +64,13 @@ for (const set of SETS) {
     browser = await chromium.launch({ headless: true, args: set.args, ...(set.channel ? { channel: set.channel } : {}) });
     const page = await browser.newPage();
     await page.goto('https://example.com/').catch(() => page.goto('about:blank'));
-    const r = await Promise.race([page.evaluate(probe), new Promise((_, no) => setTimeout(() => no(new Error('probe timed out (60 s)')), 60000))]);
-    const gpuPage = await browser.newPage().then(async (p) => { await p.goto('chrome://gpu').catch(() => {}); return p.evaluate(() => document.body.innerText.slice(0, 2500)).catch(() => ''); });
+    let r;
+    try { r = await Promise.race([page.evaluate(probe), new Promise((_, no) => setTimeout(() => no(new Error('probe timed out (60 s)')), 60000))]); }
+    catch (e) { r = { error: String(e && e.message || e).split('\n')[0] }; }
     console.log(JSON.stringify({ set: set.name, ms: Date.now() - t0, ...r }));
-    if (/WebGPU:|Vulkan/.test(gpuPage)) console.log('  chrome://gpu: ' + gpuPage.split('\n').filter(l => /WebGPU|Vulkan|GL_RENDERER|Hardware|Disabled|Software/i.test(l)).slice(0, 14).join(' | '));
+    const gpuPage = await browser.newPage().then(async (p) => { await p.goto('chrome://gpu').catch(() => {}); await new Promise((ok) => setTimeout(ok, 1500)); return p.evaluate(() => document.body.innerText).catch(() => ''); }).catch(() => '');
+    const lines = gpuPage.split('\n').filter(l => /WebGPU|Vulkan|GL_RENDERER|GL_VENDOR|Driver vendor|Driver version|GPU0|GPU1|Disabled|Software|crash|error|fail/i.test(l));
+    if (lines.length) console.log('  chrome://gpu: ' + lines.slice(0, 24).join(' | '));
     if (!found && !r.error && !r.fallback && !/swiftshader|llvmpipe|software/i.test(`${r.vendor} ${r.architecture} ${r.description}`)) found = set;
   } catch (e) {
     console.log(JSON.stringify({ set: set.name, ms: Date.now() - t0, error: String(e && e.message || e).split('\n')[0] }));

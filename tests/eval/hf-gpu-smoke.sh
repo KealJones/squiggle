@@ -13,7 +13,10 @@ step "GPU"
 nvidia-smi || echo "no nvidia-smi"
 
 step "packages"
-apt-get update -qq >/dev/null && apt-get install -y -qq git curl ca-certificates libvulkan1 vulkan-tools >/dev/null 2>&1 && echo installed
+apt-get update -qq >/dev/null && apt-get install -y -qq git curl ca-certificates libvulkan1 vulkan-tools dbus libglvnd0 libegl1 libgl1 >/dev/null 2>&1 && echo installed
+# The Chrome team's Colab T4 recipe starts dbus first (developer.chrome.com/docs/web-platform/webgpu/colab-headless).
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/var/run/dbus/system_bus_socket"
+(/etc/init.d/dbus start || service dbus start || (mkdir -p /run/dbus && dbus-daemon --system --fork)) >/dev/null 2>&1 && echo "dbus started"
 echo "NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-unset} (HF reserves it: a job can't set it)"
 
 # Without "graphics" in those capabilities the toolkit mounts CUDA but not the driver's Vulkan libraries. They're
@@ -54,6 +57,7 @@ step "squiggle@$BRANCH"
 git clone -q --depth 1 -b "$BRANCH" https://github.com/KealJones/squiggle /work/squiggle && cd /work/squiggle
 npm ci --silent >/dev/null 2>&1; npm i --no-save --silent playwright >/dev/null 2>&1
 npx --yes playwright install --with-deps chromium >/dev/null 2>&1 && echo "chromium installed"
+npx --yes playwright install --with-deps chrome >/dev/null 2>&1 && echo "google chrome installed"
 
 step "WebGPU probe"
 node tests/eval/gpu-probe.mjs | tee /tmp/probe.txt
