@@ -10,6 +10,7 @@ import * as storage from './storage.js';
 import * as recipes from './recipes.js';
 import * as tasks from './tasks.js';
 import { COMMON_FROM } from './tools/common.js';
+import { saveWebPage } from './tools/workspace.js';
 import { find as findAll, renderFind, nothingFor, NOTHING, PAST_CHAT, PUSHBACK, checkQuery, rerankWeb, urlLedger, rankTools } from './find.js';
 import * as prefetchLib from './prefetch.js';
 import { buildEntities, resolve as resolveRefs, renderRefs } from './refs.js';
@@ -357,11 +358,12 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
       }).catch(e => console.warn('attachments', e));
     }
     const turn = new Turn({ session, threadId, shown, attachments, ui, signal, userMsg, resume });
+    let cutOff = false;
     ui.onStart && ui.onStart(turn.reply);
     tasks.compactOld(session);
     try {
       const lastReply = [...sessions.lineMessages(session, threadId)].reverse().find(m => m.role === 'assistant');
-      const goOn = resume ? null : tasks.resumable(session, threadId, shown, lastReply && lastReply.task);
+      const goOn = resume ? null : tasks.resumable(session, threadId, shown, lastReply && lastReply.task, { steered: Boolean(lastReply && lastReply.steered) });
       if (resume) await turn.resumeFrom(resume);
       else if (goOn) {
         const task = goOn.task;
@@ -369,6 +371,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
         const note = attachments.length ? attachmentPrompt(attachments, 0).note : '';
         if (note) task.attachNote = [task.attachNote, note].filter(Boolean).join('\n');
         if (goOn.how === 'answer') tasks.answerNeed(task, shown);
+        else if (goOn.how === 'steer') tasks.steerTask(task, shown);
         else { task.status = 'active'; tasks.touch(task); }
         sessions.saveTask(session, task);
         await turn.steps(task);
@@ -388,6 +391,11 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
       if (turn.task && turn.task.status === 'active' && !turn.task.waiting) { turn.task.status = 'stopped'; sessions.saveTask(session, turn.task); }
       ui.onError && ui.onError(e);
     } finally {
+      // Whether a steer cut this reply off is decided here, when the writing has ended: a message sent while the
+      // conversation is being closed (Tilde's cache snapshot can take a moment) comes after a finished reply and is
+      // just the next message (Keal, 2026-11-22: a reply that had finished got "cut off by your next message").
+      cutOff = Boolean(signal && signal.aborted && signal.reason === 'steer');
+      ui.onWritten && ui.onWritten();
       await turn.close();
       // Stopped mid-task: mark it so "continue" can pick it up (and the checklist doesn't show it as running).
       const t = turn.task;
@@ -404,7 +412,11 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
     reply.model = replyModel();
     if (turn.thinking) reply.thinking = turn.thinking.slice(-20000); // shown in the UI only; never replayed to the model
     if (turn.task) reply.task = turn.task.id;
-    if (signal?.aborted && !reply.content) reply.content = '_(stopped)_';
+    // Steering (chat.js `steer`): the person sent a message while this was being written. The reply is kept as far as
+    // it got, with no "(stopped)" note: it's replayed as the model's own turn (the template closes its thinking and
+    // the turn like any other), the person's message follows as the next user turn, and the model starts again.
+    if (cutOff) reply.steered = true;
+    else if (signal?.aborted && signal.reason !== 'steer' && !reply.content) reply.content = '_(stopped)_';
     // The whole context, exactly as sent, in its own file (it's big: system prompts, every schema, every result),
     // read by "What the model saw". Kept with "Save tool results and prompts" on (the default).
     if (settings.debugTools && turn.trace.convs.length) {
@@ -627,7 +639,9 @@ class Turn {
     // a labelled system section.
     let seed = null;
     if (fresh()) {
-      const pf = await this.prefetch(prep.line);
+      engine.markStage('looking things up before the reply');
+      let pf;
+      try { pf = await this.prefetch(prep.line); } finally { engine.markStage(null); }
       if (pf) {
         for (const it of pf.items) ctx.report.items.push({ ...it, placed: 'lookup before the model' });
         if (engine.seedsToolHistory && engine.seedsToolHistory()) seed = pf;
@@ -1369,10 +1383,17 @@ class Turn {
     return { query: (res.args && res.args.query) || query, items: rerankWeb(query, items, { vecs, k: lite() ? 3 : 5 }), answer: res.answer || null };
   }
 
-  // wiki_lookup for Fresh's lookup: the text it found (already marked as outside content), or null.
+  // wiki_lookup for Fresh's lookup: the text it found (already marked as outside content), or null. Brief: the most
+  // relevant facts and newest links only, the whole lookup saved as a /web file, and a note of how many more and
+  // where (2026-11-22, Keal's iPhone: Olivia Rodrigo's 175 links made the lookup 17K characters, and the first
+  // message didn't fit LFM3's 6K window).
   async wikiTop(query, why = 'looked up first') {
     const call = { function: { name: 'wiki_lookup', arguments: { query } } };
-    const res = await runTool(call, { session: this.session, threadId: this.threadId, pageCards: lite() });
+    // The whole lookup is saved under /web (Keal's idea, 2026-11-22), so the rest is a grep away, not a second lookup.
+    const where = (path) => bashSurface() ? `grep ${path} in bash` : `grep or read_file ${path}`;
+    const save = (text, main) => saveWebPage(main.url + '#wikidata', `${main.title} (Wikipedia and Wikidata)`, text);
+    const brief = lite() ? { facts: 15, links: 8, where, save } : { facts: 40, links: 25, where, save };
+    const res = await runTool(call, { session: this.session, threadId: this.threadId, pageCards: lite(), brief });
     this.noteUrls(res);
     this.toolEvent({ name: 'wiki_lookup', label: `${res.label} (${why})`, ok: res.ok, args: res.args, error: res.model && res.model.error }, res.model);
     if (!res.ok || !res.model || !res.model.found) return null;
@@ -1407,7 +1428,11 @@ class Turn {
     // the reply in full (Fresh replays nothing else, and "it" was lost, 2026-11-09).
     // The exchange is the question before this one (prevQ: past "thanks!" and the like), not just the latest.
     const last = (prevQ && exchanges.find(x => x.ref === prevQ.id)) || null;
+    // The last exchange always comes along, at least as one line, whatever the ranking says: a message is read
+    // against the one before it, and a reply with nothing to point back with ("No, github.com/…") was lost
+    // (2026-11-22). In full when the message points back or answers it.
     if (last && prefetchLib.pointsBack(said)) found = [{ ...last, full: true, score: 1 }, ...found.filter(x => x.id !== last.id)];
+    else if (last && !found.some(x => x.id === last.id)) found = [{ ...last, score: 1 }, ...found];
     // A named question only takes memory that names them too (find's rule: "Emma Stone's real name" ≠ "the user's name").
     const asked = prefetchLib.namesIn(query).map(n => n.toLowerCase());
     const facts = (await memory.recall(query, 6).catch(() => [])).filter(r => r.score >= 0.3)
@@ -1426,7 +1451,9 @@ class Turn {
     // The best one, and a second only when it scores close to it: a small model takes a list as a to-do.
     const fit = fitTools(said, modelTools());
     const toolJob = fit.length > 0;
-    const lookup = pushback || (!toolJob && !prefetchLib.doRequest(said));
+    // Nor is a message about the chat itself or how to reply (2026-11-22: "Can you be more concise in the future?" and
+    // "The secret password for this chat is …" went to the web).
+    const lookup = pushback || (!toolJob && !prefetchLib.doRequest(said) && !prefetchLib.aboutTheChat(said));
     // Wikipedia and Wikidata when the question names someone or something, alongside the web search.
     const wikiP = lookup && !own && prefetchLib.namesIn(query).length && modelTools().some(t => t.name === 'wiki_lookup') ? this.wikiTop(query) : null;
     if (this.webOn() && !own && lookup) {

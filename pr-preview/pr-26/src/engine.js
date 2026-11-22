@@ -426,6 +426,9 @@ let engineFast = null;
 // is reported, then null when done, so a tab killed mid-reply can say so.
 let progress = () => {};
 export const setProgress = (fn) => { progress = fn || (() => {}); };
+// The same marker for work before the reply that can still run out of memory (Fresh's lookup), so a tab killed there
+// says so on the next open instead of leaving no trace (2026-11-22). null clears it.
+export const markStage = (st) => progress(st);
 let engineSmall = '';
 // Small models (wllama): how the last load ran ({ gpu, threads, compat }) and the last reply's speed.
 export const smallInfo = () => (engine && engine.info) || null;
@@ -570,6 +573,9 @@ export async function respond(conv, input, opts = {}) {
 }
 
 async function respondOnce(conv, input, { onText, onThinking, signal, resume, track } = {}) {
+  // Stopped (or steered) between rounds, e.g. while a tool ran: the abort event has already fired, so the listener
+  // below would never cancel this generation and it would run to the end.
+  if (signal && signal.aborted) return { text: '', thinking: '', toolCalls: [] };
   activeConv = conv;
   const local = MODELS[loadedModel] && MODELS[loadedModel].runtime !== 'cloud';
   if (local) progress('writing the reply');

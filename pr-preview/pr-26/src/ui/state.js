@@ -7,6 +7,9 @@ export const state = {
   busy: false,              // a reply is running
   controller: null,         // AbortController of the running turn
   liveTurn: null,           // { ctx, tools, task } while a reply runs in the main chat (for the details sidebar)
+  liveLine: null,           // the thread id of the reply being written (null: the main chat), for steering
+  steer: null,              // { text, threadId, files }: a message that cut the running reply off, sent once it stops
+  replyWritten: false,      // the running turn's reply is written (it's only tidying up): a message sent now isn't a steer
   modelState: 'unknown',    // 'missing' | 'downloading' | 'loading' | 'ready' | 'unsupported' | 'error' | 'idle' | 'unknown'
   modelPromise: null,       // the in-flight ensureModel()
   cloudOffered: false,      // the relay offers the cloud model (checked once at startup)

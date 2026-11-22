@@ -62,7 +62,7 @@ export function renderThreadPanel(focus = false) {
   scroll.append(list);
   const input = h('textarea', { rows: 1, placeholder: 'Reply in thread', 'aria-label': 'Reply in thread' });
   const form = h('form', { class: 'composer' }, h('div', { class: 'composer-inner' }, input, h('button', { class: 'icon-btn', type: 'submit', 'aria-label': 'Send' }, icon(state.busy ? 'i-stop' : 'i-send'))));
-  setupComposer(form, input, (text, files) => send(text, t.id, files));
+  setupComposer(form, input, (text, files) => send(text, t.id, files), t.id);
   c.append(scroll, form);
   scrollDown(scroll);
   if (focus) input.focus();

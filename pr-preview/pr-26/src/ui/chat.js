@@ -160,6 +160,7 @@ export function messageEl(m, { inThread, streaming, session }) {
     // Saved thinking stays viewable (collapsed); it's never sent back to the model.
     if (m.thinking) col.append(h('details', { class: 'thinking' }, h('summary', {}, 'Thinking'), h('div', {}, m.thinking)));
     col.append(h('div', { class: 'body', html: md(agent.scrubFakeToolNotes(m.content)) }));
+    if (m.steered) col.append(h('div', { class: 'muted steered' }, '↪ cut off by your next message'));
   } else {
     col.append(h('div', { class: 'body' }, m.content));
     if (m.attachments && m.attachments.length) {
@@ -307,9 +308,28 @@ export function rerender() {
 }
 
 // ── Composer ───────────────────────────────────────────────────────────────
-export function setupComposer(form, input, onSend) {
+// `threadId`: the conversation line this composer writes to (null: the main chat), so a message typed while that
+// line's reply is being written steers it (see `steer`), and one typed in another line just stops it as before.
+export function setupComposer(form, input, onSend, threadId = null) {
   const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, innerHeight * 0.4) + 'px'; };
+  // While a reply is being written the button stops it; with something typed for that reply's line it sends it as
+  // a steer instead (clear the box to get Stop back).
+  const steers = () => state.busy && !state.replyWritten && state.liveLine === threadId && Boolean(input.value.trim() || files.length);
+  const paint = () => {
+    if (!form.isConnected) { painters.delete(paint); return; }
+    const btn = form.querySelector('button[type="submit"]');
+    if (!btn) return;
+    // A reply already written (the turn is only tidying up) takes a message as the next one, not as a steer.
+    const mode = !state.busy || state.replyWritten ? 'send' : steers() ? 'steer' : 'stop';
+    if (btn.dataset.mode === mode) return;
+    btn.dataset.mode = mode;
+    btn.replaceChildren(icon(mode === 'stop' ? 'i-stop' : 'i-send'));
+    btn.setAttribute('aria-label', mode === 'stop' ? 'Stop' : mode === 'steer' ? 'Send now (cuts the reply off here and redirects it)' : 'Send');
+    btn.title = mode === 'steer' ? 'Send now: cuts the reply off here and redirects it' : '';
+  };
+  painters.add(paint);
   input.addEventListener('input', grow);
+  input.addEventListener('input', paint);
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !matchMedia('(hover: none)').matches) { e.preventDefault(); form.requestSubmit(); }
   });
@@ -321,6 +341,7 @@ export function setupComposer(form, input, onSend) {
   const notice = h('div', { class: 'attach-notice', role: 'status', hidden: true });
   const picker = h('input', { type: 'file', multiple: true, hidden: true, 'aria-hidden': 'true', tabindex: '-1', class: 'attach-input' });
   const renderChips = () => {
+    paint();
     chips.hidden = !files.length;
     chips.replaceChildren(...files.map(f => h('span', { class: 'chip' }, h('span', { class: 'chip-name' }, f.name), h('span', { class: 'chip-size' }, fmtSize(f.size)),
       h('button', { type: 'button', class: 'chip-x', 'aria-label': `Remove ${f.name}`, onclick: () => { files = files.filter(x => x !== f); renderChips(); } }, icon('i-close')))));
@@ -405,24 +426,48 @@ export function setupComposer(form, input, onSend) {
 
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    if (state.busy) { state.controller && state.controller.abort(); return; }
+    const steering = steers();
+    const queued = state.busy && state.replyWritten;   // sent once the finished turn has tidied up
+    if (state.busy && !steering && !queued) { state.controller && state.controller.abort(); return; }
     const text = input.value.trim();
     if (!text && !files.length) return;
     const sending = files;
     input.value = ''; grow();
     files = []; renderChips(); notice.hidden = true;
-    onSend(text, sending);
+    if (steering || queued) steer(text, threadId, sending);
+    else onSend(text, sending);
   });
 }
 
+// Each composer's send button painter (setupComposer). A thread panel's composer is made again each time it opens,
+// so painters whose form has left the page are dropped as they're met.
+const painters = new Set();
 function setBusy(on) {
   state.busy = on;
   keepAwake('reply', on);   // a phone that sleeps mid-reply loses the GPU (iOS Safari)
-  for (const btn of document.querySelectorAll('.composer button[type="submit"]')) {
+  for (const paint of [...painters]) paint();
+  for (const btn of document.querySelectorAll('.composer button[type="submit"]')) if (!btn.dataset.mode) {
     btn.replaceChildren(icon(on ? 'i-stop' : 'i-send'));
     btn.setAttribute('aria-label', on ? 'Stop' : 'Send');
   }
   renderSide();
+}
+
+// Steering (Keal, 2026-11-21): a message sent while a reply is being written cuts that reply off where it is and goes
+// in as the next user turn, like any message; the model then starts again with both in view. Nothing is spliced into
+// the prompt by hand: the reply is saved as far as it got (agent.js marks it `steered`, no "(stopped)" note), and the
+// next prompt is built the usual way, so the model's own template closes the cut-off thinking and turn, puts the
+// person's turn after it, and opens a new reply (the cached prompt prefix is reused up to there). An unfinished plan
+// carries on with the message as the person's word (tasks.js `steerTask`). Several messages sent before the cut-off
+// lands go in as one.
+export function steer(text, threadId, files = []) {
+  if (!state.busy || !state.controller) { send(text, threadId, files); return; }
+  const prev = state.steer;
+  state.steer = prev
+    ? { text: [prev.text, text].filter(Boolean).join('\n\n'), threadId, files: prev.files.concat(files) }
+    : { text, threadId, files };
+  // The reply was already written: the message waits for the turn to finish and goes in as the next one.
+  if (!state.replyWritten && !state.controller.signal.aborted) state.controller.abort('steer');
 }
 
 // ── A turn ─────────────────────────────────────────────────────────────────
@@ -466,6 +511,8 @@ export async function send(text, threadId, files = [], resumed = null) {
   const vc = !threadId && state.call ? state.call.ctl : null; // a voice call speaks this reply as it streams
   const liveTools = [];
   if (!threadId) state.liveTurn = { ctx: null, tools: liveTools, task: null };
+  state.liveLine = threadId || null;
+  state.replyWritten = false;
   setBusy(true);
   const controller = state.controller = new AbortController();
   try {
@@ -516,16 +563,21 @@ export async function send(text, threadId, files = [], resumed = null) {
           card.querySelector('button').focus({ preventScroll: true });
         },
         onReload: () => { toast('Getting the GPU back: reloading, then the reply carries on.'); setTimeout(() => location.reload(), 300); },
+        onWritten: () => { state.replyWritten = true; for (const paint of [...painters]) paint(); },
         onDone: (m) => { smooth.stop(); if (vc) vc.finish(agent.scrubFakeToolNotes(m.content)); live.replaceWith(messageEl(m, { inThread: Boolean(threadId), session })); if (!threadId) $('#chat-title').textContent = session.title; state.liveTurn = null; renderSide(); },
       },
     });
   } finally {
     smooth.stop();
-    setBusy(false);
     state.controller = null;
+    setBusy(false);
     if (!threadId) { state.liveTurn = null; renderSide(); }
     if (threadId) renderChat(); // refresh reply count on the parent
     updateComposerNote();       // small models: the last reply's speed
+    // A steer (see `steer`): the cut-off reply is saved, so the person's message goes in now, as its own turn.
+    const next = state.steer;
+    state.steer = null;
+    if (next) setTimeout(() => send(next.text, next.threadId, next.files), 0);
   }
 }
 
