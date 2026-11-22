@@ -1,0 +1,8 @@
+{"set":"Google Chrome + Vulkan","ms":1963,"error":"requestAdapter returned null"}
+{"set":"new headless + Vulkan","ms":1765,"error":"requestAdapter returned null"}
+{"set":"new headless + Vulkan + webgpu-developer","ms":1909,"error":"requestAdapter returned null"}
+{"set":"headless shell + Vulkan","ms":2600,"vendor":"nvidia","architecture":"turing","device":"","description":"","fallback":false,"f16":true,"maxBuffer":4294967292,"maxStorage":2147483644,"matmulMs":12.6,"gflops":170}
+{"set":"repo default","ms":13446,"vendor":"google","architecture":"swiftshader","device":"","description":"","fallback":true,"f16":false,"maxBuffer":1073741824,"maxStorage":1073741824,"matmulMs":1453.8,"gflops":1}
+
+HARDWARE WEBGPU: headless shell + Vulkan
+SQUIGGLE_CHROME_ARGS="--enable-unsafe-webgpu --ignore-gpu-blocklist --enable-features=Vulkan,VulkanFromANGLE,DefaultANGLEVulkan --use-angle=vulkan --use-vulkan=native --disable-vulkan-surface"
