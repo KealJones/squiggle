@@ -57,11 +57,14 @@ const probe = async () => {
 };
 
 let found = null;
+// Every set gets at most two minutes in all (launching, the probe, chrome://gpu): a GPU process that hangs instead of
+// failing (Kaggle's T4s, 2026-11-22: a run sat for 45 min with no output) moves on to the next set.
+const within = (ms, p, what) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(`${what} timed out (${ms / 1000} s)`)), ms))]);
 for (const set of SETS) {
   let browser;
   const t0 = Date.now();
-  try {
-    browser = await chromium.launch({ headless: true, args: set.args, ...(set.channel ? { channel: set.channel } : {}) });
+  try { await within(120000, (async () => {
+    browser = await chromium.launch({ headless: true, timeout: 60000, args: set.args, ...(set.channel ? { channel: set.channel } : {}) });
     const page = await browser.newPage();
     await page.goto('https://example.com/').catch(() => page.goto('about:blank'));
     let r;
@@ -72,12 +75,12 @@ for (const set of SETS) {
     const lines = gpuPage.split('\n').filter(l => /WebGPU|Vulkan|GL_RENDERER|GL_VENDOR|Driver vendor|Driver version|GPU0|GPU1|Disabled|Software|crash|error|fail/i.test(l));
     if (lines.length) console.log('  chrome://gpu: ' + lines.slice(0, 24).join(' | '));
     if (!found && !r.error && !r.fallback && !/swiftshader|llvmpipe|software/i.test(`${r.vendor} ${r.architecture} ${r.description}`)) found = set;
-  } catch (e) {
+  })(), 'this set'); } catch (e) {
     console.log(JSON.stringify({ set: set.name, ms: Date.now() - t0, error: String(e && e.message || e).split('\n')[0] }));
-  } finally { await browser?.close().catch(() => {}); }
+  } finally { await within(10000, browser?.close() || Promise.resolve(), 'closing').catch(() => {}); }
 }
 if (found) {
   console.log(`\nHARDWARE WEBGPU: ${found.name}`);
   console.log(`SQUIGGLE_CHROME_ARGS="${found.args.join(' ')}"${found.channel ? ` SQUIGGLE_CHANNEL=${found.channel}` : ''}`);
 } else console.log('\nNO HARDWARE WEBGPU: every set came back with no adapter or a software one');
-process.exit(found ? 0 : 2);
+process.exit(found ? 0 : 2);   // exit even if a hung browser is still holding the event loop

@@ -56,18 +56,18 @@ vulkaninfo --summary 2>&1 | grep -v XDG_RUNTIME_DIR | head -60
 step "squiggle@$BRANCH"
 git clone -q --depth 1 -b "$BRANCH" https://github.com/KealJones/squiggle /work/squiggle && cd /work/squiggle
 npm ci --silent >/dev/null 2>&1; npm i --no-save --silent playwright >/dev/null 2>&1
-npx --yes playwright install --with-deps chromium >/dev/null 2>&1 && echo "chromium installed"
-npx --yes playwright install --with-deps chrome >/dev/null 2>&1 && echo "google chrome installed"
+timeout 600 npx --yes playwright install --with-deps chromium >/dev/null 2>&1 && echo "chromium installed"
+timeout 600 npx --yes playwright install --with-deps chrome >/dev/null 2>&1 && echo "google chrome installed"
 
 step "WebGPU probe"
-node tests/eval/gpu-probe.mjs | tee /tmp/probe.txt
+timeout 900 node tests/eval/gpu-probe.mjs | tee /tmp/probe.txt
 ENVLINE=$(grep '^SQUIGGLE_CHROME_ARGS=' /tmp/probe.txt || true)
 if [ -z "$ENVLINE" ]; then step "no hardware WebGPU: stopping here"; exit 2; fi
 eval "export $ENVLINE"
 
 step "case 1 on Tilde (LFM3 1.7B, Compress)"
 T0=$(date +%s)
-node tests/eval/run.mjs --model KLF3 --mode compact --set cases-deliberation.json --cases 1 --timeout 600 --out /tmp/case1.json --verbose 2>&1 | tail -60
+timeout 1500 node tests/eval/run.mjs --model KLF3 --mode compact --set cases-deliberation.json --cases 1 --timeout 600 --out /tmp/case1.json --verbose 2>&1 | tail -60
 echo "wall for load + case: $(( $(date +%s) - T0 )) s"
 step "result"
 node -e 'const r=require("/tmp/case1.json"); console.log(JSON.stringify(r, (k, v) => typeof v === "string" && v.length > 1500 ? v.slice(0, 1500) + "…" : v, 1).slice(0, 12000))' 2>&1 || echo "no result file"
