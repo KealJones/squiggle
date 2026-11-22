@@ -4,6 +4,8 @@ import * as storage from '../storage.js';
 import * as sessions from '../sessions.js';
 import * as memory from '../memory.js';
 import * as recipes from '../recipes.js';
+import * as agent from '../agent.js';
+import { ownPrompt, toolPrefs, TOOLS, DATE } from '../prompt.js';
 import { resolveAgentPath } from '../guard.js';
 import { pfs, walk } from '../git.js';
 import { contextMode } from '../context.js';
@@ -13,6 +15,7 @@ import { estTokens } from '../util.js';
 import { state } from './state.js';
 import { messageEl, setupComposer, send } from './chat.js';
 import { renderSettingsPanel } from './settings-panel.js';
+import { renderSide } from './side.js';
 
 export function openDrawer(title, panel) {
   state.drawerPanel = panel;
@@ -35,6 +38,75 @@ export function openPanel(name, arg) {
   else if (name === 'files') renderFilesPanel('/home');
   else if (name === 'settings') renderSettingsPanel();
   else if (name === 'context') renderContextPanel(arg);
+  else if (name === 'prompt') renderPromptPanel();
+}
+
+// ── System prompt and tools ───────────────────────────────────────────────────
+// This chat's own system prompt and tool choices (prompt.js). Both start from what Squiggle gives this chat's model
+// and context type; whatever is saved unchanged stays Squiggle's (so it follows later changes to it).
+export function renderPromptPanel() {
+  const session = state.current;
+  if (!session) return;
+  const c = openDrawer('Prompt and tools', 'prompt');
+  const built = agent.promptTemplate(session);
+  const own = ownPrompt(session);
+  const input = h('textarea', { class: 'prompt-editor', spellcheck: 'false', 'aria-label': 'System prompt for this chat' });
+  input.value = own ?? built;
+  const count = h('span', { class: 'hint' });
+  const status = h('span', { class: 'hint' });
+  const update = () => {
+    count.textContent = `about ${estTokens(input.value)} tokens`;
+    status.textContent = input.value === built ? 'Squiggle\'s prompt' : input.value.trim() ? 'Edited' : 'Empty: no prompt from Squiggle';
+  };
+  input.addEventListener('input', update);
+  update();
+
+  // One row per tool: on/off, and its description (open the row to edit it).
+  const rows = agent.chatToolList(session);
+  const toolRow = (r) => {
+    const box = h('input', { type: 'checkbox', checked: r.on ? true : null, 'aria-label': `Offer ${r.name} in this chat` });
+    const text = h('textarea', { class: 'tool-desc', spellcheck: 'false', rows: 3, 'aria-label': `Description of ${r.name}` });
+    text.value = r.text;
+    const mark = h('span', { class: 'hint tool-mark' });
+    const sync = () => {
+      r.on = box.checked; r.text = text.value;
+      mark.textContent = [r.on ? '' : 'off', r.text !== r.description ? 'edited' : ''].filter(Boolean).join(' · ');
+      row.classList.toggle('off', !r.on);
+    };
+    const reset = h('button', { class: 'side-link', type: 'button', onclick: () => { text.value = r.description; sync(); } }, 'Squiggle\'s description');
+    const row = h('details', { class: 'tool-row' },
+      h('summary', {}, h('label', { onclick: (e) => e.stopPropagation() }, box, h('code', {}, r.name)), mark),
+      text, reset);
+    box.addEventListener('change', sync);
+    text.addEventListener('input', sync);
+    sync();
+    return row;
+  };
+  const toolList = h('div', { class: 'tool-list' }, rows.map(toolRow));
+  const allOn = h('button', { class: 'side-link', type: 'button', onclick: () => {
+    for (const r of rows) { r.on = true; r.text = r.description; }
+    toolList.replaceChildren(...rows.map(toolRow));
+  } }, 'All on, Squiggle\'s descriptions');
+
+  const save = h('button', { class: 'btn primary', onclick: () => {
+    session.systemPrompt = input.value === built ? null : input.value;
+    session.chatTools = toolPrefs(rows);
+    sessions.touch(session);
+    toast(session.systemPrompt == null && !session.chatTools ? 'This chat uses Squiggle\'s prompt and tools.' : 'Saved. The next reply in this chat uses it.');
+    renderSide();
+  } }, 'Save');
+  const reset = h('button', { class: 'btn', onclick: () => { input.value = built; update(); } }, 'Reset prompt to Squiggle\'s');
+  const clear = h('button', { class: 'btn', onclick: () => { input.value = ''; update(); input.focus(); } }, 'Clear prompt');
+  c.append(h('div', { class: 'drawer-body prompt-panel' },
+    h('p', { class: 'hint', style: 'margin-top:0' }, 'The system prompt and tools for this chat only, used for every reply, plan step and final answer. ',
+      h('code', {}, TOOLS), ' becomes the list of tool names (a line with only it is dropped when there are none), ',
+      h('code', {}, DATE), ' today\'s date. Memory and notes are still added as usual. Empty means no prompt from Squiggle. Check the result under "What the model saw".'),
+    input,
+    h('div', { class: 'row prompt-bar' }, status, count),
+    h('h3', { class: 'prompt-sub' }, 'Tools'),
+    h('p', { class: 'hint' }, 'What this chat\'s model is offered. A tool that\'s off isn\'t offered or named, and is refused if the model calls it anyway. Open a tool to edit its description (its parameters keep theirs). done comes with plan.'),
+    toolList, allOn,
+    h('div', { class: 'row side-actions prompt-actions' }, save, reset, clear)));
 }
 
 // ── Threads ────────────────────────────────────────────────────────────────
