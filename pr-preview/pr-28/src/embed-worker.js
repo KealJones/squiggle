@@ -26,8 +26,9 @@ self.onmessage = async (e) => {
     if (m.type === 'load') { self.postMessage({ type: 'ready' }); return; }
     if (m.type === 'embed') {
       const vectors = [];
-      for (let i = 0; i < m.texts.length; i += 16) {
-        const out = await extractor(m.texts.slice(i, i + 16), { pooling: 'mean', normalize: true });
+      const n = m.batch || 16;   // embed.js: 2 on phones, where memory is tight
+      for (let i = 0; i < m.texts.length; i += n) {
+        const out = await extractor(m.texts.slice(i, i + n), { pooling: 'mean', normalize: true });
         for (const row of out.tolist()) vectors.push(Float32Array.from(row));
       }
       self.postMessage({ type: 'vectors', id: m.id, vectors }, vectors.map(v => v.buffer));

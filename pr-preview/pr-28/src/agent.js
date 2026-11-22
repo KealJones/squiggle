@@ -633,7 +633,9 @@ class Turn {
     // a labelled system section.
     let seed = null;
     if (fresh()) {
-      const pf = await this.prefetch(prep.line);
+      engine.markStage('looking things up before the reply');
+      let pf;
+      try { pf = await this.prefetch(prep.line); } finally { engine.markStage(null); }
       if (pf) {
         for (const it of pf.items) ctx.report.items.push({ ...it, placed: 'lookup before the model' });
         if (engine.seedsToolHistory && engine.seedsToolHistory()) seed = pf;
