@@ -485,6 +485,41 @@ test('the thinking budget is for the whole reply: a round after a tool result do
   assert.ok(got.filter(x => x.thinking).map(x => x.thinking).join('').includes(thinkSpentNote(8)));
 });
 
+test('with the budget spent, one more round may call a tool; after that the tools are off and the round answers', async () => {
+  const { NativeConversation, SPENT_TOOL_ROUNDS, toolsOffNote } = await import('../app/src/engine-wllama.js');
+  assert.equal(SPENT_TOOL_ROUNDS, 1);
+  const seen = [];
+  const call = (id) => [{ tool_calls: [{ index: 0, id, function: { name: 'web_search', arguments: '{"query":"x"}' } }] }];
+  const script = [
+    Array.from({ length: 20 }, (_, i) => ({ reasoning_content: `r${i} ` })),   // spends the budget
+    call('c1'),                                                                   // the retry with thinking off calls a tool
+    call('c2'),                                                                   // the grace round: still allowed
+    [{ content: 'Three Grammys. ' }, ...call('c3')],                              // tools off: the call is dropped
+  ];
+  const w = { async createChatCompletion(p) {
+    seen.push(p);
+    const deltas = script[seen.length - 1] || [{ content: 'late' }];
+    return (async function* () { for (const d of deltas) { if (p.abortSignal.aborted) return; yield { choices: [{ delta: d }] }; } })();
+  } };
+  const conv = new NativeConversation(w, { preface: { messages: [{ role: 'system', content: 'S' }], tools: TOOLS, extra_context: { enable_thinking: true } }, sessionConfig: { maxOutputTokens: 256, thinkBudget: 8 } });
+  const run = async (input) => { const got = []; for await (const x of conv.sendMessageStreaming(input)) got.push(x); return got; };
+  const result = (id) => [{ role: 'tool', tool_call_id: id, content: [{ name: 'web_search', response: 'r' }] }];
+  const listed = (p) => (p.tools || []).filter(t => !t.defer_loading && !(t.function && t.function.defer_loading)).length;
+
+  const a = await run('What Grammys has she won?');
+  assert.ok(a.some(x => x.tool_calls), 'the round that spent the budget may still call');
+  const b = await run(result('c1'));
+  assert.ok(b.some(x => x.tool_calls), 'one round after it may call too (to read what it fetched)');
+  assert.equal(listed(seen[2]), TOOLS.length);
+  const c = await run(result('c2'));
+  assert.equal(listed(seen[3]), 0, 'no tool is listed once they are off');
+  assert.equal((seen[3].tools || []).length, TOOLS.length, 'but every one is still sent (deferred), for tool_reference parts in history');
+  assert.ok(!c.some(x => x.tool_calls), 'a call written with the tools off is not run');
+  assert.equal(c.filter(x => x.content).map(x => x.content).join('').trim(), 'Three Grammys.');
+  assert.ok(c.filter(x => x.thinking).map(x => x.thinking).join('').includes(toolsOffNote));
+  assert.ok(!conv.messages.at(-1).tool_calls, 'the dropped call is not kept in history either');
+});
+
 test('the fenced path with the budget spent carries on from a closed think block, in one call', async () => {
   const { Conversation, ENOUGH_THINKING } = await import('../app/src/engine-wllama.js');
   const seen = [];

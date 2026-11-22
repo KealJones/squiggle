@@ -551,6 +551,11 @@ can't continue a half-written turn), and the first try's thinking stays attached
 Rule 2 above ("never trim thinking to save time") stands: this is not about time. A 0.6B model thought
 until the 1,024-token output cap and never answered, three turns in a row; the window, not the clock, sets
 the budget. The UI shows the note in the thinking view.
+The budget is for the whole reply, not each round. Once it is spent a native model gets one more tool round
+(to read what its last call fetched), and after that the tools are off: they're sent deferred, so none is
+listed, and a call written anyway is dropped, so the round is the answer. With thinking off and the tools
+still there, LFM3 1.7B kept calling them (10 rounds for "What Grammys has Olivia Rodrigo won?", the #26
+A/B, 2026-11-22).
 
 **Thinking inside a tool round.** The Qwen3, Qwen3.5 and Gemma 4 cards all say past turns' thinking leaves
 the history, except within a tool round: the thinking that led to a call stays while its results are
