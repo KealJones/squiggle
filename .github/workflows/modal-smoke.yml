@@ -30,6 +30,9 @@ jobs:
       - name: Smoke test on a Modal T4
         run: |
           set -o pipefail
+          # A secret pasted with a trailing newline breaks Modal's auth header ("Invalid metadata value"): trim both.
+          export MODAL_TOKEN_ID="$(printf %s "$MODAL_TOKEN_ID" | tr -d '[:space:]')"
+          export MODAL_TOKEN_SECRET="$(printf %s "$MODAL_TOKEN_SECRET" | tr -d '[:space:]')"
           mkdir -p out
           modal run tests/eval/modal_smoke.py --branch "${GITHUB_REF_NAME}" 2>&1 | tee out/modal.log
       - name: Log tail as an annotation (readable through the checks API)
