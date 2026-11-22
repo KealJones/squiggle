@@ -357,6 +357,7 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
       }).catch(e => console.warn('attachments', e));
     }
     const turn = new Turn({ session, threadId, shown, attachments, ui, signal, userMsg, resume });
+    let cutOff = false;
     ui.onStart && ui.onStart(turn.reply);
     tasks.compactOld(session);
     try {
@@ -389,6 +390,11 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
       if (turn.task && turn.task.status === 'active' && !turn.task.waiting) { turn.task.status = 'stopped'; sessions.saveTask(session, turn.task); }
       ui.onError && ui.onError(e);
     } finally {
+      // Whether a steer cut this reply off is decided here, when the writing has ended: a message sent while the
+      // conversation is being closed (Tilde's cache snapshot can take a moment) comes after a finished reply and is
+      // just the next message (Keal, 2026-11-22: a reply that had finished got "cut off by your next message").
+      cutOff = Boolean(signal && signal.aborted && signal.reason === 'steer');
+      ui.onWritten && ui.onWritten();
       await turn.close();
       // Stopped mid-task: mark it so "continue" can pick it up (and the checklist doesn't show it as running).
       const t = turn.task;
@@ -408,8 +414,8 @@ export function runTurn({ session, threadId = null, text, attachments = [], ui =
     // Steering (chat.js `steer`): the person sent a message while this was being written. The reply is kept as far as
     // it got, with no "(stopped)" note: it's replayed as the model's own turn (the template closes its thinking and
     // the turn like any other), the person's message follows as the next user turn, and the model starts again.
-    if (signal?.aborted && signal.reason === 'steer') reply.steered = true;
-    else if (signal?.aborted && !reply.content) reply.content = '_(stopped)_';
+    if (cutOff) reply.steered = true;
+    else if (signal?.aborted && signal.reason !== 'steer' && !reply.content) reply.content = '_(stopped)_';
     // The whole context, exactly as sent, in its own file (it's big: system prompts, every schema, every result),
     // read by "What the model saw". Kept with "Save tool results and prompts" on (the default).
     if (settings.debugTools && turn.trace.convs.length) {

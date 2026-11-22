@@ -871,6 +871,37 @@ await check('steering: a message sent mid-reply cuts it off, keeps what was writ
   assert.equal(r.label, 'Send');
 });
 
+await check('steering: a message sent after the reply is written (the turn still tidying up) is the next message, not a steer', async () => {
+  const D = await device('steer-done');
+  const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));
+  await D.ctx.route(appUrl + '/src/engine.js', r => r.fulfill({ contentType: 'text/javascript', body: fake }));
+  await D.page.evaluate(cfg => T.storage.useStorage(cfg), CFG);
+  await D.page.reload();
+  await D.page.waitForSelector('#app:not([hidden])');
+  await D.page.click('#new-chat');
+  await D.page.evaluate(() => { window.__slowClose = 3000; });
+  await D.page.fill('#input', 'First question');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .body')].some(b => /Plain answer to: First question/.test(b.textContent)), null, { timeout: 20000 });
+  const btn = '#composer button[type="submit"]';
+  assert.equal(await D.page.getAttribute(btn, 'aria-label'), 'Send', 'the reply is written: the button is Send again');
+  await D.page.evaluate(() => { window.__slowClose = 0; });
+  await D.page.fill('#input', 'Second question');
+  assert.equal(await D.page.getAttribute(btn, 'aria-label'), 'Send', 'not "Send now"');
+  await D.page.press('#input', 'Enter');
+  await D.page.waitForFunction(() => [...document.querySelectorAll('.msg.assistant .body')].some(b => /Plain answer to: Second question/.test(b.textContent)), null, { timeout: 20000 });
+  const r = await D.page.evaluate(async () => {
+    const sessions = await import('/src/sessions.js');
+    const s = sessions.list().find(x => x.messages.some(m => m.content === 'First question'));
+    return { msgs: s.messages.map(m => [m.role, m.content, Boolean(m.steered)]), note: Boolean(document.querySelector('#messages .steered')) };
+  });
+  assert.deepEqual(r.msgs, [
+    ['user', 'First question', false], ['assistant', 'Plain answer to: First question', false],
+    ['user', 'Second question', false], ['assistant', 'Plain answer to: Second question', false],
+  ]);
+  assert.equal(r.note, false, 'no "cut off by your next message"');
+});
+
 await check('AI-managed context: budget line, steps attach earlier results, checkpoints carry on fresh (in a step and in chat)', async () => {
   const D = await device('managed');
   const fake = readFileSync(new URL('./fake-engine.js', import.meta.url));

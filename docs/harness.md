@@ -65,7 +65,10 @@ In step mode the plan isn't dropped: the stopped task carries on (`tasks.resumab
 and the message joins the user's answers in the step prompt as "said while you were working", so the step that was
 interrupted runs again with it and the model can revise the plan if the message asks for something else. A question
 the task asked (`ask_user`) is answered as before. Several messages sent before the cut lands go in as one; a message
-typed in a different line (a thread while the main chat replies) just stops the reply, as before.
+typed in a different line (a thread while the main chat replies) just stops the reply, as before. Once the reply is
+written (`ui.onWritten`, before the conversation is closed, which can take a moment on Tilde) the button is Send
+again and a message waits for the turn to finish as the next one; the reply isn't marked cut off (2026-11-22: a
+finished reply got "cut off by your next message").
 
 A step that won't move ends the turn with a question instead of spinning:
 a reply with no text and no tool call (thinking cut off at the output cap) or a
