@@ -20,14 +20,17 @@ echo "NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-unset} (HF reserv
 # user-space only, so the same version's installer can supply them: extract it and copy in what isn't there.
 VER=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ')
 LIB=/usr/lib/x86_64-linux-gnu
-if [ -n "$VER" ] && ! ldconfig -p | grep -q libGLX_nvidia; then
+# The test is whether Vulkan sees the GPU, not whether a library file exists: HF's T4 (driver 620.70.06, capabilities
+# compute,utility) has a libGLX_nvidia that loads but can't create a Vulkan instance (webgpu-smoke-3).
+if [ -n "$VER" ] && ! vulkaninfo --summary 2>/dev/null | grep -qi "deviceName.*\(nvidia\|tesla\)"; then
   echo "no Vulkan driver mounted: fetching NVIDIA $VER user-space libraries"
   for url in "https://us.download.nvidia.com/tesla/$VER/NVIDIA-Linux-x86_64-$VER.run" \
              "https://us.download.nvidia.com/XFree86/Linux-x86_64/$VER/NVIDIA-Linux-x86_64-$VER.run"; do
     curl -fsSLo /tmp/nv.run "$url" && break
   done
   if [ -s /tmp/nv.run ] && sh /tmp/nv.run -x --target /opt/nv >/dev/null 2>&1; then
-    for f in /opt/nv/*.so."$VER"; do [ -e "$LIB/$(basename "$f")" ] || cp "$f" "$LIB/"; done
+    # Every library of this version, over whatever partial copy is there (same version, so CUDA's own are unchanged).
+    cp -f /opt/nv/*.so."$VER" "$LIB/"
     ldconfig
     mkdir -p /usr/share/vulkan/icd.d
     echo '{"file_format_version":"1.0.0","ICD":{"library_path":"libGLX_nvidia.so.0","api_version":"1.3"}}' > /usr/share/vulkan/icd.d/nvidia_icd.json
@@ -45,7 +48,7 @@ fi
 ls -la /usr/lib/x86_64-linux-gnu/ | grep -i -E "nvidia|libGLX" | head -20
 
 step "vulkaninfo"
-vulkaninfo --summary 2>&1 | head -40
+vulkaninfo --summary 2>&1 | grep -v XDG_RUNTIME_DIR | head -60
 
 step "squiggle@$BRANCH"
 git clone -q --depth 1 -b "$BRANCH" https://github.com/KealJones/squiggle /work/squiggle && cd /work/squiggle
