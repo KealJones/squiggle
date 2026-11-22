@@ -42,10 +42,17 @@ export function namesIn(text) {
 const PRONOUN = /\b(he|him|his|she|her|hers|they|them|their|theirs|it|its|that|this|those|these|one|ones|same)\b/i;
 const FOLLOW_ON = /^\s*(and|also|but|so|ok(ay)?|awesome|cool|nice|great|thanks|what about|how about|and what about|what else|why|how come|really)\b/i;
 
-/** The message points back at something earlier ("run that script", "what about it?"). */
+// A reply to the last exchange: a correction or an answer ("No, github.com/kealjones/squiggle", "I meant the band",
+// "yeah the second one"). It has no pronoun to point back with, but it means nothing without what it answers (Keal's
+// iPhone, 2026-11-22: "No, GitHub.com/kealjones/squiggle" reached LFM3 without the question it corrected).
+const REPLY = /^\s*(no|nope|nah|not (that|this|it|the|what)|wrong|actually|i mean|i meant|i said|i was (asking|talking)|i asked|that'?s not|instead|rather|yes|yeah|yep|yup|right|exactly|correct)\b/i;
+// "this chat", "this conversation": the chat itself, not something said earlier.
+const THE_CHAT = /\b(this|that|the) (chat|conversation|session|thread)\b/gi;
+
+/** The message points back at something earlier ("run that script", "what about it?", "no, the other one"). */
 export function pointsBack(message) {
-  const m = String(message || '');
-  return PRONOUN.test(m) || FOLLOW_ON.test(m);
+  const m = String(message || '').replace(/[‘’]/g, "'").replace(THE_CHAT, '');
+  return PRONOUN.test(m) || FOLLOW_ON.test(m) || REPLY.test(m);
 }
 
 /** A follow-up needs the question before it: it points back ("his", "that one") or carries on ("what about…")
@@ -91,6 +98,13 @@ const ARITHMETIC = /^[\s\d.,+\-*/()%x×÷^=]+\??$/;
 
 /** Plain small talk, an acknowledgement or bare arithmetic: nothing to look up. */
 export const smallTalk = (message) => SMALL_TALK.test(String(message || '')) || ARITHMETIC.test(String(message || '').trim());
+
+// About the chat or how to answer, not about something in the world: a rule for the replies ("can you be more concise
+// in the future?", "only reply with 2 sentences"), or something to keep ("the secret password for this chat is …").
+// Fresh searched the web for both (2026-11-22, Keal's iPhone).
+const ABOUT_THE_CHAT = /\b(from now on|in the future|going forward|for the rest of|(this|the|our) (chat|conversation|session)|(be|keep it|keep (your )?(answers|replies)) (a bit |a lot |more |less |much |way )*(brief|concise|short|shorter|terse|detailed|longer|simple|casual|formal)|(reply|respond|answer|talk|write) (with|in) (like |only |just )?(\d+|one|two|three|a few) (sentences?|words?|lines?|paragraphs?|bullets?)|remember (that|this)|(my|our) (secret |code )?(password|passphrase)|the (secret|code) (password|passphrase|word)|code ?word|call me|my name is)\b/i;
+/** The message is about the chat itself or how to reply, so there's nothing to look up on the web. */
+export const aboutTheChat = (message) => ABOUT_THE_CHAT.test(String(message || '').replace(/[‘’]/g, "'"));
 
 // ── Ranking what's saved ───────────────────────────────────────────────────
 
