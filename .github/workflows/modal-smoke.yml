@@ -1,0 +1,43 @@
+name: modal-smoke
+# The GPU smoke test on a Modal T4 (tests/eval/modal_smoke.py): on a push to gpu-smoke that changes it, or by hand.
+# The log and results are committed back to the branch under docs/evals/gpu-smoke/ (a push from Actions with the
+# workflow's own token starts no new run).
+on:
+  push:
+    branches: [gpu-smoke]
+    paths: ["tests/eval/modal_smoke.py", "tests/eval/hf-gpu-smoke.sh", "tests/eval/gpu-probe.mjs", ".github/workflows/modal-smoke.yml"]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: modal-smoke
+  cancel-in-progress: false
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q modal
+      - name: Smoke test on a Modal T4
+        run: |
+          set -o pipefail
+          mkdir -p out
+          modal run tests/eval/modal_smoke.py --branch "${GITHUB_REF_NAME}" 2>&1 | tee out/modal.log
+      - name: Commit the log and results
+        if: always()
+        run: |
+          dir="docs/evals/gpu-smoke/modal-$(date -u +%Y%m%d-%H%M)"
+          mkdir -p "$dir" && cp -r out/. "$dir/"
+          git config user.name "modal-smoke"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$dir"
+          git diff --cached --quiet && exit 0
+          git commit -q -m "gpu smoke on Modal: results"
+          for i in 1 2 3; do git pull -q --rebase origin "${GITHUB_REF_NAME}" && git push -q origin "HEAD:${GITHUB_REF_NAME}" && break; sleep 5; done
