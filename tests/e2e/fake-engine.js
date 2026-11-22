@@ -66,7 +66,8 @@ export const background = (fn) => lock(fn);
 
 export async function conversation(cfg) {
   log.push({ type: 'conversation', system: cfg.system, messages: cfg.messages, tools: cfg.tools.map(t => t.name), known: cfg.known || [], deferred: cfg.tools.filter(t => t.defer_loading).map(t => t.name), descriptions: Object.fromEntries(cfg.tools.map(t => [t.name, t.description])) });
-  return { cfg, delete: async () => {}, cancel() {}, replaceResult(msg, response) { log.push({ type: 'replace', name: msg.content[0].name, response }); return true; } };
+  // window.__slowClose: closing takes that long (Tilde's cache snapshot), so a message can arrive after the reply.
+  return { cfg, delete: async () => { if (window.__slowClose) await new Promise(r => setTimeout(r, window.__slowClose)); }, cancel() {}, replaceResult(msg, response) { log.push({ type: 'replace', name: msg.content[0].name, response }); return true; } };
 }
 
 const call = (name, args) => ({ text: '', thinking: '', toolCalls: [{ type: 'function', function: { name, arguments: args } }] });
