@@ -41,7 +41,7 @@ export function loadSettings() {
     saved = { ...saved, model: agent.settings.model, phoneWQ06: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
-  // LFM2.5 1.2B on WebLLM is the phone default now (Keal, 2026-11-09): phones on Qwen3 0.6B move over once.
+  // LFM2.5 1.2B on WebLLM is the phone default now (2026-11-09): phones on Qwen3 0.6B move over once.
   if (mobile && !saved.phoneLFM) {
     if (engine.hasWebGpu && engine.hasWebGpu() && ['WQ06', 'SQ', 'G3'].includes(agent.settings.model)) agent.settings.model = engine.DEFAULTS.phoneGpu;
     saved = { ...saved, model: agent.settings.model, phoneLFM: true };
@@ -54,14 +54,14 @@ export function loadSettings() {
     saved = { ...saved, smallThreads: true, autoThreads: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
-  // LFM3 1.7B is the model everywhere now (Keal, 2026-11-10): a device on one of the earlier defaults moves over once.
+  // LFM3 1.7B is the model everywhere now (2026-11-10): a device on one of the earlier defaults moves over once.
   // A model picked on purpose (the cloud model, a lab model) stays; the old ones are still in lab mode.
   if (!saved.lfm3Default) {
     if (['E4B', 'E2B', 'WLF12', 'WQ06', 'SQ', 'G3', 'WLF3'].includes(agent.settings.model)) agent.settings.model = engine.deviceModel();
     saved = { ...saved, model: agent.settings.model, lfm3Default: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
-  // Squiggle got simpler (Keal, 2026-11-10): no lab mode, no small-model / no-prompt / tool-surface / GPU switches and no
+  // Squiggle got simpler (2026-11-10): no lab mode, no small-model / no-prompt / tool-surface / GPU switches and no
   // context-size setting (each model gets its own maximum, engine.contextFor). Context is chosen per chat, before its
   // first message, and Compress is the default. Whatever an older version saved for those goes, once; a model that
   // no longer exists becomes this device's default.
@@ -114,7 +114,7 @@ export function loadSettings() {
     saved = { ...saved, recallChats: false, noChatRecall: true };
     try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); } catch {}
   }
-  // Saved tool results are on by default now (Keal, 2026-11-09): they're what the casebook and "What the model
+  // Saved tool results are on by default now (2026-11-09): they're what the casebook and "What the model
   // saw" are read from. Devices that saved the old default move over once; the switch stays in Settings → Lab.
   if (!saved.debugToolsOn) {
     agent.settings.debugTools = true;

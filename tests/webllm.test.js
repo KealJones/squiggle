@@ -92,7 +92,7 @@ test('Conversation (fenced format) over the shim passes plain text through and n
 });
 
 // iOS 27 Safari takes the GPU device away with the tab still open; WebLLM's runtime then disposes itself and every
-// call throws "Object has already been disposed" (Keal's iPhone, 2026-11-11). The shim loads the model again.
+// call throws "Object has already been disposed" (the test iPhone, 2026-11-11). The shim loads the model again.
 function disposedEngine({ afterChunks = 0, text = 'Hello' } = {}) {
   const seen = { unloaded: false };
   return {

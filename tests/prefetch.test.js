@@ -64,7 +64,7 @@ test('render labels everything as looked up, never as the user, and is empty whe
   assert.match(render({ query: 'q', web: { error: 'HTTP 503', items: [] } }), /The web search failed: HTTP 503/);
 });
 
-// Keal's messages from 2026-11-09 (LFM2.5 1.2B, Fresh context): Fresh looked up "Sick, Sick, Sick" and the actress
+// Messages from 2026-11-09 (LFM2.5 1.2B, Fresh context): Fresh looked up "Sick, Sick, Sick" and the actress
 // Uhm Ji-won for them, then the model planned around the junk; and "that console.log" lost the script it meant.
 const SICK = 'Sick I only asked if you could run js which you did immediately so idk why you took so long to explain it, but anyway. can you help me write a generator js for loop function that like returns every mod 2 of 1 to 100.';
 const UHM = 'Uhm thank you for that! Can run that console.log of the generator script using run_js and share the output?';
@@ -131,7 +131,7 @@ test('render lists the tools that fit, ready to call, and says not to search the
   assert.match(text, /Call git_clone for this; don't search the web for it\.$/);
 });
 
-// Keal's iPhone, 2026-11-22 (chat s0mwrs09x4000flrh4, LFM3 1.7B, Fresh): a correction with no pronoun lost the
+// The test iPhone, 2026-11-22 (chat s0mwrs09x4000flrh4, LFM3 1.7B, Fresh): a correction with no pronoun lost the
 // question it corrected, and rules for the chat went to the web with words borrowed from the question before.
 test('replies and corrections point back; "this chat" is the chat, not something said earlier', () => {
   for (const m of ['No, GitHub.com/kealjones/squiggle', 'nope the band', 'I meant the singer', 'Actually the 2021 one', 'yeah the second one', 'not that one'])

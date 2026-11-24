@@ -1,4 +1,4 @@
-// Tilde (github.com/KealJones/tilde): Keal's own WebGPU engine for LFM3, built for iPhone Safari's limits
+// Tilde (github.com/KealJones/tilde): a custom WebGPU engine for LFM3, built for iPhone Safari's limits
 // (~1.9 GB per tab shared by JS and GPU, ~3 s per GPU command buffer). It streams the GGUF tensor by tensor, splits
 // GPU work into submits sized from measured timings, needs no shader-f16, and runs LFM3 Omni: pictures, video,
 // sound in, and the model's own voice out. Encoders load only while they're needed.
@@ -30,7 +30,7 @@ export function lib() {
 // cache alone. A model is its GGUF plus, for Omni, the encoders' mmproj.
 const filesOf = (m) => [m.url, m.mmproj].filter(Boolean);
 // Each file's size as MODELS says it (fileBytes): a load caches pieces without Tilde's size record, and with the size
-// they still count, and a download finishes them without asking the server first (Keal's iPhone, 2026-11-17: all 63
+// they still count, and a download finishes them without asking the server first (the test iPhone, 2026-11-17: all 63
 // pieces of LFM3 1.7B were there and the download sat at 0% waiting on that request).
 const sizeOf = (m, i) => (m.fileBytes && m.fileBytes[i]) || 0;
 const info = (k, m, url, i) => k.cachedFileInfo(url, 'tilde-v1', { size: sizeOf(m, i) });

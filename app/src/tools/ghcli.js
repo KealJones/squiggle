@@ -441,7 +441,7 @@ const repo = {};
 // Like gh (pkg/cmd/repo/list): the user's own repos, newest push first, 30 unless -L. At a terminal (env.tty, set by
 // tools/tty.js when stdout isn't piped or redirected) it prints gh's header and table, cut to the terminal's width
 // (env.ttyWidth: GH_FORCE_TTY's number, else gh's default 80) like the real one; otherwise gh's full tab-separated rows. It used to list only the GitHub App's first page in id order (oldest first) cut at 30, so recent repos
-// were missing and LFM3 told Keal he had no "bubbles" repo (failures.md case 20).
+// were missing and LFM3 told the user they had no "bubbles" repo (failures.md case 20).
 const REPO_LIST_FLAGS = new Set(['_', 'paths', 'multi', 'L', 'limit', 'json', 'q', 'jq', 'visibility', 'fork', 'source', 'archived', 'no-archived', 'l', 'language', 'topic']);
 const repoInfo = (x) => [x.visibility, x.fork && 'fork', x.archived && 'archived'].filter(Boolean).join(', ');
 repo.list = async (env, o) => {

@@ -120,7 +120,7 @@ function emptyState() {
     h('div', { class: 'suggestions' }, ideas.map(t => h('button', { onclick: () => { $('#input').value = t; $('#input').focus(); } }, t))));
 }
 
-// A new chat's settings, before its first message: which model and how its context is built (Keal, 2026-11-10:
+// A new chat's settings, before its first message: which model and how its context is built (2026-11-10:
 // "a little setting button before the first message, that after it's started is gone"). The context type stays for
 // the chat's life (the sidebar shows it); the model can still switch in the chat details.
 function newChatSettings() {
@@ -358,7 +358,7 @@ export function setupComposer(form, input, onSend, threadId = null) {
   attachments.setSees((kind) => Boolean(engine.hasSense && engine.hasSense(kind, sessionModel())));
   inner.insertBefore(h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Attach files', title: 'Attach files', onclick: () => picker.click() }, icon('i-attach')), input);
   // Speak a message: live dictation through the phone's own speech recognition (words appear as you talk), or, where
-  // the browser has none, LFM3 Omni writes it down once you stop (Keal, 2026-11-17: live text matters more than
+  // the browser has none, LFM3 Omni writes it down once you stop (2026-11-17: live text matters more than
   // on-device here; Omni's ears are for recordings and video). Hidden unless one of them can (model-ui.js updateComposerNote).
   let rec = null;
   const micOff = () => { rec = null; mic.classList.remove('recording'); mic.removeAttribute('aria-pressed'); mic.title = 'Speak a message'; };
@@ -453,7 +453,7 @@ function setBusy(on) {
   renderSide();
 }
 
-// Steering (Keal, 2026-11-21): a message sent while a reply is being written cuts that reply off where it is and goes
+// Steering (2026-11-21): a message sent while a reply is being written cuts that reply off where it is and goes
 // in as the next user turn, like any message; the model then starts again with both in view. Nothing is spliced into
 // the prompt by hand: the reply is saved as far as it got (agent.js marks it `steered`, no "(stopped)" note), and the
 // next prompt is built the usual way, so the model's own template closes the cut-off thinking and turn, puts the

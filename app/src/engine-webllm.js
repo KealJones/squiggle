@@ -115,11 +115,11 @@ const callChunk = (calls) => ({ choices: [{ delta: { tool_calls: calls.map((c, i
 // When the browser takes the GPU device away (iOS 27 Safari does it with the tab still open: memory pressure, the
 // phone locking, switching apps), WebLLM's TVM runtime disposes itself (Instance.dispose on device.lost) and every
 // later call throws "Object has already been disposed". The engine object still looks loaded, so without this every
-// message fails until the page is reloaded (Keal's iPhone, iOS 27.2.1, 2026-11-11).
+// message fails until the page is reloaded (the test iPhone, iOS 27.2.1, 2026-11-11).
 // "Model not loaded" is what an engine left unloaded by a failed reload says; it needs the same reload.
 export const gpuGone = (e) => /already been disposed|device (was )?lost|Instance\.dispose|GPUDevice.*(lost|destroyed)|Model not loaded/i.test(String((e && e.message) || e || ''));
 // Loading failed because the browser had no GPU to give: WebLLM's "Unable to find a compatible GPU" (requestAdapter
-// came back empty). Right after Safari's GPU process dies it can say this for a while (Keal's iPhone, 2026-11-11).
+// came back empty). Right after Safari's GPU process dies it can say this for a while (the test iPhone, 2026-11-11).
 export const noAdapter = (e) => /compatible GPU|requestAdapter|no (webgpu )?adapter/i.test(String((e && e.message) || e || ''));
 
 // Why the GPU went away. WebLLM only logs this to the console (no use on a phone), so every device it asks for is
@@ -154,7 +154,7 @@ function watchDevices() {
 }
 // WebGPU refuses a copy from a buffer to itself ("copyBufferToBuffer: source equals destination not valid"), even
 // between two parts that don't touch. TVM makes exactly that copy when one of the model's states is copied inside
-// its own storage: forking a sequence, which prompt reuse does (prefix-cache.js). On Keal's iPhone that error was
+// its own storage: forking a sequence, which prompt reuse does (prefix-cache.js). On the test iPhone that error was
 // the first thing wrong before the GPU was lost for good (incident 2026-11-11 19:35, three minutes before reuse
 // was reverted). So such a copy goes through a scratch buffer instead: out, then back in, in the same encoder.
 // Every other copy is passed on untouched. Old scratch buffers are left to the garbage collector, not destroyed:
@@ -186,7 +186,7 @@ export function routeSelfCopies(device, Encoder = globalThis.GPUCommandEncoder) 
   return true;
 }
 
-// Prompt reuse (prefix-cache.js) is on by default since 2026-11-15 (passed on Keal's iPhone): open the app once with
+// Prompt reuse (prefix-cache.js) is on by default since 2026-11-15 (passed on the test iPhone): open the app once with
 // ?reuse=0 and this browser keeps it off (a Home Screen app has no address bar), ?reuse=1 turns it back on.
 const REUSE_KEY = 'squiggle-reuse';
 export function reuseWanted(search = globalThis.location && location.search, store = globalThis.localStorage) {
@@ -224,7 +224,7 @@ export const REVIVE_WAITS = [0, 500, 1500, 3000, 6000];
 // command buffer runs, or waits in the queue, for more than about 3 seconds; the device is lost with reason
 // "destroyed" (onnxruntime#33753: a ~900-token prompt read in one go on an iPhone, iOS 27.2). WebLLM reads a
 // prompt in prefill_chunk_size pieces (256 tokens for our LFM3 builds, ~2.5 s each on an iPhone 16) and queues them
-// all without waiting, so the later pieces time out in the queue: Keal's iPhone lost the GPU on "Hi" (a ~1,000-token
+// all without waiting, so the later pieces time out in the queue: the test iPhone lost the GPU on "Hi" (a ~1,000-token
 // prompt) from iOS 27.2.1 on, with the build that ran there on iOS 26. On WebKit the pieces are made smaller and each
 // one waits for the GPU to finish. The compiled kernels take any length up to the build's chunk size, so it's a
 // runtime setting; it reaches into WebLLM's pipeline (loadedModelIdToPipeline, prefillChunkSize, embedAndForward,
@@ -364,7 +364,7 @@ export async function createShim(mlc, contextSize, onStage = () => {}, { format 
     } catch (e) {
       if (!gpuGone(e) || (signal && signal.aborted)) throw e;
       const first = gpuLossDetail(lostNotes || device);
-      // iOS gives a hidden tab no GPU (Keal's iPhone, 2026-11-15: 11 s of "no GPU yet" while he was in another app), so
+      // iOS gives a hidden tab no GPU (the test iPhone, 2026-11-15: 11 s of "no GPU yet" while the user was in another app), so
       // the reload waits until the page shows again. If it still can't get one, reloadToResume: the page reloads and
       // picks the reply up from its checkpoint (resume.js), the same path as a tab iOS killed.
       await new Promise((r) => whenVisible(r, 0));

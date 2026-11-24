@@ -1,9 +1,9 @@
 # Squiggle — notes for engineers and coding agents
 
-A browser-only agent: LFM3 on Keal's own WebGPU engine, Tilde (LFM3 Omni 2B: it also sees pictures and video, hears
+A browser-only agent: LFM3 on Tilde, a custom WebGPU engine (LFM3 Omni 2B: it also sees pictures and video, hears
 sound and speaks; 2026-11-16; LFM3 1.7B beside it since 2026-11-17), on phones and computers, or LFM3 1.7B's GGUF on the CPU (wllama) without WebGPU
-(`engine.DEFAULTS`); the WebLLM build (our own MLC build) is the GPU fallback; optionally Gemma 4 26B on the relay's Workers AI. Keal's
-own Squiggle Small and Tiny Gemma 4 stay as experimental options; every other model was removed (2026-11-10), the
+(`engine.DEFAULTS`); the WebLLM build (our own MLC build) is the GPU fallback; optionally Gemma 4 26B on the relay's Workers AI. The
+custom Squiggle Small and Tiny Gemma 4 stay as experimental options; every other model was removed (2026-11-10), the
 runtimes (LiteRT, wllama, WebLLM) and tool formats stay so adding one is a registry entry. State is
 synced through a private GitHub "storage repo", via a Cloudflare Worker that relays GitHub requests browsers
 can't make (device-flow login, git smart-HTTP). The app is static: either the Worker serves it (wrangler.toml,
@@ -133,7 +133,7 @@ docs/                   harness.md (the agent loop contract), failures.md (caseb
   (docs/harness.md "Deferred tools"); one called blind with arguments that don't fit gets its definition back instead of running. The prompt lists the repos cloned here every turn (`refreshClones`). Bash has directory links (`ln -s`, kept for the chat like /tmp); `git clone URL /tmp/x` clones into /repos/<name> and links /tmp/x to it. Commands that reach the network, GitHub or the sandbox go through `runTool` with the
   agent's context, so a push still needs the approval card and curl fetches any URL (the allowed-URL check stays on fetch_url for the two fine-tunes); the whole output is
   wrapped as untrusted; `.git` stays unreachable (`guard.resolveAgentPath`).
-- No tool cuts its output (Keal, 2026-11-15): bash, curl, read_file, grep, git log, run_js, wiki and the rest return
+- No tool cuts its output (2026-11-15): bash, curl, read_file, grep, git log, run_js, wiki and the rest return
   everything asked for. The prompts say the window is small; keeping output short (grep, head, tail, a line range,
   `> /tmp/file`) is the model's job. Commands that mirror real ones (git, gh) keep the real tool's defaults and
   nothing tighter: `gh repo list` shows 30 unless -L, and at a terminal cuts its table to 80 columns with "..." like
@@ -217,7 +217,7 @@ reply keeps what it returned (`tools[].result`, untrusted wrappers stripped, cut
 under "Result" in the tool list and synced with the session file. Web searches say which provider answered
 (the relay's `source`: langsearch, tavily, tavily (past year), duckduckgo, wikipedia) in the label.
 
-## Incidents (incidents.js): read these before asking Keal what happened
+## Incidents (incidents.js): read these before asking the owner what happened
 
 Problems are written to the storage repo (KealJones/squiggle-state) as they happen, one JSON line each in
 `debug/incidents.jsonl` (the last 200; app.js `saveIncident`), so a crash can be looked at without a screenshot:
@@ -231,7 +231,7 @@ prompt sent, saved as `debug/incidents/<id>.txt`; Fresh's lookup before the repl
 tab's memory, and the GPU shares the iPhone tab's ~1.9 GB, so that's the level to compare against. Lines reach
 GitHub with the next sync.
 
-## Resuming a reply (resume.js, 2026-11-15; on Keal's iPhone: a GPU loss and a killed tab, mid-step and in the final reply)
+## Resuming a reply (resume.js, 2026-11-15; on the test iPhone: a GPU loss and a killed tab, mid-step and in the final reply)
 
 iOS may kill a backgrounded tab outright (Safari reloads it on return). `agent.Turn` keeps one checkpoint in
 localStorage (`squiggle-resume`, synchronous so it survives the kill): written at the turn's start, about once a second
@@ -247,20 +247,20 @@ counts tries (`tries`, `MAX_TRIES` 2): a third start finds it spent, saves what 
 a tab killed for memory every time can't loop. A checkpoint whose user message is gone or already answered is dropped.
 The crash banner (a real crash, no `squiggle-page-left` note) still comes first; the resume runs when the model loads
 after the person taps Try again. A GPU lost mid-reply is reloaded only once the page shows again (iOS gives a hidden tab
-no GPU: on Keal's iPhone, 2026-11-15, the ~11 s of retries ran out while he was in another app and the reply ended in
+no GPU: on the test iPhone, 2026-11-15, the ~11 s of retries ran out while the user was in another app and the reply ended in
 "the browser hasn't given it back yet"); if it still won't come back, or drops again right after, the error carries
 `reloadToResume` and the turn reloads the page instead of failing (chat.js `onReload`), so the checkpoint picks the
 reply up like a killed tab, within the same 2 tries. A read-only call repeated in the same turn (`resume.js repeatKey`:
 read-only tools, and bash made only of read-only programs with no redirect, substitution or in-place edit) gets its
 earlier result back, marked "already ran", instead of running again; the calls from before a resume count too (their
-saved results). On Keal's iPhone (2026-11-15) LFM3 re-ran the same two Wikipedia fetches after a resume despite the
+saved results). On the test iPhone (2026-11-15) LFM3 re-ran the same two Wikipedia fetches after a resume despite the
 "don't repeat them" note and ran out of window with no answer.
 
 ## Voice (voice.js)
 
 - With LFM3 Omni loaded (`engine.hasSense('voice')`) the model speaks for itself unless Settings → Voice picks "This
   device's" (`settings.voiceEngine`): read aloud and calls use `omniSpeaker` (`settings.omniVoice` female/male).
-  Hearing stays with the browser's own speech recognition wherever it exists, for its live words (Keal, 2026-11-17);
+  Hearing stays with the browser's own speech recognition wherever it exists, for its live words (2026-11-17);
   only without it do calls listen through `omniRecognition` (voice-ui.js `omniEars`). The composer's microphone
   (`#composer-mic`, shown by model-ui.js `updateComposerNote`) dictates live into the box with the same recognition,
   else records and has Omni write it down. Omni's ears are for attached recordings and video soundtracks. Omni's voice is slower than real time for
@@ -345,7 +345,7 @@ real model in headless Chromium: one thread vs all cores vs WebGPU.
 WebLLM (`engine-webllm.js`, @mlc-ai/web-llm 0.2.87 from jsDelivr by default; a model can name another with `webllm`, loaded
 side by side as its own module, since a build's .wasm carries its TVM runtime and WebLLM's JS must match it): WL1 (Llama 3.2 1B,
 chat only), WQ06 (Qwen3 0.6B), WQ35 (Qwen3.5 0.8B), WLF3 (LFM3 1.7B, our own MLC build from lm-experiments experiments/lfm3-mlc: q4f16_1 at kealjones/LFM3-1.7B-q4f16_1-MLC, WebLLM 0.2.87, `toolformats/lfm3.js`; the shipped build is WLF3QAD,
-with a q4f32_1 twin (`mlcRecordF32`, job lfm3-mlc-9) for GPUs without shader-f16; runs on an iPhone in Squiggle at 13.7 tok/s, first word in 15 s, 2026-11-10; memtest's 3K-token prompt kills the tab while answering; the 3-bit build WLF3Q3 runs but overthinks even a greeting, so 4-bit it is; WLF3QAD is the same model with Liquid's quantization-aware-trained 4-bit weights copied in exactly and a one-sequence model library, ~150 MB less scratch; a 6K window, `maxContext` (Keal's iPhone 16, 2026-11-15: 1065 MB of GPU buffers loaded vs 1021 MB at 4K, peak 1200 vs 1112, a ~3K-token prompt read fine; 8K killed the tab while loading)) and WLF12 (LFM2.5 1.2B Instruct, naklitechie's community build on WebLLM
+with a q4f32_1 twin (`mlcRecordF32`, job lfm3-mlc-9) for GPUs without shader-f16; runs on an iPhone in Squiggle at 13.7 tok/s, first word in 15 s, 2026-11-10; memtest's 3K-token prompt kills the tab while answering; the 3-bit build WLF3Q3 runs but overthinks even a greeting, so 4-bit it is; WLF3QAD is the same model with Liquid's quantization-aware-trained 4-bit weights copied in exactly and a one-sequence model library, ~150 MB less scratch; a 6K window, `maxContext` (the test iPhone 16, 2026-11-15: 1065 MB of GPU buffers loaded vs 1021 MB at 4K, peak 1200 vs 1112, a ~3K-token prompt read fine; 8K killed the tab while loading)) and WLF12 (LFM2.5 1.2B Instruct, naklitechie's community build on WebLLM
 0.2.86, `maxContext: 4096`, tools in LFM2's own format via `toolformats/lfm2.js`: Pythonic calls in `<|tool_call_start|>[…]`,
 results in a `tool` turn, raw prompts with `<|startoftext|>` added since WebLLM only adds BOS on its manifest path; card sampling
 temperature 0.1, repeat 1.05) are MLC builds on WebGPU. They keep `runtime: 'wllama'` (so isLite, chatOnly, nativeTools and the
@@ -353,7 +353,7 @@ small-model harness apply) and add `backend: 'webllm'` + `mlc`. `createShim` giv
 slice of wllama's API they use; WebLLM has no jinja, so each native model names a tool format (`toolFormat`, a module in
 `toolformats/`). The Qwen formats render Qwen's tool block into the system
 prompt (`toolFormat` 'qwen3' JSON or 'qwen35' XML), sends results as `<tool_response>` user turns and parses
-`<tool_call>` back into `delta.tool_calls`. It can't continue an assistant turn, so a prefilled loop retry starts fresh. Gemma 4 (`toolFormat: 'gemma4'`, tiny Gemma's own MLC build) is different: a tool call, its results and the reply share one model turn, so the shim renders the whole prompt itself (`gemma4Prompt`, a port of Gemma 4's template pinned by `tests/fixtures/gemma4-template.json`) and sends it as a raw completion (`engine.completions.create`, stop at `<turn|>` / `<|tool_response>`), parsing `<|channel>thought…<channel|>` and `<|tool_call>call:name{…}<tool_call|>` back out. A lost GPU device (iOS 27 Safari drops it with the tab still open: locking, switching apps, memory pressure) makes WebLLM's TVM runtime dispose itself, and every later call throws "Object has already been disposed"; the shim (`gpuGone`, `revive`) loads the model again from WebLLM's cache and carries the reply on: from the start if none of it was shown yet, else (raw formats, i.e. LFM3) from the same prompt plus the raw text written so far, half a tool call cut off, so the consumer just sees the next words; a chat format can't continue an assistant turn, so its error is flagged `gpuLost` and `engine.respond` sends the call again once (`rewind()`); a second loss right after the reload is the usual error; the error names Safari's reason (`gpuLossDetail`). The loss is caught before the next message too: the watcher keeps one record per device and tells the shim when *its* device goes (`deviceWatch.onLost`), and it reloads as soon as the page shows (`whenVisible`); every send waits for that (`ready`). Right after Safari's GPU process dies, `requestAdapter` can come back empty ("Unable to find a compatible GPU", `noAdapter`), so the reload keeps asking for ~11 s (`REVIVE_WAITS`); if it never gets one the engine stays marked stale and the next send tries again instead of hitting the unloaded engine ("Model not loaded", Keal's iPhone 2026-11-11). Why iOS 27 loses it at all: WebKit 325185 kills Safari's GPU process when one command buffer runs or waits more than ~3 s, and WebLLM queues a prompt's prefill pieces (256 tokens in our LFM3 builds, ~2.5 s each on an iPhone 16) without waiting (onnxruntime#33753 is the same crash). On phones (`pacedGpu`: WebKit, and Android since 2026-11-11, where nothing kills the long work and the whole phone's screen stalled behind it instead, Greg's phone in Chrome) `paceGpu` makes the pieces 128 tokens, syncs after each one and leaves a frame-long gap (`PACED_GAP_MS`) after each prompt piece so the system can draw, reaching into WebLLM's pipeline (`loadedModelIdToPipeline`, `prefillChunkSize`, `embedAndForward`, `sync`); confirmed on Keal's iPhone (iOS 27.2.1, 2026-11-11), where memcap still measures the same ~1.9 GB tab budget as on iOS 26. A cross-site iframe doesn't get around it (`app/iframecap.html`, Keal's iPhone, Safari 27.2, 2026-11-15): it runs in the page's process (its timers stall when the page blocks; Feature Flags has no site-isolation switch) and page + iframe died at the same 1.91 GB as the page alone. Our own builds aren't in WebLLM's prebuilt list: a model's `mlcRecord` (model URL, `model_lib` .wasm, `model_manifest`) is registered (`registerModel`) and passed as `appConfig`.
+`<tool_call>` back into `delta.tool_calls`. It can't continue an assistant turn, so a prefilled loop retry starts fresh. Gemma 4 (`toolFormat: 'gemma4'`, tiny Gemma's own MLC build) is different: a tool call, its results and the reply share one model turn, so the shim renders the whole prompt itself (`gemma4Prompt`, a port of Gemma 4's template pinned by `tests/fixtures/gemma4-template.json`) and sends it as a raw completion (`engine.completions.create`, stop at `<turn|>` / `<|tool_response>`), parsing `<|channel>thought…<channel|>` and `<|tool_call>call:name{…}<tool_call|>` back out. A lost GPU device (iOS 27 Safari drops it with the tab still open: locking, switching apps, memory pressure) makes WebLLM's TVM runtime dispose itself, and every later call throws "Object has already been disposed"; the shim (`gpuGone`, `revive`) loads the model again from WebLLM's cache and carries the reply on: from the start if none of it was shown yet, else (raw formats, i.e. LFM3) from the same prompt plus the raw text written so far, half a tool call cut off, so the consumer just sees the next words; a chat format can't continue an assistant turn, so its error is flagged `gpuLost` and `engine.respond` sends the call again once (`rewind()`); a second loss right after the reload is the usual error; the error names Safari's reason (`gpuLossDetail`). The loss is caught before the next message too: the watcher keeps one record per device and tells the shim when *its* device goes (`deviceWatch.onLost`), and it reloads as soon as the page shows (`whenVisible`); every send waits for that (`ready`). Right after Safari's GPU process dies, `requestAdapter` can come back empty ("Unable to find a compatible GPU", `noAdapter`), so the reload keeps asking for ~11 s (`REVIVE_WAITS`); if it never gets one the engine stays marked stale and the next send tries again instead of hitting the unloaded engine ("Model not loaded", the test iPhone 2026-11-11). Why iOS 27 loses it at all: WebKit 325185 kills Safari's GPU process when one command buffer runs or waits more than ~3 s, and WebLLM queues a prompt's prefill pieces (256 tokens in our LFM3 builds, ~2.5 s each on an iPhone 16) without waiting (onnxruntime#33753 is the same crash). On phones (`pacedGpu`: WebKit, and Android since 2026-11-11, where nothing kills the long work and the whole phone's screen stalled behind it instead, Greg's phone in Chrome) `paceGpu` makes the pieces 128 tokens, syncs after each one and leaves a frame-long gap (`PACED_GAP_MS`) after each prompt piece so the system can draw, reaching into WebLLM's pipeline (`loadedModelIdToPipeline`, `prefillChunkSize`, `embedAndForward`, `sync`); confirmed on the test iPhone (iOS 27.2.1, 2026-11-11), where memcap still measures the same ~1.9 GB tab budget as on iOS 26. A cross-site iframe doesn't get around it (`app/iframecap.html`, the test iPhone, Safari 27.2, 2026-11-15): it runs in the page's process (its timers stall when the page blocks; Feature Flags has no site-isolation switch) and page + iframe died at the same 1.91 GB as the page alone. Our own builds aren't in WebLLM's prebuilt list: a model's `mlcRecord` (model URL, `model_lib` .wasm, `model_manifest`) is registered (`registerModel`) and passed as `appConfig`.
 q4f16 needs `shader-f16`, else the q4f32 build. WebLLM stores files in Cache Storage `webllm/{config,model,wasm}` (sw.js
 keeps them); "download" loads once and unloads. Measured on an iPhone with `app/memtest.html` (2026-11-02, ~2 GB tab
 budget shared by JS and GPU memory): Llama 3.2 1B ~30 tok/s and ~1.3 GB vs wllama CPU ~2.6 tok/s and ~0.6 GB; Qwen3 0.6B

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { failedCallText, repairCalls, unreadableNote } from '../app/src/toolcall-repair.js';
 
-// The error Keal hit on desktop (Gemma 4 E4B, LiteRT-LM 0.14.0).
+// The error hit on desktop (Gemma 4 E4B, LiteRT-LM 0.14.0).
 const ERR = 'Failed to parse tool calls from code block: call:grep{path:<|"|>/repos/squiggle<|"|>,pattern:".squiggle-wait|indeterminate"}\n' +
   'full response: <|tool_call>call:grep{path:<|"|>/repos/squiggle<|"|>,pattern:".squiggle-wait|indeterminate"}<tool_call|>\n' +
   'error: Failed to parse FC tool calls: FallThrough(ParseCancelledError(NoAltError(NoViableAltError { ... })))';
