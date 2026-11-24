@@ -23,6 +23,7 @@ export class Checkpoint {
   constructor(base, { s = store(), now = Date.now, every = SAVE_EVERY } = {}) {
     this.cp = { v: 1, raw: '', tools: [], prefix: '', ...base };
     Object.assign(this, { s, now, every, last: 0 });
+    active = this;
     this.write();
   }
   write() {
@@ -34,7 +35,17 @@ export class Checkpoint {
   }
   set(patch) { Object.assign(this.cp, patch); this.write(); }
   partial(raw) { this.cp.raw = raw; if (!raw || this.now() - this.last >= this.every) this.write(); }
-  clear() { clear(this.s); }
+  clear() { if (active === this) active = null; clear(this.s); }
+}
+
+// The page going hidden writes the open checkpoint at once, so a tab iOS kills in the background loses none of the
+// stream (partial() only writes about once a second). Hidden fires on every tab or app switch, quick ones too, so
+// this only writes: the reply carries on untouched.
+let active = null;
+export function flush() { if (active) active.write(); }
+if (typeof document !== 'undefined' && typeof addEventListener === 'function') {
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
+  addEventListener('pagehide', flush);
 }
 
 // What a loaded checkpoint should do now: 'resume' it (counting the try), or 'give-up' (it was tried MAX_TRIES times).

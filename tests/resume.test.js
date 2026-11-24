@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createShim } from '../app/src/engine-webllm.js';
 import { NativeConversation } from '../app/src/engine-wllama.js';
 import { respond } from '../app/src/engine.js';
-import { Checkpoint, load, clear, decide, leftOver, MAX_TRIES, repeatKey } from '../app/src/resume.js';
+import { Checkpoint, load, clear, decide, leftOver, MAX_TRIES, repeatKey, flush } from '../app/src/resume.js';
 
 // A localStorage stand-in (optionally full).
 const memStore = ({ quota = Infinity } = {}) => {
@@ -24,6 +24,18 @@ test('checkpoint: written at the start, throttled while streaming, written at on
   assert.equal(load(s).tools[0].result, 'done');
   cp.clear();
   assert.equal(load(s), null);
+});
+
+test('checkpoint: flush (the page going hidden) writes the stream at once, and does nothing once cleared', () => {
+  const s = memStore(); const t = 1000;
+  const cp = new Checkpoint({ session: 's1', user: 'm1', text: 'hi', phase: 'chat' }, { s, now: () => t });
+  cp.partial('<think>a');
+  assert.equal(load(s).raw, '', 'throttled');
+  flush();
+  assert.equal(load(s).raw, '<think>a', 'written on hide');
+  cp.clear();
+  flush();
+  assert.equal(load(s), null, 'a finished reply is not written back');
 });
 
 test('checkpoint: a full storage drops the tool results first, and never throws', () => {

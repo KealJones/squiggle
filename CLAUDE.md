@@ -235,8 +235,9 @@ GitHub with the next sync.
 
 iOS may kill a backgrounded tab outright (Safari reloads it on return). `agent.Turn` keeps one checkpoint in
 localStorage (`squiggle-resume`, synchronous so it survives the kill): written at the turn's start, about once a second
-while a reply streams (`on_raw` from the shim: the raw text of the call in flight) and at every tool result and step
-boundary (`Turn.save`); cleared when the reply is saved. The plan stays in `session.tasks`, saved with it. After the
+while a reply streams (`on_raw` from the shim: the raw text of the call in flight), at every tool result and step
+boundary (`Turn.save`) and at once when the page goes hidden or away (`resume.flush`, only a write: hidden fires on
+every quick tab switch too); cleared when the reply is saved. The plan stays in `session.tasks`, saved with it. After the
 next load, once the model is ready (`state.onReady`, set in app.js), `chat.js resumeUnfinished` opens the chat, shows
 "Resuming…" and calls `runTurn({ resume })` (the user message is already there; `Turn.resumeFrom`): a plan's
 interrupted step starts again with "your last try" in its system prompt (its tool calls are in the task log, never
