@@ -14,8 +14,8 @@ import { createShim, gpuGone } from './engine-webllm.js';
 import { snapshotPoint } from './prefix-cache.js';
 import * as media from './media.js';
 
-// Pinned to a commit: Tilde is plain ES modules, loaded straight from jsDelivr (no build step on either side).
-export const TILDE_SHA = 'ee7320121ea4db62005aecbe4c60d8d43ab900dd';
+// Pinned to a commit (Tilde 0.2.0): Tilde is plain ES modules, loaded straight from jsDelivr (no build step on either side).
+export const TILDE_SHA = '7e9a79e08b4a133603a5d2688f5f814e20b5f548';
 const defaultUrl = () => `https://cdn.jsdelivr.net/gh/KealJones/tilde@${TILDE_SHA}/src/index.js`;
 // Tests and local checks can point it elsewhere (globalThis.SQUIGGLE_TILDE = '/tilde/src/index.js').
 const libUrl = () => globalThis.SQUIGGLE_TILDE || defaultUrl();
